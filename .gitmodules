@@ -1,3 +1,9 @@
 [submodule "lib/ExVectrArduinoPlatform"]
 	path = lib/ExVectrArduinoPlatform
 	url = https://github.com/ExVeCtr/ExVectrArduinoPlatform.git
+[submodule "lib/ExVectrCore"]
+	path = lib/ExVectrCore
+	url = https://github.com/ExVeCtr/ExVectrCore.git
+[submodule "lib/ExVectrHAL"]
+	path = lib/ExVectrHAL
+	url = https://github.com/ExVeCtr/ExVectrHAL.git
