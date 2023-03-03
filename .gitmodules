@@ -7,3 +7,12 @@
 [submodule "lib/ExVectrHAL"]
 	path = lib/ExVectrHAL
 	url = https://github.com/ExVeCtr/ExVectrHAL.git
+[submodule "lib/ExVectrSensor"]
+	path = lib/ExVectrSensor
+	url = https://github.com/ExVeCtr/ExVectrSensor.git
+[submodule "lib/ExVectrMath"]
+	path = lib/ExVectrMath
+	url = https://github.com/ExVeCtr/ExVectrMath.git
+[submodule "lib/ExVectrData"]
+	path = lib/ExVectrData
+	url = https://github.com/ExVeCtr/ExVectrData.git
