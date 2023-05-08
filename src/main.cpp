@@ -1,112 +1,131 @@
 #include <Arduino.h>
 
-#include "ExVectrCore/scheduler.hpp"
+#include "ExVectrMath/specialised_types.hpp"
+
+#include "ExVectrCore.hpp"
+
+#include "ExVectrCore/random.h"
+#include "ExVectrCore/print.hpp"
+#include "ExVectrCore/task_types.hpp"
+#include "ExVectrCore/scheduler2.hpp"
 #include "ExVectrArduinoPlatform.hpp"
 
 #include "ExVectrArduinoPlatform/bus_spi.hpp"
+#include "ExVectrArduinoPlatform/bus_i2c.hpp"
+
+#include "ExVectrSensor/Sensors/mpu9250.hpp"
+#include "ExVectrSensor/Sensors/bme280.hpp"
+#include "ExVectrSensor/Sensors/qmc5883.hpp"
+
+#include "ExVectrArduinoPlatform.hpp"
 
 #include "board_v_1_0.h"
 
-
 using namespace VCTR;
 
+#define PMW_CS_PIN 29
+#define PMW_INT_PIN 28
+
+Platform::PinGPIO mpuPin;
+Platform::BusSPIDevice spiMPU(SPI, mpuPin, true);
+SNSR::MPU9250Driver mpuDriver(spiMPU, true);
 
 Platform::PinGPIO bmePin;
-//Platform::BusSPIDevice spiDev(SPI, SPISettings{500000, MSBFIRST, SPI_MODE0}, bmePin, true);
+Platform::BusSPIDevice spiBME(SPI, bmePin, true);
+SNSR::BME280Driver bme(spiBME);
 
+Platform::PinGPIO pmwPin;
 
-/*class Test: public VCTR::Task_Threading {
+Platform::PinGPIO rfPin;
+
+Platform::BusI2CDevice qmcBus(Wire, 0x0D);
+SNSR::QMC5883Driver qmc(qmcBus);
+
+class SensorReadout : public Core::Task_Periodic
+{
 public:
 
-    Test() : VCTR::Task_Threading("Test Task", VCTR::eTaskPriority_Realtime, 1*VCTR::SECONDS) {}
+    Core::Simple_Subscriber<Core::Timestamped<Data::ValueCov<float, 3>>> subr;
+    Core::Simple_Subscriber<Core::Timestamped<Data::ValueCov<float, 1>>> bmeSubr;
+    Core::Simple_Subscriber<Core::Timestamped<Data::ValueCov<float, 3>>> qmcSubr;
 
-    void init() {
-
-        bmePin.init(BME280_NCS_PIN, GPIO_IOMODE_t::IOMODE_OUTPUT);
-        bmePin.setPinValue(true);
-
-        SPI.begin();
-
+    SensorReadout() : Task_Periodic("Test MPU driver", Core::MILLISECONDS * 10)
+    {
+        Core::getSystemScheduler().addTask(*this);
     }
 
-    void thread() {
+    void taskInit() override
+    {
 
-        Serial.println("Beginning...");
+        subr.subscribe(mpuDriver.getGyroTopic());
+        bmeSubr.subscribe(bme.getBaroTopic());
+        qmcSubr.subscribe(qmc.getMagTopic());
 
-        uint8_t id = 0;
-        uint8_t c = 0xD0 | 0x80;
-
-        bmePin.setPinValue(false);
-
-        SPI.beginTransaction(SPISettings(500000, MSBFIRST, SPI_MODE0));
-        //SPI.transfer(c);
-        id = SPI.transfer(0xff);
-        SPI.endTransaction();
-
-        bmePin.setPinValue(true);
-
-        //spiDev.writeByte(0xD0 | 0x80);
-        //spiDev.readByte(id);
-
-        Serial.println(String("Time: ") + VCTR::NOWSeconds() + ". ID: " + id);
-
+        subr.setTaskToResume(*this);
+        bmeSubr.setTaskToResume(*this);
+        qmcSubr.setTaskToResume(*this);
     }
 
+    void taskThread() override
+    {   
+
+        if (subr.isDataNew())
+        {
+
+            auto data = subr.getItem().data.val;
+
+            Core::printM("Gyro X: %f, Y: %f, Z: %f.\n", data(0), data(1), data(2));
+        }
+
+        if (bmeSubr.isDataNew())
+        {
+
+            auto data = bmeSubr.getItem().data.val;
+
+            Core::printM("Baro: %f.\n", data(0));
+        }
+
+        if (qmcSubr.isDataNew())
+        {
+
+            auto data = qmcSubr.getItem().data.val;
+
+            Core::printM("Mag X: %f, Y: %f, Z: %f.\n", data(0), data(1), data(2));
+        }
+
+    }
 };
 
-Test t;*/
+SensorReadout sensorReadout;
 
-class Blinky: public VCTR::Task_Threading {
-public:
+void setup()
+{
 
-    VCTR::Platform::PinGPIO pinLED;
+    SPI.begin();
+    Wire.begin();
+    Wire.setClock(100000);
 
-    Blinky() : VCTR::Task_Threading("Blinky Task", VCTR::eTaskPriority_Realtime, 1*VCTR::SECONDS) {}
+    mpuPin.init(MPU9250_NCS_PIN, HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
+    bmePin.init(BME280_NCS_PIN, HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
+    pmwPin.init(PMW_CS_PIN, HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
+    rfPin.init(SX1280_NSS_PIN, HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
 
-    void init() {
+    mpuPin.setPinValue(1);
+    bmePin.setPinValue(1);
+    pmwPin.setPinValue(1);
+    rfPin.setPinValue(1);
 
-        pinLED.init(LED_BUILTIN, VCTR::GPIO_IOMODE_t::IOMODE_OUTPUT);
-
-    }
-
-    void thread() {
-
-        pinLED.setPinValue(!pinLED.getPinValue());
-
-    }
-
-};
-
-Blinky b;
-
-void setup() {
-    Serial.begin(115200);
-    bmePin.init(BME280_NCS_PIN, GPIO_IOMODE_t::IOMODE_OUTPUT);
-        bmePin.setPinValue(true);
-
-        SPI.begin();
+    VCTR::Core::initialise();
 }
 
-void loop() {
-    VCTR::Task_Threading::schedulerTick();
-    Serial.println("Beginning...");
+void loop()
+{
+    VCTR::Core::getSystemScheduler().tick();
+    /*const auto& tasks = Core::getSystemScheduler().getTasks();
+    Core::printM("Time: %f\n", Core::NOWSeconds());
+    for (size_t i = 0; i < tasks.size(); i++) {
+        Core::printM("Task %d: %s, rel: %d\n", i, tasks[i].task->taskName(), tasks[i].pseudoPriority);
 
-        uint8_t id = 0;
-        uint8_t c = 0xD0 | 0x80;
-
-        bmePin.setPinValue(false);
-
-        SPI.beginTransaction(SPISettings(500000, MSBFIRST, SPI_MODE0));
-        //SPI.transfer(c);
-        id = SPI.transfer(0xff);
-        SPI.endTransaction();
-
-        bmePin.setPinValue(true);
-
-        //spiDev.writeByte(0xD0 | 0x80);
-        //spiDev.readByte(id);
-
-        Serial.println(String("Time: ") + ". ID: " + id);
-
-        delay(1000);
+    }*/
+    //delay(1);
 }
