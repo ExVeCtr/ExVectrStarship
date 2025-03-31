@@ -19,3 +19,9 @@
 [submodule "lib/ExVectrNetwork"]
 	path = lib/ExVectrNetwork
 	url = https://github.com/ExVeCtr/ExVectrNetwork.git
+[submodule "lib/ExVectrActuator"]
+	path = lib/ExVectrActuator
+	url = https://github.com/ExVeCtr/ExVectrActuator.git
+[submodule "lib/ExVectrDSP"]
+	path = lib/ExVectrDSP
+	url = https://github.com/ExVeCtr/ExVectrDSP
