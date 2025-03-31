@@ -31,6 +31,9 @@
         "streambuf": "cpp",
         "cinttypes": "cpp",
         "typeinfo": "cpp",
-        "string": "cpp"
+        "string": "cpp",
+        "random": "cpp",
+        "string_view": "cpp",
+        "memory_resource": "cpp"
     }
 }
