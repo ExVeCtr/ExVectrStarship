@@ -1,0 +1,31 @@
+#ifndef MEMORY_KEYS_HPP
+#define MEMORY_KEYS_HPP
+
+
+
+
+#define MEMORY_KEY_GYROCALIB 100
+#define MEMORY_KEY_MAGCALIB 101
+#define MEMORY_KEY_ACCCALIB 102
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#endif // MEMORY_KEYS_HPP

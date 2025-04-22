@@ -34,6 +34,13 @@
         "string": "cpp",
         "random": "cpp",
         "string_view": "cpp",
-        "memory_resource": "cpp"
+        "memory_resource": "cpp",
+        "cstddef": "cpp",
+        "atomic": "cpp",
+        "bit": "cpp",
+        "deque": "cpp",
+        "algorithm": "cpp",
+        "memory": "cpp",
+        "iterator": "cpp"
     }
 }

@@ -43,12 +43,33 @@ namespace VCTR
             int16_t receivedDataRSSI_;
             int16_t receivedDataSNR_;
 
-            bool isSending_ = false;
-            bool channelBusy_ = false;
-
             Core::ListBuffer<uint8_t, dataLinkMaxFrameLength * 5> transmitBuffer_;
 
-            int64_t lastSendTimestamp_ = 0;
+
+            enum class RadioState
+            {
+                Idle,
+                ActivityDetection,
+                ChannelBusy,
+                Transmitting,
+                Receiving,
+                Sleep
+            };
+            RadioState radioState_ = RadioState::Idle;
+
+            int64_t transmitStart_ = 0;
+            int64_t transmitEnd_ = 0;
+
+            int64_t receiveStart_ = 0;
+            int64_t receiveEnd_ = 0;
+
+            int64_t activityDetectionStart_ = 0;
+            int64_t activityDetectionEnd_ = 0;
+
+            int64_t channelBusyStart_ = 0;
+            int64_t channelBusyEnd_ = 0;
+
+            int64_t idleStart_ = 0;
             
 
         public:
@@ -69,7 +90,14 @@ namespace VCTR
 
         private:
 
+            void beginReceive(int timeout = 0);
+
+            bool transmitAwaitingData();
+
+            void receiveAwaitingData();
+
             void dataframeReceiveFunc(const Core::List<uint8_t> &item) override;
+
             
         };
 

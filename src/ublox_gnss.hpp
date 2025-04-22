@@ -27,11 +27,11 @@ namespace VCTR
              * @param serialPort Pointer to serial port to use. If non default pins used then setup before init run.
              * @param usbPassthrough If true then gps wont be setup and serial data will be passed to USB serial.
              */
-            UbloxSerialGNSS(HardwareSerial& serialPort, int rxPin = -1, int txPin = -1) : Task_Periodic("Ublox GNSS", 2*Core::MILLISECONDS) {
+            UbloxSerialGNSS(HardwareSerial& serialPort, int rxPin = -1, int txPin = -1) : Task_Periodic("Ublox GNSS", 1*Core::MILLISECONDS) {
                 serialPort_ = &serialPort;
                 rxPin_ = rxPin;
                 txPin_ = txPin;
-                usbPassthrough_ = false;// usbPassthrough;
+                //usbPassthrough_ = false;// usbPassthrough;
                 Core::getSystemScheduler().addTask(*this);
             }
         
@@ -48,6 +48,11 @@ namespace VCTR
              * @return true if reading was successfull. False otherwise.
              */
             bool readGNSS() override;
+
+            /**
+             * Will check the uart port if there is data to be read.
+             */
+            void taskCheck() override;
 
             /**
              * @brief Initialises sensor and expected to be called once at start by scheduler
