@@ -58,7 +58,7 @@ namespace VCTR
                 return;
             }
 
-            lora_.setupLoRa(2445000000, 0, LORA_SF6, LORA_BW_1600, LORA_CR_4_8);
+            lora_.setupLoRa(2445000000, 0, LORA_SF5, LORA_BW_1600, LORA_CR_4_6);
             lora_.setDioIrqParams(IRQ_RADIO_ALL, IRQ_RADIO_ALL, 0, 0);
             lora_.setHighSensitivity();
 
@@ -97,14 +97,14 @@ namespace VCTR
                     radioState_ = RadioState::ChannelBusy;
                     channelBusyStart_ = threadTime;
         
-                    LOG_MSG("Channel busy! Detected preamble\n");
+                    VRBS_MSG("Channel busy! Detected preamble\n");
                     lora_.clearIrqStatus(IRQ_PREAMBLE_DETECTED);
         
                 }
 
                 if ((irqStatus & IRQ_RX_DONE) && (irqStatus & IRQ_HEADER_VALID) && !(irqStatus & IRQ_CRC_ERROR)) { 
 
-                    LOG_MSG("Received data! Decoding...\n");
+                    VRBS_MSG("Received data! Decoding...\n");
 
                     receiveAwaitingData();
                     radioState_ = RadioState::Idle;
@@ -188,7 +188,7 @@ namespace VCTR
 
                     //lora_.startCAD(LORA_CAD_08_SYMBOL);
         
-                    LOG_MSG("Channel busy! Channel activity detected! Checking again\n");
+                    VRBS_MSG("Channel busy! Channel activity detected! Checking again\n");
 
                     lora_.clearIrqStatus(IRQ_CAD_ACTIVITY_DETECTED); //Clear the irq status. We are done receiving data.
         
@@ -200,7 +200,7 @@ namespace VCTR
 
                     if (radioState_ == RadioState::ChannelBusy) {
                         channelBusyEnd_ = threadTime;
-                        LOG_MSG("Channel is free again\n");
+                        VRBS_MSG("Channel is free again\n");
                     } 
                     channelBusyEnd_ = threadTime;
                     radioState_ = RadioState::Idle;
@@ -234,7 +234,7 @@ namespace VCTR
             }*/
 
 
-            if (transmitBuffer_.size() > 0 && (radioState_ == RadioState::Idle || radioState_ == RadioState::Receiving) && threadTime - transmitEnd_ > 10 * Core::MILLISECONDS) { //If we have data to send and are currently not doing anything. Lets check if we can send.
+            if (transmitBuffer_.size() > 0 && (radioState_ == RadioState::Idle || radioState_ == RadioState::Receiving) && threadTime - transmitEnd_ > 1 * Core::MILLISECONDS) { //If we have data to send and are currently not doing anything. Lets check if we can send.
 
                 radioState_ = RadioState::ActivityDetection;
                 lora_.startCAD(LORA_CAD_08_SYMBOL);
@@ -249,6 +249,31 @@ namespace VCTR
                 receiveStart_ = threadTime;
 
                 VRBS_MSG("Radio is idle. Beginning receive to collect possible transmissions\n");
+
+            }
+
+            if (radioState_ == RadioState::Receiving && threadTime - receiveStart_ > 500 * Core::MILLISECONDS) { //Timout case for receiving data. We should start receiving data again.
+
+                beginReceive();
+                receiveStart_ = threadTime;
+
+                VRBS_MSG("Radio RX timeout issue. Putting back into receive\n");
+
+            }
+
+            if (radioState_ == RadioState::Transmitting && threadTime - transmitStart_ > 500 * Core::MILLISECONDS) { //Timout case for transmitting data. Go into idle as something went wrong
+
+                radioState_ = RadioState::Idle;
+
+                VRBS_MSG("Radio TX timeout issue. Putting back into idle\n");
+
+            }
+
+            if ((radioState_ == RadioState::ChannelBusy || radioState_ == RadioState::ActivityDetection) && threadTime - channelBusyStart_ > 500 * Core::MILLISECONDS) { //Timout case for channel busy. Go into idle as something went wrong
+
+                radioState_ = RadioState::Idle;
+
+                VRBS_MSG("Radio Channel busy timeout issue. Putting back into idle\n");
 
             }
 
@@ -319,7 +344,7 @@ namespace VCTR
             transmitBuffer_.removeFront(bufferSize); //Remove the data bytes from the buffer.*/
 
 
-            VRBS_MSG("Finished making buffer. Sending data! Buffer length: %d\n", bufferSize);
+            LOG_MSG("Finished making buffer. Sending data! Buffer length: %d\n", bufferSize);
 
             if (bufferSize > 0) {
                 lora_.transmit(buffer, bufferSize, 0, 12, NO_WAIT);

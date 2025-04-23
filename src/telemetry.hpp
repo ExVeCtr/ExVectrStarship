@@ -19,7 +19,6 @@ namespace VCTR {
         VehicleMode_Startup = 0,                //Software is starting up and initialising.
         VehicleMode_SensorInit,                 //Sensors are being setup and initialised.
         VehicleMode_SensorCalib,                //Sensors are being calibrated.
-        VehicleMode_Safe,                       //Everything is running, but the actuators are currently disabled and in a safe state. Sensors could possibly be trying to calibrate and adjust.
         VehicleMode_Ready,                      //Everything is running and ready to go. Actuators are enabled and the system is ready to go. THIS COULD POSSIBLY BE DANGEROUS.
         VehicleMode_Running,                    //The system is running and doing its thing. E.g. flying and running through the mission.
         VehicleMode_Failure,                    //Some failure has occurred and the system is in a catastrophic failure state. In this state everything shuts down and the system is in a safe state.
@@ -67,6 +66,8 @@ namespace VCTR {
         bool positionOutOfBounds;
         bool attitudeOutOfBounds;
 
+        bool radioConnectionLoss;
+
     } __attribute__ ((packed));
 
 
@@ -80,6 +81,22 @@ namespace VCTR {
         MissionState_Descent, //Vehicle decends at a given rate until the landing threshold is reached.
         MissionState_Landed //Mission is finished and vehicle is landed.
     };
+
+    /**
+     * * @brief All vehicle state data compressed into a single struct.
+     */
+    struct VehicleState
+    {
+        VehicleMode mode; // The current mode of the vehicle.
+        MissionState missionState; // The current state of the mission.
+        SensoryState sensoryState; // The current state of the sensors.
+        FailureState failureState; // The current state of the failures.
+
+        int64_t missionTime;
+
+        bool simulationModeEnabled; // If the simulation mode is enabled or not. This is used for testing and debugging. In this mode the system will not use any sensors and will just run the control loop with simulated data.
+
+    } __attribute__ ((packed));
 
     /**
      * * @brief The params of each control subsystem axis

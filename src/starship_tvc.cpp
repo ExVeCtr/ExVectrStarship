@@ -57,62 +57,56 @@ namespace VCTR
         void StarshipTVC::taskThread()
         {
 
+            auto tvcSetting = ctrlSubr_.getItem();
+            auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
+            auto thrustMagnitude = tvcSetting.magnitude(0, 3);
+
+            auto xAngle = atan2(tvcSetting(1), tvcSetting(2)); //angle between vector and Z axis with the X axis as rotation axis
+            auto yAngle = atan2(tvcSetting(0), tvcSetting(2)); //angle between vector and Z axis with the Y axis as rotation axis
+
+            if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
+            else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;
+
+            if (yAngle > tvcAngleLimit_Rad_) yAngle = tvcAngleLimit_Rad_;
+            else if (yAngle < -tvcAngleLimit_Rad_) yAngle = -tvcAngleLimit_Rad_;
+
+            auto servoXPOut = (xAngle + tvcFinOffsetXP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
+            auto servoXNOut = -(xAngle - tvcFinOffsetXN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
+            auto servoYPOut = (yAngle + tvcFinOffsetYP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
+            auto servoYNOut = -(yAngle - tvcFinOffsetYN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
+
+            auto motorCWOut = thrustMagnitude / tvcThrustLimit_N_;
+            auto motorCCWOut = thrustMagnitude / tvcThrustLimit_N_;
+
+            servoXP_.enableOutput(enableActuators_);
+            servoXN_.enableOutput(enableActuators_);
+            servoYP_.enableOutput(enableActuators_);
+            servoYN_.enableOutput(enableActuators_);
+
+            motorCW_.enableOutput(enableMotors_ && enableActuators_);
+            motorCCW_.enableOutput(enableMotors_ && enableActuators_);
+
             if (enableActuators_) {
-
-                servoXP_.enableOutput(true);
-                servoXN_.enableOutput(true);
-                servoYP_.enableOutput(true);
-                servoYN_.enableOutput(true);
-
-                motorCW_.enableOutput(true);
-                motorCCW_.enableOutput(true);
-
-                auto tvcSetting = ctrlSubr_.getItem();
-                auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
-                auto thrustMagnitude = tvcSetting.magnitude(0, 3);
-
-                auto xAngle = atan2(tvcSetting(1), tvcSetting(2)); //angle between vector and Z axis with the X axis as rotation axis
-                auto yAngle = atan2(tvcSetting(0), tvcSetting(2)); //angle between vector and Z axis with the Y axis as rotation axis
-
-                if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
-                else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;
-
-                if (yAngle > tvcAngleLimit_Rad_) yAngle = tvcAngleLimit_Rad_;
-                else if (yAngle < -tvcAngleLimit_Rad_) yAngle = -tvcAngleLimit_Rad_;
-
-                auto servoXPOut = (xAngle + tvcFinOffsetXP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-                auto servoXNOut = -(xAngle - tvcFinOffsetXN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-                auto servoYPOut = (yAngle + tvcFinOffsetYP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-                auto servoYNOut = -(yAngle - tvcFinOffsetYN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-
-                auto motorCWOut = thrustMagnitude / tvcThrustLimit_N_;
-                auto motorCCWOut = thrustMagnitude / tvcThrustLimit_N_;
 
                 servoXP_.setValue(servoXPOut * 0.5 + 0.5);
                 servoXN_.setValue(servoXNOut * 0.5 + 0.5);
                 servoYP_.setValue(servoYPOut * 0.5 + 0.5);
                 servoYN_.setValue(servoYNOut * 0.5 + 0.5);
 
-                //servoXP_.setValue(sin(Core::NOWSeconds()) * 0.5 + 0.5);
+            }
+
+            if (enableMotors_ && enableActuators_) {
 
                 motorCW_.setValue(motorCWOut);
                 motorCCW_.setValue(motorCCWOut);
 
-
-            } else {
-
-                servoXP_.enableOutput(false);
-                servoXN_.enableOutput(false);
-                servoYP_.enableOutput(false);
-                servoYN_.enableOutput(false);
-
-                motorCW_.enableOutput(false);
-                motorCCW_.enableOutput(false);
-
             }
+
+
 
         }
 
     }
+
 }
 

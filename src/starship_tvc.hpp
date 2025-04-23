@@ -36,6 +36,7 @@ namespace VCTR
             ACTR::PWM_Output motorCCW_;
 
             bool enableActuators_ = false;
+            bool enableMotors_ = false;
 
             float tvcAngleLimit_Rad_;
             float servoAngleLimit_Rad_;
@@ -71,7 +72,11 @@ namespace VCTR
                 tvcFinOffsetYN_Rad_ = finOffsetYN_Rad;
             }
 
-            void enableActuators(bool enable) { enableActuators_ = enable; }
+            void enableActuators(bool enableActuators) {
+                enableActuators_ = enableActuators;
+            }
+
+            void enableMotors(bool enable) { enableMotors_ = enable; }
             
             void taskCheck() override;
 

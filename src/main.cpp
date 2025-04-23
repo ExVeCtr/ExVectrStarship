@@ -121,14 +121,6 @@ DSP::IMUGPSPositionKalmanTask posEstTask(100*Core::MILLISECONDS);
 //DSP::Calibrator_Manager<float> magCalibratorManager(magCalibrator, magTransformTopic, internalMemory, 102);
 
 
-//Telecoms
-Core::Topic<Telecommand> telecommandTopic;
-//Core::Topic<Telemetry
-
-void telecommandCallback(const Telecommand& cmd);
-//Core::StaticCallback_Subscriber<Telecommand> telecommandSubr(telecommandTopic, telecommandCallback);
-
-
 //Networking
 
 Net::Datalink_SX1280 datalinkSX1280(SX1280_NSS_PIN, SX1280_NRESET_PIN, SX1280_RFBUSY_PIN, SX1280_DIO1_PIN, SX1280_TXEN_PIN, SX1280_RXEN_PIN);
@@ -139,25 +131,31 @@ Core::Topic<Net::PacketAttitude> attitudeDataTopic;
 Core::Topic<Net::PacketPosition> positionDataTopic;
 Core::Topic<uint8_t> connections;
 
-Core::Topic<VehicleMode> vehicleModeTopic;
+/*Core::Topic<VehicleMode> vehicleModeTopic;
 Core::Topic<MissionState> missionStateTopic;
 Core::Topic<SensoryState> sensoryStateTopic;
 Core::Topic<FailureState> failureStateTopic;
+Core::Topic<int64_t> missionTimeTopic;*/
+Core::Topic<VehicleState> vehicleStateTopic;
 
-Core::Topic<Net::G> gpsDataTopic;
+Core::Topic<Telecommand> telecommandTopic;
+
+Core::Topic<Net::PacketGPS> gpsDataTopic;
 
 Net::TransportTopic<Net::PacketAttitude> attitudeDataTransport(10, UINT16_MAX, networkNode, attitudeDataTopic);
 Net::TransportTopic<Net::PacketPosition> positionDataTransport(11, UINT16_MAX, networkNode, positionDataTopic);
-Net::TransportTopic<GPSData> gpsDataTransport(12, UINT16_MAX, networkNode, gpsDataTopic);
+Net::TransportTopic<Net::PacketGPS> gpsDataTransport(12, UINT16_MAX, networkNode, gpsDataTopic);
 
-Net::TransportTopic<VehicleMode> vehicleModeTransport(50, UINT16_MAX, networkNode, vehicleModeTopic);
+/*Net::TransportTopic<VehicleMode> vehicleModeTransport(50, UINT16_MAX, networkNode, vehicleModeTopic);
 Net::TransportTopic<MissionState> missionStateTransport(51, UINT16_MAX, networkNode, missionStateTopic);
 Net::TransportTopic<SensoryState> sensoryStateTransport(52, UINT16_MAX, networkNode, sensoryStateTopic);
 Net::TransportTopic<FailureState> failureStateTransport(53, UINT16_MAX, networkNode, failureStateTopic);
+Net::TransportTopic<int64_t> missionTimeTransport(54, UINT16_MAX, networkNode, missionTimeTopic);*/
+Net::TransportTopic<VehicleState> vehicleStateTransport(50, UINT16_MAX, networkNode, vehicleStateTopic);
+
+Net::TransportTopic<Telecommand> telecommandTransport(1000, UINT16_MAX, networkNode, telecommandTopic);
 
 Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, connections);
-
-Net::TransportTopic<Telecommand> telecommandTransport(5, UINT16_MAX, networkNode, telecommandTopic);
 
 
 //Control
@@ -171,7 +169,7 @@ CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servo
 void attitudeTelemetryCallback(const Core::Timestamped<Math::Vector<float, 7>>& data) {
 
     static int64_t lastSend = 0;
-    if (Core::NOW() - lastSend < 0.1*Core::SECONDS) return;
+    if (Core::NOW() - lastSend < 0.2*Core::SECONDS) return;
     lastSend = Core::NOW();
 
     Net::PacketAttitude packet({
@@ -189,7 +187,7 @@ Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attit
 void positionTelemetryCallback(const Core::Timestamped<Math::Vector<float, 6>>& data) {
 
     static int64_t lastSend = 0;
-    if (Core::NOW() - lastSend < 0.1*Core::SECONDS) return;
+    if (Core::NOW() - lastSend < 0.2*Core::SECONDS) return;
     lastSend = Core::NOW();
 
     Net::PacketPosition packet({
@@ -206,25 +204,22 @@ void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData>& data) {
 
     static int64_t lastSend = 0;
     static uint8_t counter = 0;
-    if (Core::NOW() - lastSend < 0.1*Core::SECONDS) return;
+    if (Core::NOW() - lastSend < 1*Core::SECONDS) return;
     lastSend = Core::NOW();
 
-    auto position = posEstTask.calcRelPosFromGNSS(data.data.position, posEstTask.getPositionReference());
-
-    GPSData packet;
-    packet.px = position(0);
-    packet.py = position(1);
-    packet.pz = position(2);
-    packet.vx = data.data.velocity(0);
-    packet.vy = data.data.velocity(1);
-    packet.vz = data.data.velocity(2);
+    Net::PacketGPS packet;
+    packet.latitude = data.data.position(0) * 1e7;
+    packet.longitude = data.data.position(1) * 1e7;
+    packet.altitude = data.data.position(2);
+    packet.velocity[0] = data.data.velocity(0);
+    packet.velocity[1] = data.data.velocity(1);
+    packet.velocity[2] = data.data.velocity(2);
     packet.numSats = data.data.numSats;
-    packet.counter = counter++;
 
     gpsDataTopic.publish(packet);
 
 }
-//Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssTeleSubr(gnss.getGNSSTopic(), gnssTelemetryCallback);
+Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssTeleSubr(gnss.getGNSSTopic(), gnssTelemetryCallback);
 
 
 
@@ -241,7 +236,7 @@ private:
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> positionIsSubr_;
     Math::Vector<float, 6> positionIs_;
 
-    int64_t missionStartTime_ = 0;
+    int64_t missionStartTime_ = -60 * Core::SECONDS;
 
     int64_t startStartupTime_ = 0; // When the vehicle goes into startup. (Actuators enable and ready, vehicle remains at start position. This is usually negative)
 
@@ -292,7 +287,7 @@ public:
 
         positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
 
-        missionStartTime_ = Core::END_OF_TIME; // Set to end of time to keep the mission from starting
+        //missionStartTime_ = Core::END_OF_TIME; // Set to end of time to keep the mission from starting
 
     }
 
@@ -304,12 +299,30 @@ public:
     }
 
     /**
-     * * @brief Used to start the mission at a given time. This will put the vehicle into idle mode 
+     * @brief Current time of the mission.
+     */
+    Core::Time_Source& getMissionTime() {
+        return missionTime_;
+    }
+
+    /**
+     * * @brief Used to start the mission. The given time is the time to which the mission time is set to.
      */
     void beginMission(int64_t startTime) {
         missionBeginTrigger_ = true;
         missionState_ = MissionState::MissionState_Idle;
         missionStartTime_ = startTime;
+        missionTime_.setTime(startTime); // Set the mission time to the start time
+        actuatorsEnabled_ = false; // Disable actuators
+        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
+    }
+
+    void resetMission() {
+        missionBeginTrigger_ = false;
+        //missionStartTime_ = Core::END_OF_TIME; // Set to end of time to keep the mission from starting
+        actuatorsEnabled_ = false; // Disable actuators
+        missionState_ = MissionState::MissionState_Idle;
+        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
     }
 
     bool getActuatorsEnabled() {
@@ -360,6 +373,8 @@ public:
             break;
         }
 
+        //missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time to the control system
+
     }
 
 
@@ -367,10 +382,28 @@ private:
 
     void missionIdle() {
 
+        if (!missionBeginTrigger_) {
+            missionTime_.setTime(0); // Set the mission time to the start time
+            actuatorsEnabled_ = false; // Disable actuators
+            return; // Do not do anything if the mission has not started yet
+        }
+
         actuatorsEnabled_ = false; // Disable actuators
         positionSetpointTopic_.publish(positionSetpoint_); // Publish the setpoint to the control system
 
         posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
+
+        auto distance = positionIs_.magnitude(3, 5); // Get the distance to the origin
+        auto vel = positionIs_.magnitude(0, 2); // Get the velocity of the vehicle
+
+        if (distance > 0.5 || vel > 0.5) { // If the vehicle is moving or not at the origin, we will delay the mission start
+            missionTime_.setTime(missionStartTime_);
+        }
+
+        if (missionBeginTrigger_ && missionTime_.NOW() > startStartupTime_) {
+            missionState_ = MissionState::MissionState_Startup; // Go to startup mode
+            //missionBeginTrigger_ = false; // Reset the mission begin trigger
+        }
 
     }
 
@@ -382,11 +415,17 @@ private:
         hoverModeInitialised_ = false; // Reset hover mode initialisation
         descentModeInitialised_ = false; // Reset descent mode initialisation
 
+        if (missionTime_.NOW() > startHoverTime_) {
+            missionState_ = MissionState::MissionState_Hover; // Go to hover mode
+            //hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
+        }
+
     }
     
     void missionHover() {
 
         float dTime = Core::NOW() - hoverModeLastUpdate_;
+        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
 
         if (!hoverModeInitialised_) {
             // Set the setpoint to the current position and velocity of the vehicle
@@ -441,13 +480,11 @@ private:
 
     }
 
-
 };
-
 MissionGuidanceTask missionGuidanceTask;
 
 /**
- * This class takes care of enablign, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
+ * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
  */
 class VehicleSafetyAndControlTask : public Core::Task_Periodic
 {
@@ -468,13 +505,16 @@ private:
 
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr;
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attEstSubr;
+
+    Core::Simple_Subscriber<Telecommand> telecommandSubr;
     
     VehicleMode vehicleMode_ = VehicleMode::VehicleMode_Startup;
     SensoryState sensoryState_;
-
     FailureState failureState_;
 
     bool allSystemsInitialised_ = false; // If all systems are initialised or not. This is set to true when all systems are initialised.
+
+    bool simulationMode_ = false; // If the vehicle is in simulation mode or not. This is set to true when the vehicle is in simulation mode.
 
 
 public:
@@ -495,7 +535,24 @@ public:
         failureState_.sensorFailure = false;
         failureState_.positionOutOfBounds = false;
         failureState_.attitudeOutOfBounds = false;
+        failureState_.radioConnectionLoss = false;
 
+    }
+
+    VehicleMode getVehicleMode() {
+        return vehicleMode_;
+    }
+
+    SensoryState getSensoryState() {
+        return sensoryState_;
+    }
+
+    FailureState getFailureState() {
+        return failureState_;
+    }
+
+    bool simulationModeEnabled() {
+        return simulationMode_;
     }
 
     void taskInit() override
@@ -508,13 +565,17 @@ public:
         posEstSubr.subscribe(posEstTask.getStateEstTopic());
         attEstSubr.subscribe(imuTask.getAttitudeEstTopic());
 
+        telecommandSubr.subscribe(telecommandTopic);
+
     }
 
     void taskThread() override {
 
+        handleTelecommands();
+
         if (!systemsInitialised()) {
             starshipTVC.enableActuators(false); // Disable actuators
-            vehicleShutdownControl(); // Disable everything
+            vehicleShutdownControl(true); // Disable everything
             return; // Wait until all systems are initialised
         }
 
@@ -522,6 +583,83 @@ public:
         
         auto vehicleReady = vehicleIsReady();
         vehicleShutdownControl(!vehicleReady);
+
+    }
+
+    void handleTelecommands() {
+
+        if (!telecommandSubr.isDataNew()) return; // No new telecommand data
+
+        auto telecommand = telecommandSubr.getItem();
+
+        switch (telecommand.type)
+        {
+        case TelecommandType::Telecommand_SystemReset:
+            if (telecommand.paramInt == 0xC5) { //Validate. 
+
+                vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to startup
+                allSystemsInitialised_ = false; // Reset the system initialisation flag
+                starshipTVC.enableActuators(false); // Disable actuators
+                vehicleShutdownControl(true); // Disable everything
+                missionGuidanceTask.resetMission();
+                clearFailures();
+
+                starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+
+                LOG_MSG("System reset telecommand\n"); // Log the system reset
+
+            }
+            break;
+
+        case TelecommandType::Telecommand_MissionBegin:
+
+            if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
+
+                int64_t startTime = int64_t(telecommand.paramInt) * Core::MILLISECONDS; // Get the start time from the telecommand
+
+                missionGuidanceTask.beginMission(startTime); // Start the mission at the current time
+
+                vehicleMode_ = VehicleMode::VehicleMode_Running; // Vehicle is now running and will do the mission
+
+                LOG_MSG("Mission begin telecommand\n"); // Log the mission begin
+
+                if (!simulationMode_) {
+                    starshipTVC.enableMotors(true); // Enable actuators
+                } else {
+                    starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+                }
+
+            }
+            break;
+
+        case TelecommandType::Telecommand_SimulationMode:
+
+            if (telecommand.paramInt == 0xA9) { //Validate. 
+
+                simulationMode_ = !simulationMode_; // Toggle simulation mode
+
+                if (simulationMode_) {
+
+                    starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+                    
+                } else {
+
+
+
+                    // Reset the system to normal mode
+                    vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to startup
+                    allSystemsInitialised_ = false; // Reset the system initialisation flag
+                    starshipTVC.enableActuators(false); // Disable actuators
+                    vehicleShutdownControl(true); // Disable everything
+                }
+
+            }
+
+            break;
+        
+        default:
+            break;
+        }
 
     }
 
@@ -556,12 +694,19 @@ public:
         }
 
         allSystemsInitialised_ = true; // Set all systems initialised to true
+        vehicleMode_ = VehicleMode::VehicleMode_Ready; // Set the vehicle mode to safe
 
         return true;
 
     }
 
     void checkForFailures() {   
+
+        //Check radio for a connection loss with the ground station
+        if (!networkNode.isNodeReachable(0)) {
+            vehicleMode_ = VehicleMode::VehicleMode_Failure;
+            failureState_.radioConnectionLoss = true;
+        } 
 
         //Check sensor for data timeout which indicates a failure
 
@@ -676,6 +821,17 @@ public:
             && !failureState_.attitudeOutOfBounds
             && vehicleMode_ != VehicleMode::VehicleMode_Failure
         ) {
+
+            if (
+                vehicleMode_ == VehicleMode::VehicleMode_Startup
+                || vehicleMode_ == VehicleMode::VehicleMode_Failure
+            ) {
+                vehicleMode_ = VehicleMode::VehicleMode_Ready;
+            }
+
+            //vehicleMode_ = VehicleMode::VehicleMode_Ready; // Set the vehicle mode to ready
+
+            //vehicleMode_ = VehicleMode::VehicleMode_Ready; // Set the vehicle mode to ready
             return true;
         }
 
@@ -686,6 +842,7 @@ public:
         
         if (shutdown) {
             starshipTVC.enableActuators(false); // Enable actuators
+            posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             return;
         }
 
@@ -699,6 +856,13 @@ public:
         failureState_.positionFailure = false;
         failureState_.positionOutOfBounds = false;
         failureState_.attitudeOutOfBounds = false;
+        sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
+        sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
+        sensoryState_.mag = TelemetrySensor::TelemetrySensor_Init;
+        sensoryState_.gnss = TelemetrySensor::TelemetrySensor_Init;
+        sensoryState_.attitudeKF = TelemetrySensor::TelemetrySensor_Init;
+        sensoryState_.positionKF = TelemetrySensor::TelemetrySensor_Init;
+        allSystemsInitialised_ = false; // Reset the system initialisation flag
     }
 
 
@@ -706,7 +870,55 @@ public:
 VehicleSafetyAndControlTask vehicleSafetyAndControlTask;
 
 
+class CommsSystemStateTask : public Core::Task_Periodic
+{
+private:
 
+    
+
+public:
+
+    CommsSystemStateTask() : Task_Periodic("Comms System State", 0.5*Core::SECONDS)
+    {
+        Core::getSystemScheduler().addTask(*this);
+        //setPriority(500);
+    }
+
+    void taskInit() override
+    {
+        
+        
+
+    }
+
+    void taskThread() override 
+    {
+
+        auto vehicleMode = vehicleSafetyAndControlTask.getVehicleMode();
+        auto missionMode = missionGuidanceTask.getMissionState();
+        auto sensoryState = vehicleSafetyAndControlTask.getSensoryState();
+        auto failureState = vehicleSafetyAndControlTask.getFailureState();
+
+        auto missionTime = missionGuidanceTask.getMissionTime().NOW(); // Get the mission time
+
+        auto simulationMode = vehicleSafetyAndControlTask.simulationModeEnabled(); // Get the simulation mode
+
+        VehicleState vehicleState;
+        vehicleState.mode = vehicleMode;
+        vehicleState.missionState = missionMode;
+        vehicleState.sensoryState = sensoryState;
+        vehicleState.failureState = failureState;
+        vehicleState.missionTime = missionTime; // Get the mission time
+        vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
+
+        vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
+
+
+    }
+
+
+};
+CommsSystemStateTask commsSystemStateTask;
 
 
 class DisplayTask : public Core::Task_Periodic
