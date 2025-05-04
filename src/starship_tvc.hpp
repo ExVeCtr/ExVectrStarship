@@ -38,6 +38,10 @@ namespace VCTR
             bool enableActuators_ = false;
             bool enableMotors_ = false;
 
+            float motorPowerLimit_ = 0.05;
+
+            int64_t motorEnableTime_ = 0;
+
             float tvcAngleLimit_Rad_;
             float servoAngleLimit_Rad_;
             float tvcThrustLimit_N_;
@@ -74,6 +78,10 @@ namespace VCTR
 
             void enableActuators(bool enableActuators) {
                 enableActuators_ = enableActuators;
+            }
+
+            void motorPowerLimit(float limit) {
+                motorPowerLimit_ = limit;
             }
 
             void enableMotors(bool enable) { enableMotors_ = enable; }

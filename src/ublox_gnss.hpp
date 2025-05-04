@@ -31,7 +31,7 @@ namespace VCTR
                 serialPort_ = &serialPort;
                 rxPin_ = rxPin;
                 txPin_ = txPin;
-                //usbPassthrough_ = false;// usbPassthrough;
+                //usbPassthrough_ = true;// usbPassthrough;
                 Core::getSystemScheduler().addTask(*this);
             }
         

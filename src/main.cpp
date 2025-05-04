@@ -33,6 +33,7 @@
 #include "ExVectrDSP/imu_attitude_ekf.hpp"
 #include "ExVectrDSP/imu_attitude_cf.hpp"
 #include "ExVectrDSP/imu_gps_position_kf.hpp"
+#include "ExVectrDSP/body_simulator.hpp"
 
 #include "ExVectrControl/control_rocket.hpp"
 
@@ -46,11 +47,14 @@
 
 #include "ExVectrPackets/packet_vehicle.hpp"
 
+#include "mission/mission_abstract.hpp"
+
 #include "subsystems.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
 
 #include "starship_tvc.hpp"
+#include "starship_flaps.hpp"
 
 #include "board_v_1_0.h"
 #include "starship_connections_v_1_0.h"
@@ -60,6 +64,9 @@
 #include "Adafruit_SSD1306.h"
 
 #include "datalink_sx1280.hpp"
+
+#include "mission/mission_rth.hpp"
+#include "mission/mission_waypoint.hpp"
 
 //#include "sx1280_driver/datalink_sx1280.hpp"
 
@@ -96,8 +103,11 @@ Platform::PinPWM servoTVCYPPin(TVC_SERVO_PIN_2);
 Platform::PinPWM servoTVCYNPin(TVC_SERVO_PIN_4);
 Platform::PinPWM motorCWPIN(MOTOR_PIN_CW);
 Platform::PinPWM motorCCWPIN(MOTOR_PIN_CCW);
-//ACTR::PWM_Output servoTest(servoTVCYNPin, ACTR::PWM_Output_Protocol::STANDARD);
-//ACTR::Servo_Control servoTest(40, -40, 10, 1, servoTVCXPPin, ACTR::PWM_Output_Protocol::STANDARD);
+
+Platform::PinPWM flapServoULPin(FLAP_SERVO_PIN_UL);
+Platform::PinPWM flapServoURPin(FLAP_SERVO_PIN_UR);
+Platform::PinPWM flapServoDLPin(FLAP_SERVO_PIN_DL);
+Platform::PinPWM flapServoDRPin(FLAP_SERVO_PIN_DR);
 
 
 
@@ -113,7 +123,9 @@ DSP::TopicCoordTransform<float> accTransformTopic;
 DSP::TopicCoordTransform<float> magTransformTopic;
 
 DSP::IMUAttitudeEKFTask imuTask(1*Core::MILLISECONDS);
-DSP::IMUGPSPositionKalmanTask posEstTask(100*Core::MILLISECONDS);
+DSP::IMUGPSPositionKalmanTask posEstTask(10*Core::MILLISECONDS);
+
+DSP::BodySimulator bodySimulator(1.0, {0.044, 0.044, 0.004});
 
 //DSP::Calibrator_Magnetometer magCalibrator;
 //DSP::Calibrator_Gyroscope gyroCalibrator;
@@ -132,11 +144,12 @@ Core::Topic<Net::PacketPosition> positionDataTopic;
 Core::Topic<uint8_t> connections;
 
 /*Core::Topic<VehicleMode> vehicleModeTopic;
-Core::Topic<MissionState> missionStateTopic;
+Core::Topic<MissionMode> MissionModeTopic;
 Core::Topic<SensoryState> sensoryStateTopic;
 Core::Topic<FailureState> failureStateTopic;
 Core::Topic<int64_t> missionTimeTopic;*/
 Core::Topic<VehicleState> vehicleStateTopic;
+Core::Topic<MissionState> missionStateTopic;
 
 Core::Topic<Telecommand> telecommandTopic;
 
@@ -147,11 +160,12 @@ Net::TransportTopic<Net::PacketPosition> positionDataTransport(11, UINT16_MAX, n
 Net::TransportTopic<Net::PacketGPS> gpsDataTransport(12, UINT16_MAX, networkNode, gpsDataTopic);
 
 /*Net::TransportTopic<VehicleMode> vehicleModeTransport(50, UINT16_MAX, networkNode, vehicleModeTopic);
-Net::TransportTopic<MissionState> missionStateTransport(51, UINT16_MAX, networkNode, missionStateTopic);
+Net::TransportTopic<MissionMode> MissionModeTransport(51, UINT16_MAX, networkNode, MissionModeTopic);
 Net::TransportTopic<SensoryState> sensoryStateTransport(52, UINT16_MAX, networkNode, sensoryStateTopic);
 Net::TransportTopic<FailureState> failureStateTransport(53, UINT16_MAX, networkNode, failureStateTopic);
 Net::TransportTopic<int64_t> missionTimeTransport(54, UINT16_MAX, networkNode, missionTimeTopic);*/
 Net::TransportTopic<VehicleState> vehicleStateTransport(50, UINT16_MAX, networkNode, vehicleStateTopic);
+Net::TransportTopic<MissionState> missionStateTransport(51, UINT16_MAX, networkNode, missionStateTopic);
 
 Net::TransportTopic<Telecommand> telecommandTransport(1000, UINT16_MAX, networkNode, telecommandTopic);
 
@@ -159,10 +173,15 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 
 
 //Control
-CTRL::ControlRocket controlRocket(1, 20, 0.5);
+CTRL::ControlRocket controlRocket(1, 15, 30*DEG_TO_RAD);
 
-CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN);
+CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, 15*3.14/180, 45*3.14/180, 15);
+CTRL::StarshipFlaps starshipFlaps(flapServoULPin, flapServoURPin, flapServoDLPin, flapServoDRPin);
 
+
+//Topics and data routing
+Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 7>>> attitudeTopicSwitch;
+Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>> positionTopicSwitch;
 
 //Functions
 
@@ -182,28 +201,30 @@ void attitudeTelemetryCallback(const Core::Timestamped<Math::Vector<float, 7>>& 
     //LOG_MSG("Attitude: %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", data.data(0), data.data(1), data.data(2), data.data(3), data.data(4), data.data(5), data.data(6));
     
 }
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attitudeTeleSubr(imuTask.getAttitudeEstTopic(), attitudeTelemetryCallback);
+Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attitudeTeleSubr(attitudeTopicSwitch.getTopic(), attitudeTelemetryCallback);
 
 void positionTelemetryCallback(const Core::Timestamped<Math::Vector<float, 6>>& data) {
 
     static int64_t lastSend = 0;
+    //LOG_MSG("Time: %f\n", double(data.timestamp)/Core::SECONDS);
     if (Core::NOW() - lastSend < 0.2*Core::SECONDS) return;
     lastSend = Core::NOW();
 
     Net::PacketPosition packet({
-        data.data(0), data.data(1), data.data(2)
-    }, {
         data.data(3), data.data(4), data.data(5)
+    }, {
+        data.data(0), data.data(1), data.data(2)
     });
+    packet.hAccuracy = sqrt(posEstTask.getCovariance()(3, 3) * posEstTask.getCovariance()(3, 3) + posEstTask.getCovariance()(4, 4) * posEstTask.getCovariance()(4, 4))/1000;
+    packet.vAccuracy = posEstTask.getCovariance()(5, 5)/1000;
     positionDataTopic.publish(packet);
 
 }
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> positionTeleSubr(posEstTask.getStateEstTopic(), positionTelemetryCallback);
+Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> positionTeleSubr(positionTopicSwitch.getTopic(), positionTelemetryCallback);
 
 void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData>& data) {
 
     static int64_t lastSend = 0;
-    static uint8_t counter = 0;
     if (Core::NOW() - lastSend < 1*Core::SECONDS) return;
     lastSend = Core::NOW();
 
@@ -215,6 +236,9 @@ void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData>& data) {
     packet.velocity[1] = data.data.velocity(1);
     packet.velocity[2] = data.data.velocity(2);
     packet.numSats = data.data.numSats;
+    packet.positionAccuracy = data.data.positionCov(0, 0);
+    packet.altitudeAccuracy = data.data.positionCov(2, 2);
+    packet.velocityAccuracy = data.data.velocityCov(0, 0);
 
     gpsDataTopic.publish(packet);
 
@@ -223,265 +247,107 @@ Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssTeleSubr(
 
 
 
-class MissionGuidanceTask : public Core::Task_Periodic
+class MagnetometerCalibrationTask : public Core::Task_Periodic
 {
 private:
 
-    Core::Time_Source missionTime_;
+    Core::Buffer_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>, 10> magSubr;
 
-    /// @brief In form: [V, P] with V and P as 3D vectors in reference frame.
-    Core::Topic<Math::Vector<float, 6>> positionSetpointTopic_;
-    Math::Vector<float, 6> positionSetpoint_;
+    bool magCalibrationEnabled_ = false; // If the magnetometer calibration has started or not. This is set to true when the magnetometer calibration has started.
 
-    Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> positionIsSubr_;
-    Math::Vector<float, 6> positionIs_;
+    Math::Matrix<float, 4, 4> xTx_;
+    Math::Matrix<float, 4, 1> xTy_;
 
-    int64_t missionStartTime_ = -60 * Core::SECONDS;
+    Math::Vector<float, 3> magBias_ = {0, 0, 0}; // The bias of the magnetometer in sensor frame.
+    float magScale_ = 1; // The scale of the magnetometer in all axis.
 
-    int64_t startStartupTime_ = 0; // When the vehicle goes into startup. (Actuators enable and ready, vehicle remains at start position. This is usually negative)
-
-    int64_t startDescentTime_ = 0; // When the vehicle goes into descent mode. (descends until landing threshold is met. Usually at time 0)
-    float ascentRate_ = 0; // How fast the vehicle should go up in m/s.
-
-    int64_t startHoverTime_ = 0; // When the vehicle goes into hover mode. (flys to position and hovers. Usually at time 0)
-    float hoverAltitude_ = 0; // The altitude the vehicle should hover at in m.
-
-
-    float landingThresholdDistance_ = 0; // If the vehicle set position is further down than this for a certain time, it will be considered as landed and the mission will be finished.
-    int64_t landingThresholdTime_ = 0; // How long the vehicle has to be below the landing threshold distance to be considered as landed.
-    float descentRate_ = 0; // How fast the vehicle should go down in m/s.
-    int64_t landingThresMetTime_ = 0; // When the vehicle is below the landing threshold distance.
-
-
-    bool missionBeginTrigger_ = false; // Trigger for the mission start. This is set to true when the vehicle can begin the mission.
-    
-    MissionState missionState_ = MissionState::MissionState_Idle;
-
-    bool actuatorsEnabled_ = false; // If the actuators are enabled or not. This is set to true when the vehicle is in startup or hover mode.
-
-    bool hoverModeInitialised_ = false; // If the hover mode is initialised or not. This is set to true when the vehicle is in hover mode.
-    int64_t hoverModeLastUpdate_ = 0; // When the vehicle goes into hover mode. (flys to position and hovers. Usually at time 0)
-
-    bool descentModeInitialised_ = false; // If the descent mode is initialised or not. This is set to true when the vehicle is in descent mode.
-    int64_t descentModeLastUpdate_ = 0; // When the vehicle goes into descent mode. (descends until landing threshold is met)
+    float magneticFieldStrength_ = 50e-6; // The strength of the magnetic field in Tesla. This is used to scale the magnetometer data to the correct values.
 
 
 public:
 
-    MissionGuidanceTask() : Task_Periodic("Mission Guidance", 0.1*Core::SECONDS)
+    MagnetometerCalibrationTask() : Task_Periodic("Magnetometer Calibration", 0.1*Core::SECONDS)
     {
-
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
-
-        startStartupTime_ = -5*Core::SECONDS;
-
-        startHoverTime_ = 0*Core::SECONDS;
-        ascentRate_ = 0.5; // m/s
-        hoverAltitude_ = 1.0; // m
-
-        startDescentTime_ = 10*Core::SECONDS;
-        descentRate_ = 0.2; // m/s
-        landingThresholdDistance_ = 0.5; // m
-        landingThresholdTime_ = 5*Core::SECONDS; // s
-
-        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
-
-        //missionStartTime_ = Core::END_OF_TIME; // Set to end of time to keep the mission from starting
-
+        setPaused(true);
     }
 
-    /**
-     * @brief Current state of the mission.
-     */
-    MissionState getMissionState() {
-        return missionState_;
+    void beginCalibration() {
+        magCalibrationEnabled_ = true; // Set the magnetometer calibration to true
+        resetCalibration();
+        setPaused(false); // Start the task
     }
 
-    /**
-     * @brief Current time of the mission.
-     */
-    Core::Time_Source& getMissionTime() {
-        return missionTime_;
+    void endCalibration() {
+        magCalibrationEnabled_ = false; // Set the magnetometer calibration to false
+        setPaused(true); // Stop the task
     }
 
-    /**
-     * * @brief Used to start the mission. The given time is the time to which the mission time is set to.
-     */
-    void beginMission(int64_t startTime) {
-        missionBeginTrigger_ = true;
-        missionState_ = MissionState::MissionState_Idle;
-        missionStartTime_ = startTime;
-        missionTime_.setTime(startTime); // Set the mission time to the start time
-        actuatorsEnabled_ = false; // Disable actuators
-        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
+    Math::Vector<float, 3> getMagBias() const {
+        return magBias_; // Get the bias of the magnetometer in sensor frame.
     }
 
-    void resetMission() {
-        missionBeginTrigger_ = false;
-        //missionStartTime_ = Core::END_OF_TIME; // Set to end of time to keep the mission from starting
-        actuatorsEnabled_ = false; // Disable actuators
-        missionState_ = MissionState::MissionState_Idle;
-        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
+    const float getMagScale() const {
+        return magScale_; // Get the scale of the magnetometer in all axis.
     }
-
-    bool getActuatorsEnabled() {
-        return actuatorsEnabled_;
-    }
-
 
     void taskInit() override
     {
+        magSubr.subscribe(qmc.getMagTopic()); // Subscribe to the magnetometer topic
+        resetCalibration(); // Set the matricies to the starting values
+
+    }
+
+    void taskThread() override {
+
+        for (int i = 0; i < magSubr.size(); i++) {
+            updateCalib(magSubr[i].data.val); // Update the calibration with the magnetometer data
+        }
+
+        if (magSubr.size() > 0) {
+
+            auto beta = xTx_.inverse() * xTy_; // Calculate the beta vector from the xTx and xTy matrices
+            magBias_ = {beta(0), beta(1), beta(2)}; // Get the bias from the beta vector
+            magBias_ = magBias_ * 0.5; // Scale the bias to the correct values
+
+            magScale_ = sqrt(beta(3) + magBias_(0)*magBias_(0) + magBias_(1)*magBias_(1) + magBias_(2)*magBias_(2)); // Get the scale from the beta vector
+
+            LOG_MSG("Magnetometer bias: %.3f %.3f %.3f\n", magBias_(0), magBias_(1), magBias_(2)); // Print the bias to the console
+            LOG_MSG("Magnetometer scale: %.3f\n", magScale_); // Print the scale to the console
+
+        }
+
+        magSubr.clear();
+
+        if (!magCalibrationEnabled_) {
+            setPaused(true); // Pause the task if the calibration is not enabled
+        }
+
+    }
+
+    void updateCalib(const Math::Vector<float, 3>& magData) {
         
-        controlRocket.subscribeSetpoint(positionSetpointTopic_);
-        positionIsSubr_.subscribe(posEstTask.getStateEstTopic());
+        Math::Vector<float, 4> mag4 = {magData(0), magData(1), magData(2), 1}; // Convert the magnetometer data to a 4D vector
+        xTx_ = xTx_ + mag4 * mag4.transpose(); // Update the xTx matrix with the magnetometer data
+
+        auto magSq = magData(0)*magData(0) + magData(1)*magData(1) + magData(2)*magData(2); // Convert the magnetometer data to a 4D vector
+        xTy_ = xTy_ + mag4 * magSq; // Update the xTy matrix with the magnetometer data
 
     }
 
-    void taskThread() override 
-    {
-
-        if (positionIsSubr_.isDataNew()) {
-            positionIs_ = positionIsSubr_.getItem().data;
-        }
-
-        switch (missionState_)
-        {
-        case MissionState::MissionState_Idle:
-            missionIdle();
-            break;
-
-        case MissionState::MissionState_Startup:
-            missionStartup();
-            break;
-        
-        case MissionState::MissionState_Hover:
-            missionHover();
-            break;
-
-        case MissionState::MissionState_Descent:
-            missionDescent();
-            break;
-
-        case MissionState::MissionState_Landed:
-            missionLanded();
-            break;
-        
-        default:
-            missionState_ = MissionState::MissionState_Idle;
-            missionBeginTrigger_ = false;
-            break;
-        }
-
-        //missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time to the control system
-
+    void resetCalibration() {
+        xTx_ = 0;
+        xTy_ = 0;
     }
 
-
-private:
-
-    void missionIdle() {
-
-        if (!missionBeginTrigger_) {
-            missionTime_.setTime(0); // Set the mission time to the start time
-            actuatorsEnabled_ = false; // Disable actuators
-            return; // Do not do anything if the mission has not started yet
-        }
-
-        actuatorsEnabled_ = false; // Disable actuators
-        positionSetpointTopic_.publish(positionSetpoint_); // Publish the setpoint to the control system
-
-        posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
-
-        auto distance = positionIs_.magnitude(3, 5); // Get the distance to the origin
-        auto vel = positionIs_.magnitude(0, 2); // Get the velocity of the vehicle
-
-        if (distance > 0.5 || vel > 0.5) { // If the vehicle is moving or not at the origin, we will delay the mission start
-            missionTime_.setTime(missionStartTime_);
-        }
-
-        if (missionBeginTrigger_ && missionTime_.NOW() > startStartupTime_) {
-            missionState_ = MissionState::MissionState_Startup; // Go to startup mode
-            //missionBeginTrigger_ = false; // Reset the mission begin trigger
-        }
-
-    }
-
-    void missionStartup() {
-
-        actuatorsEnabled_ = true; // Enable actuators
-        posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator. We want to see if the system is stable.
-
-        hoverModeInitialised_ = false; // Reset hover mode initialisation
-        descentModeInitialised_ = false; // Reset descent mode initialisation
-
-        if (missionTime_.NOW() > startHoverTime_) {
-            missionState_ = MissionState::MissionState_Hover; // Go to hover mode
-            //hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
-        }
-
-    }
-    
-    void missionHover() {
-
-        float dTime = Core::NOW() - hoverModeLastUpdate_;
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
-
-        if (!hoverModeInitialised_) {
-            // Set the setpoint to the current position and velocity of the vehicle
-            positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // In form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
-            hoverModeInitialised_ = true; // Set hover mode initialised to true
-            dTime = 0; // Reset dTime to 0
-        }
-
-        actuatorsEnabled_ = true;   
-
-        if (positionSetpoint_(5) < hoverAltitude_)
-            positionSetpoint_(5) += dTime*ascentRate_; // Update the setpoint position in the reference frame
-        
-        if (positionSetpoint_(5) > hoverAltitude_)
-            positionSetpoint_(5) = hoverAltitude_; // Limit the setpoint position to the hover altitude
-
-        if (missionTime_.NOW() > startDescentTime_) {
-            missionState_ = MissionState::MissionState_Descent; // Go to descent mode
-            descentModeInitialised_ = false; // Reset descent mode initialisation
-        }
-
-    }
-
-    void missionDescent() {
-
-        float dTime = Core::NOW() - descentModeLastUpdate_;
-
-        if (!descentModeInitialised_) {
-            // Set the setpoint to the current position and velocity of the vehicle
-            descentModeInitialised_ = true; // Set descent mode initialised to true
-            dTime = 0; // Reset dTime to 0
-        }
-
-        actuatorsEnabled_ = true;   
-
-        positionSetpoint_(5) -= dTime*descentRate_; // Update the setpoint position in the reference frame
-        
-        if (positionSetpoint_(5) - positionIs_(5) > landingThresholdDistance_) { //We keep updateting the threshold time. We stop when the vehicle is above the threshold distance. This triggers the start of the timer.
-            landingThresMetTime_ = Core::NOW(); // Set the time when the landing threshold was met
-        } 
-
-        if (Core::NOW() - landingThresMetTime_ > landingThresholdTime_) { // If the vehicle is below the landing threshold distance for a certain time, we consider it as landed.
-            missionState_ = MissionState::MissionState_Landed; // Go to landed mode
-        }
-
-    }
-
-    void missionLanded() {
-
-        actuatorsEnabled_ = false; // Disable actuators
-        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
-
-    }
 
 };
-MissionGuidanceTask missionGuidanceTask;
+MagnetometerCalibrationTask magCalibTask;
+
+
+
+MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
@@ -493,10 +359,10 @@ private:
     const int64_t DATA_TIMEOUT = 0.5*Core::SECONDS;
 
     const float POSITION_OUTOFBOUNDS_STATIONARY = 2.0f; // m
-    const float ANGLE_OUTOFBOUNDS_STATIONARY = 10*DEG_TO_RAD; // rad
+    const float ANGLE_OUTOFBOUNDS_STATIONARY = 20*DEG_TO_RAD; // rad
 
     const float POSITION_OUTOFBOUNDS_FLIGHT = 20.0f; // m
-    const float ANGLE_OUTOFBOUNDS_FLIGHT = 45*DEG_TO_RAD; // rad
+    const float ANGLE_OUTOFBOUNDS_FLIGHT = 70*DEG_TO_RAD; // rad
 
     Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr;
     Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> gyroSubr;
@@ -512,14 +378,26 @@ private:
     SensoryState sensoryState_;
     FailureState failureState_;
 
+    bool vehicleArmed_ = false; // If the vehicle is armed or not. This is set to true when the vehicle is armed.
+
     bool allSystemsInitialised_ = false; // If all systems are initialised or not. This is set to true when all systems are initialised.
 
     bool simulationMode_ = false; // If the vehicle is in simulation mode or not. This is set to true when the vehicle is in simulation mode.
 
+    size_t missionSelection_ = 0; // The index of the currently selected mission.
+    Core::ListArray<MissionAbstract*> missionList_;
+
+    MissionRTH defaultMission_; // The default mission is the return to home mission.
+
+    MissionAbstract& mission_;
+
 
 public:
 
-    VehicleSafetyAndControlTask() : Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS)
+    VehicleSafetyAndControlTask() : 
+        Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS),
+        defaultMission_(imuTask.getAttitudeEstTopic(), posEstTask.getStateEstTopic(), {0, 0, 0}),
+        mission_(defaultMission_)
     {
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
@@ -536,6 +414,8 @@ public:
         failureState_.positionOutOfBounds = false;
         failureState_.attitudeOutOfBounds = false;
         failureState_.radioConnectionLoss = false;
+
+        //mission_ = defaultMission_; // Set the mission to the default mission
 
     }
 
@@ -555,6 +435,10 @@ public:
         return simulationMode_;
     }
 
+    bool isVehicleArmed() {
+        return vehicleArmed_;
+    }
+
     void taskInit() override
     {
         
@@ -562,10 +446,14 @@ public:
         gyroSubr.subscribe(gyroTransformTopic.getOutputTopic());
         magSubr.subscribe(magTransformTopic.getOutputTopic());
         baroSubr.subscribe(bme.getBaroTopic());
-        posEstSubr.subscribe(posEstTask.getStateEstTopic());
-        attEstSubr.subscribe(imuTask.getAttitudeEstTopic());
+        posEstSubr.subscribe(positionTopicSwitch.getTopic());
+        attEstSubr.subscribe(attitudeTopicSwitch.getTopic());
 
         telecommandSubr.subscribe(telecommandTopic);
+
+        missionList_.append(&defaultMission_); // Add the mission guidance task to the list of missions
+
+        //mission_ = missionGuidanceTask;
 
     }
 
@@ -580,9 +468,57 @@ public:
         }
 
         checkForFailures();
+
+        handleVehicleMissionControl(); // Handle the vehicle mission control
         
         auto vehicleReady = vehicleIsReady();
         vehicleShutdownControl(!vehicleReady);
+
+        vehicleArmingControl();
+
+    }
+
+    void handleVehicleMissionControl() {
+
+        MissionState missionState = mission_.getMissionState();
+        missionState.missionIndex = missionSelection_; // Set the mission index to the current mission index
+
+        if (missionState.missionMode == MissionMode::MissionMode_Idle) {
+            posEstTask.enableZeroingMode(false);
+            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+            controlRocket.enableControl(false); // Disable control for the rocket
+        } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
+            posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
+            imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
+            bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
+            controlRocket.enableControl(false); // Disable control for the rocket
+        } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
+            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+            controlRocket.enableControl(false); // Disable control for the rocket
+        } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
+            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+            controlRocket.enableControl(true); // Disable control for the rocket
+        } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
+            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+            controlRocket.enableControl(false); // Disable control for the rocket
+
+        }
+
+        missionStateTopic.publish(missionState); // Publish the mission state to the control system
+
+        if (mission_.missionEnd() && missionSelection_ != 0) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
+            missionSelection_ = 0;
+            mission_.resetMission(); // Reset the mission
+            mission_ = defaultMission_; // Set the mission to the default mission
+            mission_.beginMission(Core::NOW()); // Start the default mission
+        }
 
     }
 
@@ -594,6 +530,75 @@ public:
 
         switch (telecommand.type)
         {
+
+        case TelecommandType::Telecommand_CalibStart:
+            if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
+
+                if (telecommand.paramInt > 0) {
+                    magCalibTask.beginCalibration(); // Start the mag calibration
+                    starshipTVC.enableActuators(false); // Disable actuators
+
+                    vehicleMode_ = VehicleMode::VehicleMode_SensorCalib;
+                    LOG_MSG("Mag calibration started\n"); // Log the mag calibration start
+                } else {
+                    magCalibTask.endCalibration(); // End the mag calibration
+                    vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to startup
+                    LOG_MSG("Mag calibration Ended\n"); // Log the mag calibration start
+                }
+
+            } 
+            break;
+
+        case TelecommandType::Telecommand_CalibApply:
+            if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
+
+                LOG_MSG("Applying magnetometer calibration\n"); // Log the mag calibration apply
+
+                auto magScale = magCalibTask.getMagScale(); 
+                DSP::ValueCov<float, 3> magTransform;
+                magTransform.val = magCalibTask.getMagBias(); // Get the mag bias from the mag calibration task
+                magTransform.cov = {
+                    magScale, 0, 0,
+                    0, magScale, 0,
+                    0, 0, magScale
+                };
+
+                LOG_MSG("Saving this magnetometer bias: %.3f %.3f %.3f\n", magTransform.val(0), magTransform.val(1), magTransform.val(2)); // Print the bias to the console
+
+                if (memoryManager.writeItem(magTransform, MEMORY_KEY_MAGCALIB)) { // Save the mag transform matrix to memory
+                    //memoryManager.writeItem(magTransformTopic.getOutputTopic().getTransformMatrix(), MEMORY_KEY_MAGTRANSFORM); // Save the mag transform matrix to memory
+                    LOG_MSG("Magnetometer calib saved to memory\n"); // Log the mag transform matrix save
+                } else {
+                    LOG_MSG("Magnetometer calib not saved to memory\n"); // Log the mag transform matrix not saved
+                }
+
+                Math::Matrix<float, 3, 3> sensorToBody_ = {
+                    1, 0, 0,
+                    0, 1, 0,
+                    0, 0, 1
+                };
+                if (!memoryManager.readItem(sensorToBody_, MEMORY_KEY_MAGTRANSFORM)) { // Read the mag transform matrix from memory
+                    LOG_MSG("Magnetometer transform matrix not found in memory. Using identity matrix.\n"); // Log the mag transform matrix not found in memory
+                } else {
+                    LOG_MSG("Magnetometer transform matrix found in memory. Using it.\n"); // Log the mag transform matrix found in memory
+                }
+
+                magTransformTopic.setTransform(magTransform.cov * sensorToBody_, magTransform.val); // Set the transform matrix to the mag transform matrix
+
+                LOG_MSG("Mag calibration applied\n"); // Log the mag calibration apply
+
+            }
+            break;
+
+        case TelecommandType::Telecommand_Save:
+            if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
+
+                LOG_MSG("Saving EEPROM Memory!\n");
+                eeprom.transferFrom(internalMemory); // Transfer the internal memory to the EEPROM
+
+            } 
+            break;
+        
         case TelecommandType::Telecommand_SystemReset:
             if (telecommand.paramInt == 0xC5) { //Validate. 
 
@@ -601,8 +606,12 @@ public:
                 allSystemsInitialised_ = false; // Reset the system initialisation flag
                 starshipTVC.enableActuators(false); // Disable actuators
                 vehicleShutdownControl(true); // Disable everything
-                missionGuidanceTask.resetMission();
+                mission_.resetMission();
                 clearFailures();
+                posEstTask.setPositionReference();
+                bodySimulator.getPositionState() = {0, 0, 0, 0, 0, 0}; // Reset the position state to the origin
+                bodySimulator.getAttitudeState() = {0, 0, 0, 1, 0, 0, 0}; // Reset the attitude state to the origin
+                //bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
 
                 starshipTVC.enableMotors(false); // Disable actuators in simulation mode
 
@@ -611,13 +620,44 @@ public:
             }
             break;
 
+        case TelecommandType::Telecommand_Arm:
+            if (telecommand.paramInt == 0xA5) { //Validate. 
+
+                vehicleArmed_ = true;
+
+                LOG_MSG("System arm telecommand\n"); // Log the system arm
+
+            } else {
+
+                vehicleArmed_ = false; // Disarm the vehicle if the telecommand is not valid
+                LOG_MSG("System disarm telecommand\n"); // Log the system disarm
+
+            }
+            break;
+
+        case TelecommandType::Telecommand_MissionSelect:
+
+            if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
+
+                missionSelection_ = telecommand.paramInt; // Get the mission selection from the telecommand
+
+                mission_.resetMission(); // Reset the mission
+                mission_ = *missionList_[missionSelection_]; // Set the mission to the selected mission
+                mission_.resetMission(); // Reset the mission
+                controlRocket.subscribeSetpoint(mission_.set); // Subscribe to the control topic of the mission
+
+                LOG_MSG("Mission select telecommand\n"); // Log the mission select
+
+            }
+            break;
+
         case TelecommandType::Telecommand_MissionBegin:
 
             if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
 
-                int64_t startTime = int64_t(telecommand.paramInt) * Core::MILLISECONDS; // Get the start time from the telecommand
+                int64_t startTime = int64_t(telecommand.paramInt) * Core::SECONDS; // Get the start time from the telecommand
 
-                missionGuidanceTask.beginMission(startTime); // Start the mission at the current time
+                mission_.beginMission(startTime); // Start the mission at the current time
 
                 vehicleMode_ = VehicleMode::VehicleMode_Running; // Vehicle is now running and will do the mission
 
@@ -632,6 +672,20 @@ public:
             }
             break;
 
+        case TelecommandType::Telecommand_MissionAbort:
+
+            if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
+
+                missionSelection_ = 0;
+                mission_.resetMission(); // Reset the mission
+                mission_ = defaultMission_; // Set the mission to the default mission
+                mission_.beginMission(Core::NOW()); // Start the default mission
+
+                LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
+
+            }
+            break;
+
         case TelecommandType::Telecommand_SimulationMode:
 
             if (telecommand.paramInt == 0xA9) { //Validate. 
@@ -641,10 +695,25 @@ public:
                 if (simulationMode_) {
 
                     starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+
+                    positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic()); // Subscribe to the position topic of the body simulator
+                    attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic()); // Subscribe to the attitude topic of the body simulator
+                    
+                    bodySimulator.setTVCInputTopic(controlRocket.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), 30*DEG_TO_RAD, 20); // Subscribe to the TVC input topic
+
+                    //bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
+                    bodySimulator.getPositionState() = {0, 0, 0, 0, 0, 0}; // Reset the position state to the origin
+                    bodySimulator.getAttitudeState() = {0, 0, 0, 1, 0, 0, 0}; // Reset the attitude state to the origin
+
+                    bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
+
                     
                 } else {
 
+                    positionTopicSwitch.subscribe(posEstTask.getStateEstTopic()); // Subscribe to the position topic of the position estimator
+                    attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic()); // Subscribe to the attitude topic of the attitude estimator
 
+                    bodySimulator.setPaused(true);
 
                     // Reset the system to normal mode
                     vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to startup
@@ -654,7 +723,6 @@ public:
                 }
 
             }
-
             break;
         
         default:
@@ -667,31 +735,47 @@ public:
 
         if (allSystemsInitialised_) {
             return true;
+        } else {
+            vehicleMode_ = VehicleMode::VehicleMode_Startup;
         }
 
         if (!gnssSubr.isDataNew()) {
+            LOG_MSG("GNSS data not new\n");
+            sensoryState_.gnss = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
 
         if (!gyroSubr.isDataNew()) {
+            LOG_MSG("Gyro data not new\n");
+            sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
 
         if (!magSubr.isDataNew()) {
+            LOG_MSG("Mag data not new\n");
+            sensoryState_.mag = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
 
         if (!baroSubr.isDataNew()) {
+            LOG_MSG("Baro data not new\n");
+            sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
 
         if (!posEstSubr.isDataNew()) {
+            LOG_MSG("Position data not new\n");
+            sensoryState_.positionKF = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
 
         if (!attEstSubr.isDataNew()) {
+            LOG_MSG("Attitude data not new\n");
+            sensoryState_.attitudeKF = TelemetrySensor::TelemetrySensor_Init;
             return false;
         }
+
+        LOG_MSG("All systems initialised\n");
 
         allSystemsInitialised_ = true; // Set all systems initialised to true
         vehicleMode_ = VehicleMode::VehicleMode_Ready; // Set the vehicle mode to safe
@@ -760,45 +844,53 @@ public:
 
 
         //Check if any of the data is out of bounds which indicates a safety issue
+        auto missionMode = mission_.getMissionState().missionMode;
+        if (!mission_.getDisableKinematicSafety()) {
+            
+            bool stationary = false;
+            stationary |= (missionMode == MissionMode::MissionMode_Initialisation);
+            stationary |= (missionMode == MissionMode::MissionMode_Startup);
 
-        auto missionMode = missionGuidanceTask.getMissionState();
-        bool stationary = false;
-        stationary |= (missionMode == MissionState::MissionState_Idle);
-        stationary |= (missionMode == MissionState::MissionState_Landed);
+            auto position = posEstSubr.getItem().data;
+            Math::Quat<float> attitude = attEstSubr.getItem().data.block<4, 1>(3, 0);
 
-        auto position = posEstSubr.getItem().data;
-        Math::Quat<float> attitude = attEstSubr.getItem().data.block<4, 1>(3, 0);
+            auto zAxisBody = attitude.rotate(Math::Vector<float, 3>({0, 0, 1}));
 
-        auto zAxisBody = attitude.rotate(Math::Vector<float, 3>({0, 0, 1}));
+            auto startDistance = position.magnitude(3);
+            auto tilt = zAxisBody.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
 
-        auto startDistance = position.magnitude(3);
-        auto tilt = zAxisBody.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
+            if (stationary) {
 
-        if (stationary) {
+                if (startDistance > POSITION_OUTOFBOUNDS_STATIONARY) {
+                    failureState_.positionOutOfBounds = true;
+                    vehicleMode_ = VehicleMode::VehicleMode_Failure;
+                } 
 
-            if (startDistance > POSITION_OUTOFBOUNDS_STATIONARY) {
-                failureState_.positionOutOfBounds = true;
-                vehicleMode_ = VehicleMode::VehicleMode_Failure;
-            } 
+                if (tilt > ANGLE_OUTOFBOUNDS_STATIONARY && vehicleMode_ != VehicleMode::VehicleMode_SensorCalib) {
+                    failureState_.attitudeOutOfBounds = true;
+                    vehicleMode_ = VehicleMode::VehicleMode_Failure;
+                }
 
-            if (tilt > ANGLE_OUTOFBOUNDS_STATIONARY) {
-                failureState_.attitudeOutOfBounds = true;
-                vehicleMode_ = VehicleMode::VehicleMode_Failure;
-            }
+            } else {
 
-        } else {
+                if (startDistance > POSITION_OUTOFBOUNDS_FLIGHT) {
+                    failureState_.positionOutOfBounds = true;
+                    vehicleMode_ = VehicleMode::VehicleMode_Failure;
+                } 
 
-            if (startDistance > POSITION_OUTOFBOUNDS_FLIGHT) {
-                failureState_.positionOutOfBounds = true;
-                vehicleMode_ = VehicleMode::VehicleMode_Failure;
-            } 
+                if (tilt > ANGLE_OUTOFBOUNDS_FLIGHT && vehicleMode_ != VehicleMode::VehicleMode_SensorCalib) {
+                    failureState_.attitudeOutOfBounds = true;
+                    vehicleMode_ = VehicleMode::VehicleMode_Failure;
+                }
 
-            if (tilt > ANGLE_OUTOFBOUNDS_FLIGHT) {
-                failureState_.attitudeOutOfBounds = true;
-                vehicleMode_ = VehicleMode::VehicleMode_Failure;
             }
 
         }
+
+        //Auto disarm vehicle once landed.
+        if (missionMode == MissionMode::MissionMode_Finished) {
+            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in landed mode
+        } 
 
     }
 
@@ -820,6 +912,7 @@ public:
             && !failureState_.positionOutOfBounds
             && !failureState_.attitudeOutOfBounds
             && vehicleMode_ != VehicleMode::VehicleMode_Failure
+            && vehicleMode_ != VehicleMode::VehicleMode_SensorCalib
         ) {
 
             if (
@@ -842,11 +935,33 @@ public:
         
         if (shutdown) {
             starshipTVC.enableActuators(false); // Enable actuators
-            posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
+            //posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             return;
         }
 
-        starshipTVC.enableActuators(missionGuidanceTask.getActuatorsEnabled()); //Give mission guidance control over the actuators
+        starshipTVC.enableActuators(mission_.getActuatorsEnabled()); //Give mission guidance control over the actuators
+
+    }
+
+    void vehicleArmingControl() {
+
+        if (vehicleMode_ == VehicleMode::VehicleMode_Failure) {
+            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in failure mode
+        } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorCalib) {
+            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in sensor calibration mode
+        } else if (vehicleMode_ == VehicleMode::VehicleMode_Startup) {
+            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in startup mode
+        } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorInit) {
+            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in startup mode
+        } 
+
+        //LOG_MSG("Vehicle armed: %d\n", vehicleArmed_); // Log the vehicle armed state
+
+        if (vehicleArmed_) {
+            starshipTVC.motorPowerLimit(1.0);
+        } else {
+            starshipTVC.motorPowerLimit(0.1);
+        }
 
     }
 
@@ -856,6 +971,7 @@ public:
         failureState_.positionFailure = false;
         failureState_.positionOutOfBounds = false;
         failureState_.attitudeOutOfBounds = false;
+        failureState_.radioConnectionLoss = false;
         sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
         sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
         sensoryState_.mag = TelemetrySensor::TelemetrySensor_Init;
@@ -895,21 +1011,17 @@ public:
     {
 
         auto vehicleMode = vehicleSafetyAndControlTask.getVehicleMode();
-        auto missionMode = missionGuidanceTask.getMissionState();
         auto sensoryState = vehicleSafetyAndControlTask.getSensoryState();
         auto failureState = vehicleSafetyAndControlTask.getFailureState();
-
-        auto missionTime = missionGuidanceTask.getMissionTime().NOW(); // Get the mission time
 
         auto simulationMode = vehicleSafetyAndControlTask.simulationModeEnabled(); // Get the simulation mode
 
         VehicleState vehicleState;
         vehicleState.mode = vehicleMode;
-        vehicleState.missionState = missionMode;
         vehicleState.sensoryState = sensoryState;
         vehicleState.failureState = failureState;
-        vehicleState.missionTime = missionTime; // Get the mission time
         vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
+        vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed(); // Get the vehicle armed state
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 
@@ -965,9 +1077,8 @@ public:
         //display_.clearDisplay();
         display_.display();
 
-        attSub.subscribe(imuTask.getAttitudeEstTopic());
-
-        accSub.subscribe(posEstTask.getStateEstTopic());
+        attSub.subscribe(attitudeTopicSwitch.getTopic());
+        accSub.subscribe(positionTopicSwitch.getTopic());
 
         accelSub.subscribe(accTransformTopic.getOutputTopic());
 
@@ -1205,7 +1316,9 @@ public:
 
         auto magData = magSub.getItem().data.val;
 
-        for (size_t i = 0; i < 3; i++)
+
+
+        /*for (size_t i = 0; i < 3; i++)
         {
             if (magData[i][0] < magMin[i][0]) magMin[i][0] = magData[i][0];
             if (magData[i][0] > magMax[i][0]) magMax[i][0] = magData[i][0];
@@ -1219,7 +1332,7 @@ public:
 
         LOG_MSG("Mag max: ");
         magMax.printTo(Core::printM);
-        LOG_MSG("\n");
+        LOG_MSG("\n");*/
 
     }
 
@@ -1296,7 +1409,7 @@ void initialiseHardware() {
     //mpuDriver.enablePinInterrupt(mpuIntPin);
     //mpuDriver.ConfigDlpf(mpuDriver.DLPF_BANDWIDTH_250HZ_4kHz);
     mpuDriver.taskInit();
-    mpuDriver.ConfigDlpf(SNSR::MPU9250::DlpfBandwidth::DLPF_BANDWIDTH_184HZ);
+    mpuDriver.ConfigDlpf(SNSR::MPU9250::DlpfBandwidth::DLPF_BANDWIDTH_41HZ);
     mpuDriver.setInterval(250 * Core::MICROSECONDS); // 32kHz rate
     mpuDriver.setInitialised(true);
     mpuIntHandler.setCallback(&SNSR::MPU9250Driver::interruptHandler, mpuDriver);
@@ -1334,6 +1447,10 @@ void initialiseMemory() {
     DSP::ValueCov<float, 3> magCalibData;
     DSP::ValueCov<float, 3> gyroCalibData;
     DSP::ValueCov<float, 3> accCalibData;
+
+    Math::Matrix<float, 3, 3> magTransform;
+    Math::Matrix<float, 3, 3> gyroTransform;
+    Math::Matrix<float, 3, 3> accTransform;
 
     if (!memoryManager.readItem(magCalibData, MEMORY_KEY_MAGCALIB)) {
 
@@ -1374,9 +1491,36 @@ void initialiseMemory() {
 
     }
 
-    gyroTransformTopic.setTransform(gyroCalibData.cov, gyroCalibData.val);
-    accTransformTopic.setTransform(accCalibData.cov, accCalibData.val);
-    magTransformTopic.setTransform(magCalibData.cov, magCalibData.val);
+    if (!memoryManager.readItem(magTransform, MEMORY_KEY_MAGTRANSFORM)) {
+
+        LOG_MSG("No mag transform data found, creating new one\n");
+        magTransform = Math::Matrix<float, 3, 3>::eye();
+        memoryManager.allocateItem(magTransform, MEMORY_KEY_MAGTRANSFORM);
+        memoryManager.writeItem(magTransform, MEMORY_KEY_MAGTRANSFORM);
+
+    }
+
+    if (!memoryManager.readItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM)) {
+
+        LOG_MSG("No gyro transform data found, creating new one\n");
+        gyroTransform = Math::Matrix<float, 3, 3>::eye();
+        memoryManager.allocateItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM);
+        memoryManager.writeItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM);
+
+    }
+
+    if (!memoryManager.readItem(accTransform, MEMORY_KEY_ACCTRANSFORM)) {
+
+        LOG_MSG("No acc transform data found, creating new one\n");
+        accTransform = Math::Matrix<float, 3, 3>::eye();
+        memoryManager.allocateItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
+        memoryManager.writeItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
+
+    }
+
+    gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform, gyroCalibData.val);
+    accTransformTopic.setTransform(accCalibData.cov * accTransform, accCalibData.val);
+    magTransformTopic.setTransform(magCalibData.cov * magTransform, magCalibData.val);
 
     //Sync the internal memory with the EEPROM. This wont write anything if we ended up only reading.
     eeprom.transferFrom(internalMemory);
@@ -1387,7 +1531,7 @@ void initialiseMemory() {
         accCalibData.val = Math::Vector<float, 3>({0.161, -0.045, 0.8835});
         accCalibData.cov = Math::Matrix<float, 3, 3>({-1, 0, 0,
                                                         0, 1, 0,
-                                                        0, 0, -0.989});
+                                                        0, 0, -1});
         //memoryManager.writeItem(accCalibData, MEMORY_KEY_ACCCALIB);
 
         gyroCalibData.val = Math::Vector<float, 3>({0.185 * DEG_TO_RAD, 1.152 * DEG_TO_RAD, -0.426 * DEG_TO_RAD});
@@ -1419,6 +1563,12 @@ void initialiseMemory() {
         //accTransformTopic.setTransform(accCalibData.cov, accCalibData.val);
         //magTransformTopic.setTransform(magCalibData.cov, magCalibData.val);
 
+        /*memoryManager.writeItem(Math::Matrix<float, 3, 3>({
+            0, 0, -1,
+            1, 0, 0,
+            0, -1, 0
+        }), MEMORY_KEY_MAGTRANSFORM);*/
+
         eeprom.transferFrom(internalMemory);
 
     }
@@ -1440,11 +1590,20 @@ void initialiseTopicConnections() {
     posEstTask.setBaroInput(bme.getBaroTopic());
     posEstTask.setGNSSInput(gnss.getGNSSTopic());
 
-    controlRocket.subscribeAttitudeMeasurement(imuTask.getAttitudeEstTopic());
-    controlRocket.subscribePositionMeasurement(posEstTask.getStateEstTopic());
+    controlRocket.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
+    controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
     //controlRocket.subscribeSetpoint(positionSetpointTopic);
 
     starshipTVC.setTVCInputTopic(controlRocket.getTvcTopic());
+
+    bodySimulator.setPaused(true);
+
+    positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
+    attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
+
+
+    Math::Quat<float> accTilt({1, 0, 0}, -4*DEG_TO_RAD);
+    imuTask.setAccTiltCompensation(accTilt.to3x3RotMat());
 
 
 }

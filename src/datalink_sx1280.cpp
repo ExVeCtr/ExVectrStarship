@@ -1,3 +1,5 @@
+#include "ExVectrCore/print.hpp"
+
 #include "ExVectrCore/list_buffer.hpp"
 
 #include "ExVectrCore/topic.hpp"
@@ -344,7 +346,7 @@ namespace VCTR
             transmitBuffer_.removeFront(bufferSize); //Remove the data bytes from the buffer.*/
 
 
-            LOG_MSG("Finished making buffer. Sending data! Buffer length: %d\n", bufferSize);
+            VRBS_MSG("Finished making buffer. Sending data! Buffer length: %d\n", bufferSize);
 
             if (bufferSize > 0) {
                 lora_.transmit(buffer, bufferSize, 0, 12, NO_WAIT);

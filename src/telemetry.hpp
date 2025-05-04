@@ -74,12 +74,12 @@ namespace VCTR {
     /**
      * * @brief The state of the mission.
      */
-    enum MissionState : uint8_t {
-        MissionState_Idle, //Mission has not started and is waiting for the command.
-        MissionState_Startup, //Vehicle sits with everything enabled on the ground. This is used to check if the vehicle is stable and ready for takeoff.
-        MissionState_Hover, //Vehicle sets position to hover at a certain height for a given amount of time.
-        MissionState_Descent, //Vehicle decends at a given rate until the landing threshold is reached.
-        MissionState_Landed //Mission is finished and vehicle is landed.
+    enum MissionMode : uint8_t {
+        MissionMode_Idle, //Mission has not started and is waiting for the command.
+        MissionMode_Initialisation, //Mission is being initialised. Basically the sensor filters are stabilising and zeroing out the sensors.
+        MissionMode_Startup, //Vehicle sits with everything enabled on the ground. This is used to check if the vehicle is stable and ready for takeoff.
+        MissionMode_Running, //Vehicle mission is now active and running
+        MissionMode_Finished //Mission is finished.
     };
 
     /**
@@ -87,14 +87,27 @@ namespace VCTR {
      */
     struct VehicleState
     {
+        
         VehicleMode mode; // The current mode of the vehicle.
-        MissionState missionState; // The current state of the mission.
         SensoryState sensoryState; // The current state of the sensors.
         FailureState failureState; // The current state of the failures.
 
-        int64_t missionTime;
-
         bool simulationModeEnabled; // If the simulation mode is enabled or not. This is used for testing and debugging. In this mode the system will not use any sensors and will just run the control loop with simulated data.
+
+        bool armed; // If the vehicle is armed or not. This is used to disable dangerous systems (motors) and test the system without the risk of damaging it.
+
+    } __attribute__ ((packed));
+
+    /**
+     * * @brief All data related to the state of the mission
+     */
+    struct MissionState
+    {
+
+        float positionSetpoint[6]; // The current position setpoint of the vehicle in form: [Vx, Vy, Vz, Px, Py, Pz] in reference frame.
+        MissionMode missionMode; // The current state of the mission.
+        int64_t missionTime; // The current time of the mission.
+        uint8_t missionIndex; // The index of the current selected mission.
 
     } __attribute__ ((packed));
 

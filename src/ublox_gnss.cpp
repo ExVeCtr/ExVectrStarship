@@ -1,3 +1,5 @@
+#include "ExVectrCore/print.hpp"
+
 #include "ublox_gnss.hpp"
 
 using namespace VCTR;
@@ -131,23 +133,23 @@ void SNSR::UbloxSerialGNSS::taskInit() {
 
     if (usbPassthrough_) {
         LOG_MSG("GNSS Driver setup for gnss serial passthrough!...\n");
-        serialPort_->begin(38400);
+        serialPort_->begin(115200);
         return;
     }
 
     VRBS_MSG("Starting up gnss module...\n");
 
-    setupSerial(38400);
+    setupSerial(115200);
     if (!gnss_.begin(*serialPort_)) {
 
-        LOG_MSG("Failed to initialise GNSS module at 38400. Looks like its isnt setup yet. Attempting 9600...\n");
+        LOG_MSG("Failed to initialise GNSS module at 15200. Looks like its isnt setup yet. Attempting 9600...\n");
 
         setupSerial(9600);
         if (!gnss_.begin(*serialPort_)) {
-            LOG_MSG("Failed to initialise GNSS module at 9600. Looks like its isnt setup yet. Attempting 115200...\n");
-            setupSerial(115200);
+            LOG_MSG("Failed to initialise GNSS module at 9600. Looks like its isnt setup yet. Attempting 38400...\n");
+            setupSerial(38400);
             if (!gnss_.begin(*serialPort_)) {
-                LOG_MSG("Failed to initialise GNSS module at 115200. GNSS task will be paused and exit.\n");
+                LOG_MSG("Failed to initialise GNSS module at 38400. GNSS task will be paused and exit.\n");
                 setInitialised(false);
                 setPaused(true);
                 return;
@@ -162,29 +164,37 @@ void SNSR::UbloxSerialGNSS::taskInit() {
 
     VRBS_MSG("Configuring GNSS module...\n");
 
-    gnss_.setSerialRate(38400);
-    delay(10);
-    setupSerial(38400);
+    gnss_.setSerialRate(115200);
+    setupSerial(115200);
+    if (!gnss_.begin(*serialPort_)) {
 
-    
+        LOG_MSG("GNSS Failed to go into 115200 baud rate. This is very wierd...\n");
+        return;
+
+    }
+
     //LOG_MSG("GNSS Driver setup for gnss serial passthrough!\n");
     gnss_.softwareResetGNSSOnly();
-    gnss_.setUART1Output(COM_TYPE_UBX);
+    //gnss_.setUART1Output(COM_TYPE_UBX);
     gnss_.setNavigationFrequency(10);
     gnss_.setAutoPVT(true);
-    gnss_.setDynamicModel(DYN_MODEL_AIRBORNE2g);
-    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
-    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
+    gnss_.setDynamicModel(DYN_MODEL_AIRBORNE1g);
+    //gnss_.getProtocolVersion();
     gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_IMES);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_QZSS);
+    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
+    delay(1000);
     gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_SBAS);
+    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_QZSS);
+    //gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
     gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_BEIDOU);
 
-    gnss_.saveConfiguration();
-    
+    //gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
+    //gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
+    //gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
 
-    
+    //gnss_.factoryDefault();
+
+    gnss_.saveConfiguration();
 
     VRBS_MSG("GNSS Module configured.\n");
 
