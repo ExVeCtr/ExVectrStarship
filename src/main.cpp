@@ -389,15 +389,14 @@ private:
 
     MissionRTH defaultMission_; // The default mission is the return to home mission.
 
-    MissionAbstract& mission_;
+    MissionAbstract* mission_;
 
 
 public:
 
     VehicleSafetyAndControlTask() : 
         Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS),
-        defaultMission_(imuTask.getAttitudeEstTopic(), posEstTask.getStateEstTopic(), {0, 0, 0}),
-        mission_(defaultMission_)
+        defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 0})
     {
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
@@ -414,6 +413,8 @@ public:
         failureState_.positionOutOfBounds = false;
         failureState_.attitudeOutOfBounds = false;
         failureState_.radioConnectionLoss = false;
+
+        mission_ = &defaultMission_; // Set the mission to the default mission
 
         //mission_ = defaultMission_; // Set the mission to the default mission
 
@@ -452,6 +453,15 @@ public:
         telecommandSubr.subscribe(telecommandTopic);
 
         missionList_.append(&defaultMission_); // Add the mission guidance task to the list of missions
+        missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
+
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 3 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({3, 0, 1}, 1, 0.5, 2 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({3, 0, 2}, 1, 0.5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({0, 0, 1}, 1, 0.5, 2 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+
+        //missionWaypointTask.addWaypoint({0, 0, 100}, 10, 0.5, 1 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //mission
 
         //mission_ = missionGuidanceTask;
 
@@ -480,7 +490,7 @@ public:
 
     void handleVehicleMissionControl() {
 
-        MissionState missionState = mission_.getMissionState();
+        MissionState missionState = mission_->getMissionState();
         missionState.missionIndex = missionSelection_; // Set the mission index to the current mission index
 
         if (missionState.missionMode == MissionMode::MissionMode_Idle) {
@@ -488,36 +498,53 @@ public:
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipFlaps.enableActuators(false); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
             posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipFlaps.enableActuators(true); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(false); // Disable control for the rocket
+            controlRocket.enableControl(true); // Disable control for the rocket
+            //starshipFlaps.enableActuators(false); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(true); // Disable control for the rocket
+            //starshipFlaps.enableActuators(true); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
-
+            //starshipFlaps.enableActuators(false); // Disable actuators
         }
 
         missionStateTopic.publish(missionState); // Publish the mission state to the control system
 
-        if (mission_.missionEnd() && missionSelection_ != 0) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
+        if (mission_->missionEnd() && mission_->nextMission() != nullptr) {
+            LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the mission end
+            //missionSelection_ = 0;
+            mission_->resetMission(); // Reset the mission
+            mission_ = mission_->nextMission();
+            mission_->resetMission(); // Reset the mission
+            mission_->beginMission(Core::NOW()); // Start the default mission to return to home
+            starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+            controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+        } else if (mission_->missionEnd() && missionSelection_ != 0) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
+            LOG_MSG("Mission ended. Switching to default mission.\n"); // Log the mission end
             missionSelection_ = 0;
-            mission_.resetMission(); // Reset the mission
-            mission_ = defaultMission_; // Set the mission to the default mission
-            mission_.beginMission(Core::NOW()); // Start the default mission
+            mission_->resetMission(); // Reset the mission
+            mission_ = &defaultMission_; // Set the mission to the default mission
+            mission_->resetMission(); // Reset the mission
+            mission_->beginMission(Core::NOW()); // Start the default mission to return to home
+            starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+            controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
         }
 
     }
@@ -606,7 +633,7 @@ public:
                 allSystemsInitialised_ = false; // Reset the system initialisation flag
                 starshipTVC.enableActuators(false); // Disable actuators
                 vehicleShutdownControl(true); // Disable everything
-                mission_.resetMission();
+                mission_->resetMission();
                 clearFailures();
                 posEstTask.setPositionReference();
                 bodySimulator.getPositionState() = {0, 0, 0, 0, 0, 0}; // Reset the position state to the origin
@@ -614,6 +641,9 @@ public:
                 //bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
 
                 starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+                starshipFlaps.enableActuators(false); // Disable actuators
+
+                missionWaypointTask.resetMission();
 
                 LOG_MSG("System reset telecommand\n"); // Log the system reset
 
@@ -639,12 +669,12 @@ public:
 
             if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
 
-                missionSelection_ = telecommand.paramInt; // Get the mission selection from the telecommand
+                //missionSelection_ = telecommand.paramInt; // Get the mission selection from the telecommand
 
-                mission_.resetMission(); // Reset the mission
-                mission_ = *missionList_[missionSelection_]; // Set the mission to the selected mission
-                mission_.resetMission(); // Reset the mission
-                controlRocket.subscribeSetpoint(mission_.set); // Subscribe to the control topic of the mission
+                //mission_->resetMission(); // Reset the mission
+                //mission_ = *missionList_[missionSelection_]; // Set the mission to the selected mission
+                //mission_->resetMission(); // Reset the mission
+                //controlRocket.subscribeSetpoint(mission_->set); // Subscribe to the control topic of the mission
 
                 LOG_MSG("Mission select telecommand\n"); // Log the mission select
 
@@ -657,7 +687,13 @@ public:
 
                 int64_t startTime = int64_t(telecommand.paramInt) * Core::SECONDS; // Get the start time from the telecommand
 
-                mission_.beginMission(startTime); // Start the mission at the current time
+                missionSelection_ = 1;
+                mission_->resetMission(); // Reset the mission
+                mission_ = missionList_[missionSelection_]; // Set the mission to the selected mission
+                mission_->resetMission(); // Reset the mission
+                mission_->beginMission(startTime); // Start the mission at the current time
+                starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+                controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
 
                 vehicleMode_ = VehicleMode::VehicleMode_Running; // Vehicle is now running and will do the mission
 
@@ -677,9 +713,12 @@ public:
             if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
 
                 missionSelection_ = 0;
-                mission_.resetMission(); // Reset the mission
-                mission_ = defaultMission_; // Set the mission to the default mission
-                mission_.beginMission(Core::NOW()); // Start the default mission
+                mission_->resetMission(); // Reset the mission
+                mission_ = &defaultMission_; // Set the mission to the default mission
+                mission_->resetMission(); // Reset the mission
+                mission_->beginMission(Core::NOW()); // Start the default mission
+                starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+                controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
 
                 LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
 
@@ -844,8 +883,8 @@ public:
 
 
         //Check if any of the data is out of bounds which indicates a safety issue
-        auto missionMode = mission_.getMissionState().missionMode;
-        if (!mission_.getDisableKinematicSafety()) {
+        auto missionMode = mission_->getMissionState().missionMode;
+        if (!mission_->getDisableKinematicSafety()) {
             
             bool stationary = false;
             stationary |= (missionMode == MissionMode::MissionMode_Initialisation);
@@ -935,11 +974,13 @@ public:
         
         if (shutdown) {
             starshipTVC.enableActuators(false); // Enable actuators
+            starshipFlaps.enableActuators(false); // Disable actuators
             //posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             return;
         }
 
-        starshipTVC.enableActuators(mission_.getActuatorsEnabled()); //Give mission guidance control over the actuators
+        starshipFlaps.enableActuators(mission_->getActuatorsEnabled()); // Disable actuators
+        starshipTVC.enableActuators(mission_->getActuatorsEnabled()); //Give mission guidance control over the actuators
 
     }
 

@@ -9,7 +9,8 @@
 #include "ExVectrCore/time_definitions.hpp"
 #include "ExVectrCore/time_source.hpp"
 
-#include "telemetry.hpp"
+#include "../starship_flaps.hpp"
+#include "../telemetry.hpp"
 
 namespace VCTR
 {
@@ -26,6 +27,9 @@ enum class MissionType : uint8_t
 class MissionAbstract
 {
 protected:
+
+    Core::Topic<Math::Vector<float, 6>> positionSetpointTopic_;
+    Core::Topic<CTRL::StarshipFlapSettings> flapSettingTopic_;
 
     Core::Time_Source missionTime_;
 
@@ -53,6 +57,14 @@ public:
         missionState_.positionSetpoint[3] = 0; // Set the position setpoint to 0
         missionState_.positionSetpoint[4] = 0; // Set the position setpoint to 0
         missionState_.positionSetpoint[5] = 0; // Set the position setpoint to 0
+    }
+
+    Core::Topic<Math::Vector<float, 6>>& getSetpointTopic() {
+        return positionSetpointTopic_; // Get the setpoint topic
+    }
+
+    Core::Topic<CTRL::StarshipFlapSettings>& getFlapSettingTopic() {
+        return flapSettingTopic_; // Get the flap setting topic
     }
 
     const MissionState& getMissionState() {

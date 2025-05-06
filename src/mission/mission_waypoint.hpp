@@ -40,10 +40,8 @@ private:
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posSubr_;
     Math::Vector<float, 6> positionIs_;
 
-    Core::Topic<Math::Vector<float, 6>> positionSetpointTopic_;
     Math::Vector<float, 6> positionSetpoint_;
 
-    Core::Topic<CTRL::StarshipFlapSettings> flapSettingTopic_;
     CTRL::StarshipFlapSettings flapSettings_;
 
     int64_t hoverModeLastUpdate_ = 0; 
@@ -64,10 +62,6 @@ public:
         //setPriority(500);
     }
 
-    void setSetpointOutput(Core::Subscriber<Math::Vector<float, 6>> &setpointSubscriber) {
-        setpointSubscriber.subscribe(positionSetpointTopic_); // Subscribe to the setpoint topic
-    }
-
     void setNextMission(MissionAbstract* nextMission) {
         nextMission_ = nextMission; // Set the next mission to run after this one is finished.
     }
@@ -84,10 +78,6 @@ public:
         currentWaypointIndex_ = 0; // Reset the waypoint index
     }
 
-    Core::Topic<CTRL::StarshipFlapSettings>& getFlapSettingTopic() {
-        return flapSettingTopic_; // Get the flap setting topic
-    }
-
     bool missionEnd() override {
         return missionEnd_;
     }
@@ -102,18 +92,20 @@ public:
     }
 
     void beginMission(int64_t startTime) override {
-        missionState_.missionMode = MissionMode::MissionMode_Startup;
+        missionState_.missionMode = MissionMode::MissionMode_Initialisation;
         missionTime_.setTime(startTime); // Set the mission time to the start time
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
-        LOG_MSG("Started mission ReturnToHome\n"); // Log the mission start
+        LOG_MSG("Started mission waypoint\n"); // Log the mission start
     };
 
     void resetMission() override {
         missionState_.missionMode = MissionMode::MissionMode_Idle;
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = true; // Set the mission end to true
-        LOG_MSG("Reset mission ReturnToHome.\n"); // Log the mission reset
+        currentWaypointIndex_ = 0; // Reset the waypoint index
+        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
+        LOG_MSG("Reset mission waypoint.\n"); // Log the mission reset
     }
 
     void taskThread() override 
@@ -181,6 +173,10 @@ private:
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
 
+        if (missionTime_.NOW() > -5 * Core::SECONDS) { // If the mission time is greater than -5 seconds, we consider it as initialised
+            missionState_.missionMode = MissionMode::MissionMode_Startup; // Go to startup mode
+        }
+
     }
 
     void missionStartup() {
@@ -194,7 +190,6 @@ private:
         flapSettings_.blAngle = 90;// Move bottom flaps in fully
         flapSettings_.brAngle = 90; 
 
-        missionState_.missionMode = MissionMode::MissionMode_Running; // Go to hover mode
         missionState_.positionSetpoint[0] = 0; // Set the velocity setpoint to 0
         missionState_.positionSetpoint[1] = 0; 
         missionState_.positionSetpoint[2] = 0; 
@@ -207,7 +202,11 @@ private:
         currentWaypointIndex_ = 0; // Reset the waypoint index
         if (waypoints_.size() == 0) {
             addWaypoint({0, 0, 1}, 0.5, 1); // Add a default waypoint to the list of waypoints
+            LOG_MSG("No waypoints set, adding default waypoint at (0, 0, 1)\n"); // Log the mission start
         }
+
+        if (missionTime_.NOW() > 0)
+            missionState_.missionMode = MissionMode::MissionMode_Running; // Go to hover mode
 
     }
     
@@ -236,9 +235,11 @@ private:
                 positionSetpoint_(4) = waypoint.position(1);
                 positionSetpoint_(5) = waypoint.position(2);
 
-                if (currentWaypointIndex_ <= waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
+                if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
                     currentWaypointIndex_++; // Go to the next waypoint
+                    LOG_MSG("Waypoint reached. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
                 } else {
+                    LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
                     missionEnd_ = true; // Set the mission end to true
                 }
 

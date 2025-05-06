@@ -42,21 +42,21 @@ private:
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posSubr_;
     Math::Vector<float, 6> positionIs_;
 
-    Core::Topic<Math::Vector<float, 6>> positionSetpointTopic_;
     Math::Vector<float, 6> positionSetpoint_;
 
     Core::Topic<CTRL::StarshipFlapSettings> flapSettingTopic_;
     CTRL::StarshipFlapSettings flapSettings_;
 
-    Math::Vector<float, 3> homePosition_ = {0, 0, 0}; // The home position of the vehicle in reference frame.
+    Math::Vector<float, 3> homePosition_ = {0, 0, 1}; // The home position of the vehicle in reference frame.
     float translationVelocity_ = 2; // The translation velocity of the vehicle in m/s.
 
     int64_t hoverModeLastUpdate_ = 0; 
 
-    float landingThresholdDistance_ = 0; // If the vehicle set position is further down than this for a certain time, it will be considered as landed and the mission will be finished.
-    int64_t landingThresholdTime_ = 0; // How long the vehicle has to be below the landing threshold distance to be considered as landed.
-    float descentRate_ = 0; // How fast the vehicle should go down in m/s.
+    float landingThresholdDistance_ = 0.2; // If the vehicle set position is further down than this for a certain time, it will be considered as landed and the mission will be finished.
+    int64_t landingThresholdTime_ = 2 * Core::SECONDS; // How long the vehicle has to be below the landing threshold distance to be considered as landed.
+    float descentRate_ = 0.2; // How fast the vehicle should go down in m/s.
     int64_t landingThresMetTime_ = 0; // When the vehicle is below the landing threshold distance.
+    int64_t descentModeTimestamp_ = 0; // When the vehicle is in descent mode.
 
     
 public:
@@ -68,24 +68,22 @@ public:
         attSubr_.subscribe(attTopic);
         posSubr_.subscribe(posTopic);
         homePosition_ = homePosition; // Set the home position to the given position
+        homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
     }
 
-    Core::Topic<Math::Vector<float, 6>>& getSetpointTopic() {
-        return positionSetpointTopic_; // Get the setpoint topic
-    }
-
     void setHomePosition(const Math::Vector<float, 3> &homePosition) {
         homePosition_ = homePosition; // Set the home position to the given position
-    }
-
-    Core::Topic<CTRL::StarshipFlapSettings>& getFlapSettingTopic() {
-        return flapSettingTopic_; // Get the flap setting topic
+        homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
     }
 
     bool missionEnd() override {
         return missionEnd_;
+    }
+
+    MissionAbstract* nextMission() override {
+        return nullptr; // Return the next mission
     }
 
     void taskInit() override
@@ -99,9 +97,13 @@ public:
 
     void beginMission(int64_t startTime) override {
         missionState_.missionMode = MissionMode::MissionMode_Startup;
-        missionTime_.setTime(startTime); // Set the mission time to the start time
+        missionTime_.setTime(0); // Set the mission time to the start time
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
+        positionSetpoint_ = posSubr_.getItem().data; // Set the position setpoint to where the vehicle is
+        positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+        positionSetpoint_(1) = 0;
+        positionSetpoint_(2) = 0;
         LOG_MSG("Started mission ReturnToHome\n"); // Log the mission start
     };
 
@@ -202,6 +204,8 @@ private:
         missionState_.positionSetpoint[4] = posSubr_.getItem().data(4);
         missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
 
+        LOG_MSG("Started mission ReturnToHome. Position: (%f, %f, %f)\n", posSubr_.getItem().data(3), posSubr_.getItem().data(4), posSubr_.getItem().data(5)); // Log the mission start
+
         hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
 
         runningState_ = RunningState::RunningState_Stabilize; // Set the running state to stabilise
@@ -220,12 +224,12 @@ private:
         {
         case RunningState::RunningState_Stabilize:
 
-            missionState_.positionSetpoint[0] = 0; // Set the velocity setpoint to 0
-            missionState_.positionSetpoint[1] = 0; 
-            missionState_.positionSetpoint[2] = 0; 
-            missionState_.positionSetpoint[3] = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is. Keep this updated as we only want to stop the vehicle.
-            missionState_.positionSetpoint[4] = posSubr_.getItem().data(4);
-            missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
+            positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+            positionSetpoint_(1) = 0; 
+            positionSetpoint_(2) = 0; 
+            positionSetpoint_(3) = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is. Keep this updated as we only want to stop the vehicle.
+            positionSetpoint_(4) = posSubr_.getItem().data(4);
+            positionSetpoint_(5) = posSubr_.getItem().data(5);
 
             flapSettings_.enableActuators = true; // Enable the actuators
             flapSettings_.tlAngle = 0; // Move top flaps out fully
@@ -233,7 +237,7 @@ private:
             flapSettings_.blAngle = 90;// Move bottom flaps in fully
             flapSettings_.brAngle = 90; 
 
-            if (posSubr_.getItem().data.block<3, 1>(3).magnitude() < 1) { // If the vehicle is slower than 0.5 m/s, we consider it as stopped, and begin translation
+            if (posSubr_.getItem().data.block<3, 1>(0, 0).magnitude() < 1) { // If the vehicle is slower than 0.5 m/s, we consider it as stopped, and begin translation
                 runningState_ = RunningState::RunningState_Ascent; // Go to ascent mode
             }
 
@@ -245,6 +249,7 @@ private:
 
         case RunningState::RunningState_Translation:
 
+        {
             auto travelDistance = homePosition_ - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the home position in reference frame
             if (travelDistance.magnitude() / dTime > translationVelocity_) {
                 travelDistance = travelDistance.normalize() * translationVelocity_ * dTime;
@@ -259,17 +264,22 @@ private:
             flapSettings_.blAngle = 0;// Move bottom flaps in fully
             flapSettings_.brAngle = 0; 
 
-            if (positionIs_.block<3, 1>(3).magnitude() < 1) { // If the vehicle is within 1 m of the home position, we consider it as stopped, and begin descent
+            auto distance = homePosition_ - positionIs_.block<3, 1>(3); // Get the distance to the home position in reference frame
+
+            //LOG_MSG("Translation mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
+            LOG_MSG("Distance to home position: (%f, %f, %f)\n", distance(0), distance(1), distance(2)); // Log the mission start
+
+            if (distance.magnitude() < 1) { // If the vehicle is within 1 m of the home position, we consider it as stopped, and begin descent
                 runningState_ = RunningState::RunningState_Descent; // Go to descent mode
+                descentModeTimestamp_ = Core::NOW(); // Set the time when the descent mode was started
                 //missionState_.missionMode = MissionMode::MissionMode_Descent; // Go to hover mode
             }
+        }
 
             break;
 
         case RunningState::RunningState_Descent:
-
             missionDescent();
-
             break;
         
         default:
@@ -281,8 +291,8 @@ private:
 
     void missionDescent() {
 
-        float dTime = float(Core::NOW() - hoverModeLastUpdate_)/Core::SECONDS;
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the descent mode was last updated
+        float dTime = float(Core::NOW() - descentModeTimestamp_)/Core::SECONDS;
+        descentModeTimestamp_ = Core::NOW(); // Set the time when the descent mode was last updated
 
         actuatorsEnabled_ = true;   
         missionEnd_ = false; // Set the mission end to false
@@ -298,15 +308,21 @@ private:
             missionState_.missionMode = MissionMode::MissionMode_Finished; // Go to landed mode
         }
 
+        LOG_MSG("Descent mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
+
     }
 
     void missionLanded() {
 
-        actuatorsEnabled_ = true;   
+        actuatorsEnabled_ = false;   
         missionEnd_ = true; // Set the mission end to false
+
+        flapSettings_.enableActuators = false; // Enable the actuators
 
         actuatorsEnabled_ = false; // Disable actuators
         positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
+
+        LOG_MSG("Landed mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
 
     }
 

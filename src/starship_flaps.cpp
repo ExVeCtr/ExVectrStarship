@@ -1,3 +1,4 @@
+#include "ExVectrCore/print.hpp"
 #include "ExVectrCore/topic_subscribers.hpp"
 #include "ExVectrCore/timestamped.hpp"
 #include "ExVectrCore/task_types.hpp"
@@ -32,6 +33,11 @@ namespace VCTR
 
         void StarshipFlaps::taskInit(){
 
+            servoTLPin_.init(); // Initialize the top left flap servo
+            servoTRPin_.init(); // Initialize the top right flap servo
+            servoBLPin_.init(); // Initialize the bottom left flap servo
+            servoBRPin_.init(); // Initialize the bottom right flap servo
+
             servoTLPin_.enableOutput(false);
             servoTRPin_.enableOutput(false);
             servoBLPin_.enableOutput(false);
@@ -59,10 +65,16 @@ namespace VCTR
             servoBRPin_.enableOutput(enable);
 
             if (enable) {
-                servoTLPin_.setValue(flapSettings_.tlAngle/3.1415/2); // Set the top left flap angle
+                //LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings_.tlAngle, flapSettings_.trAngle, flapSettings_.blAngle, flapSettings_.brAngle); // Log the flap angles
+                servoTLPin_.setValue(1 - flapSettings_.tlAngle/3.1415/2); // Set the top left flap angle
                 servoTRPin_.setValue(flapSettings_.trAngle/3.1415/2); // Set the top right flap angle
-                servoBLPin_.setValue(flapSettings_.blAngle/3.1415/2); // Set the bottom left flap angle
+                servoBLPin_.setValue(1 - flapSettings_.blAngle/3.1415/2); // Set the bottom left flap angle
                 servoBRPin_.setValue(flapSettings_.brAngle/3.1415/2); // Set the bottom right flap angle
+                /*float setting = 0;
+                servoTLPin_.setValue(1 - setting); // Set the top left flap angle
+                servoTRPin_.setValue(setting); // Set the top right flap angle
+                servoBLPin_.setValue(1 - setting); // Set the bottom left flap angle
+                servoBRPin_.setValue(setting); // Set the bottom right flap angle*/
             }
 
 
