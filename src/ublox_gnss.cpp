@@ -174,19 +174,19 @@ void SNSR::UbloxSerialGNSS::taskInit() {
     }
 
     //LOG_MSG("GNSS Driver setup for gnss serial passthrough!\n");
-    gnss_.softwareResetGNSSOnly();
+    //gnss_.softwareResetGNSSOnly();
     //gnss_.setUART1Output(COM_TYPE_UBX);
     gnss_.setNavigationFrequency(10);
     gnss_.setAutoPVT(true);
     gnss_.setDynamicModel(DYN_MODEL_AIRBORNE1g);
     //gnss_.getProtocolVersion();
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
+    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
     gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
-    delay(1000);
+    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_BEIDOU);
     gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_SBAS);
     gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_QZSS);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_BEIDOU);
+    delay(1000);
+    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
 
     //gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
     //gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);

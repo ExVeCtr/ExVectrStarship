@@ -362,7 +362,7 @@ private:
     const float ANGLE_OUTOFBOUNDS_STATIONARY = 20*DEG_TO_RAD; // rad
 
     const float POSITION_OUTOFBOUNDS_FLIGHT = 20.0f; // m
-    const float ANGLE_OUTOFBOUNDS_FLIGHT = 70*DEG_TO_RAD; // rad
+    const float ANGLE_OUTOFBOUNDS_FLIGHT = 90*DEG_TO_RAD; // rad
 
     Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr;
     Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> gyroSubr;
@@ -456,8 +456,8 @@ public:
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
         missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 3 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({3, 0, 1}, 1, 0.5, 2 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({3, 0, 2}, 1, 0.5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({2, 0, 1}, 1, 0.5, 25 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({2, 0, 2}, 1, 0.5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 1}, 1, 0.5, 2 * Core::SECONDS); // Add a waypoint to the mission waypoint task
 
         //missionWaypointTask.addWaypoint({0, 0, 100}, 10, 0.5, 1 * Core::SECONDS); // Add a waypoint to the mission waypoint task
@@ -498,30 +498,35 @@ public:
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipTVC.enableMotors(false); // Enable motors
             //starshipFlaps.enableActuators(false); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
             posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipTVC.enableMotors(false); // Enable motors
             //starshipFlaps.enableActuators(true); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(true); // Disable control for the rocket
+            controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipTVC.enableMotors(true); // Enable motors
             //starshipFlaps.enableActuators(false); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(true); // Disable control for the rocket
+            //starshipTVC.enableMotors(true); // Enable motors
             //starshipFlaps.enableActuators(true); // Disable actuators
         } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
             posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
             imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
             bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
             controlRocket.enableControl(false); // Disable control for the rocket
+            //starshipTVC.enableMotors(false); // Enable motors
             //starshipFlaps.enableActuators(false); // Disable actuators
         }
 
@@ -640,7 +645,7 @@ public:
                 bodySimulator.getAttitudeState() = {0, 0, 0, 1, 0, 0, 0}; // Reset the attitude state to the origin
                 //bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
 
-                starshipTVC.enableMotors(false); // Disable actuators in simulation mode
+                starshipTVC.enableMotors(false); // Disable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
 
                 missionWaypointTask.resetMission();
@@ -884,7 +889,7 @@ public:
 
         //Check if any of the data is out of bounds which indicates a safety issue
         auto missionMode = mission_->getMissionState().missionMode;
-        if (!mission_->getDisableKinematicSafety()) {
+        if (!mission_->getDisableKinematicSafety() && missionMode != MissionMode::MissionMode_Idle) {
             
             bool stationary = false;
             stationary |= (missionMode == MissionMode::MissionMode_Initialisation);
@@ -975,6 +980,7 @@ public:
         if (shutdown) {
             starshipTVC.enableActuators(false); // Enable actuators
             starshipFlaps.enableActuators(false); // Disable actuators
+            //starshipTVC.enableMotors(false); // Disable motors
             //posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             return;
         }
@@ -1297,7 +1303,7 @@ public:
     }
 
 };
-DisplayTask displayTask;
+//DisplayTask displayTask;
 
 
 
