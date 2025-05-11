@@ -2,6 +2,7 @@
 #define MISSION_FREEFALL_HPP
 
 
+#include "ExVectrCore/print.hpp"
 #include "ExVectrCore/topic.hpp"
 #include "ExVectrCore/topic_subscribers.hpp"
 
@@ -31,38 +32,25 @@ private:
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attSubr_;
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posSubr_;
 
-    CTRL::ControlRocket& ctrlRestore_;
+    Math::Vector<float, 6> positionIs_;
 
-    CTRL::StarshipFlaps& flaps_;
-    CTRL::StarshipTVC& tvc_;
+    float vehicleMass_kg_ = 1; // Mass of the vehicle in kg.
+    float tvcThrustLimit_N_ = 15; // Maximum thrust in Newtons.
+    float stopAlt_ = 0; // How much above the ground to fully stop the vehicle.
 
 
 public:
 
-    MissionFreefall(Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic, Core::Topic<Core::Timestamped<Math::Vector<float, 6>>> &posTopic) : 
+    MissionFreefall(Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic, Core::Topic<Core::Timestamped<Math::Vector<float, 6>>> &posTopic, float vehicleMass_kg, float tvcThrustLimit_N, float stopAlt) :
         Task_Periodic("Mission Freefall", 0.1*Core::SECONDS)
     {
         // Subscribe to the topics
         attSubr_.subscribe(attTopic);
         posSubr_.subscribe(posTopic);
+        vehicleMass_kg_ = vehicleMass_kg; // Set the vehicle mass
+        tvcThrustLimit_N_ = tvcThrustLimit_N; // Set the thrust limit
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
-    }
-
-    void setNextMission(MissionAbstract* nextMission) {
-        nextMission_ = nextMission; // Set the next mission to run after this one is finished.
-    }
-
-    /**
-     * Adds a waypoint to the list of waypoints to travel to. Waypoint is added to the end of the path
-     */
-    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0) {
-        waypoints_.append({position, velocity, thresholdDistance, loiterTime}); // Add the waypoint to the list of waypoints
-    }
-
-    void clearWaypoints() {
-        waypoints_.clear(); // Clear the list of waypoints
-        currentWaypointIndex_ = 0; // Reset the waypoint index
     }
 
     bool missionEnd() override {
@@ -90,8 +78,6 @@ public:
         missionState_.missionMode = MissionMode::MissionMode_Idle;
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = true; // Set the mission end to true
-        currentWaypointIndex_ = 0; // Reset the waypoint index
-        positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
         LOG_MSG("Reset mission waypoint.\n"); // Log the mission reset
     }
 
@@ -102,22 +88,25 @@ public:
             positionIs_ = posSubr_.getItem().data;
         }
 
+        actuatorsEnabled_ = false;
+
         switch (missionState_.missionMode)
         {
         case MissionMode::MissionMode_Idle:
-            missionIdle();
+            //actuatorsEnabled_ = false;
+            //missionEnd_ = true; // Set the mission end to true
             break;
 
         case MissionMode::MissionMode_Initialisation:
-            missionInit();
+            //missionEnd_ = false; // Set the mission end to true
             break;
 
         case MissionMode::MissionMode_Startup:
-            missionStartup();
+            //missionEnd_ = false; // Set the mission end to true
             break;
         
         case MissionMode::MissionMode_Running:
-            missionHover();
+            //missionEnd_ = false; // Set the mission end to true
             break;
         
         default:
@@ -125,18 +114,30 @@ public:
             break;
         }
 
+        float stoppingDistance = calculateStoppingDistance(tvcThrustLimit_N_, vehicleMass_kg_, positionIs_); // Calculate the stopping distance
+
+        if (positionIs_(5) < stoppingDistance + stopAlt_ && missionEnd_ == false) { // If the stopping distance is less than the Z position
+            missionState_.missionMode = MissionMode::MissionMode_Finished; // Set the mission mode to finished
+            missionEnd_ = true; // Set the mission end to true
+            // Now we simply trust the next mission to take care of the rest. (Jesus take the wheel)
+        }
 
         missionState_.missionMode = missionState_.missionMode;
         missionState_.missionTime = missionTime_.NOW();
-        missionState_.positionSetpoint[0] = positionSetpoint_(0);
-        missionState_.positionSetpoint[1] = positionSetpoint_(1);
-        missionState_.positionSetpoint[2] = positionSetpoint_(2);
-        missionState_.positionSetpoint[3] = positionSetpoint_(3);
-        missionState_.positionSetpoint[4] = positionSetpoint_(4);    
-        missionState_.positionSetpoint[5] = positionSetpoint_(5);
+        missionState_.positionSetpoint[0] = 0;
+        missionState_.positionSetpoint[1] = 0;
+        missionState_.positionSetpoint[2] = 0;
+        missionState_.positionSetpoint[3] = 0;
+        missionState_.positionSetpoint[4] = 0;    
+        missionState_.positionSetpoint[5] = 0;
+        positionSetpointTopic_.publish({0, 0, 0, 0, 0, 0}); // Publish the setpoint to the control system
 
-        positionSetpointTopic_.publish(positionSetpoint_); // Publish the setpoint to the control system
-
+        CTRL::StarshipFlapSettings flapSettings_;
+        flapSettings_.blAngle = 90*3.14/180; // Retract bottom flaps, extend top flaps
+        flapSettings_.brAngle = 90*3.14/180;
+        flapSettings_.tlAngle = 0;
+        flapSettings_.trAngle = 0;
+        flapSettings_.enableActuators = true; // Enable actuators
         flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control system
 
 
@@ -147,102 +148,14 @@ public:
 
 private:
 
-    void missionIdle() {
+    float calculateStoppingDistance(float thrust, float mass, Math::Vector<float, 6> position) {
 
-        actuatorsEnabled_ = false; // Disable actuators
-        missionTime_.setTime(0); // Set the mission time to the start time
-        missionEnd_ = true; // Set the mission end to false
+        float& pz = position(5); // Get the Z position
+        float& vz = position(2); // Get the Z velocity
 
-    }
+        float aSum = thrust / mass - 9.81; // Calculate the acceleration sum
 
-    void missionInit() {
-
-        actuatorsEnabled_ = false; // Disable actuators
-        missionEnd_ = false; // Set the mission end to false
-
-        if (missionTime_.NOW() > -5 * Core::SECONDS) { // If the mission time is greater than -5 seconds, we consider it as initialised
-            missionState_.missionMode = MissionMode::MissionMode_Startup; // Go to startup mode
-        }
-
-    }
-
-    void missionStartup() {
-
-        actuatorsEnabled_ = true; // Enable actuators
-        missionEnd_ = false; // Set the mission end to false
-
-        flapSettings_.enableActuators = true; // Enable the actuators
-        flapSettings_.tlAngle = 0; // Move top flaps out fully
-        flapSettings_.trAngle = 0; 
-        flapSettings_.blAngle = 90;// Move bottom flaps in fully
-        flapSettings_.brAngle = 90; 
-
-        missionState_.positionSetpoint[0] = 0; // Set the velocity setpoint to 0
-        missionState_.positionSetpoint[1] = 0; 
-        missionState_.positionSetpoint[2] = 0; 
-        missionState_.positionSetpoint[3] = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is
-        missionState_.positionSetpoint[4] = posSubr_.getItem().data(4);
-        missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
-
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
-
-        currentWaypointIndex_ = 0; // Reset the waypoint index
-        if (waypoints_.size() == 0) {
-            addWaypoint({0, 0, 1}, 0.5, 1); // Add a default waypoint to the list of waypoints
-            LOG_MSG("No waypoints set, adding default waypoint at (0, 0, 1)\n"); // Log the mission start
-        }
-
-        if (missionTime_.NOW() > 0)
-            missionState_.missionMode = MissionMode::MissionMode_Running; // Go to hover mode
-
-    }
-    
-    void missionHover() {
-
-        float dTime = float(Core::NOW() - hoverModeLastUpdate_)/Core::SECONDS;
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
-
-        actuatorsEnabled_ = true;   
-        //missionEnd_ = false; // Set the mission end to false
-
-        flapSettings_.enableActuators = true; // Enable the actuators
-        flapSettings_.tlAngle = 90; // Move top flaps out fully
-        flapSettings_.trAngle = 90; 
-        flapSettings_.blAngle = 90;// Move bottom flaps in fully
-        flapSettings_.brAngle = 90; 
-
-        auto& waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
-        auto distance = waypoint.position - positionIs_.block<3, 1>(3); // Get the distance to the waypoint in reference frame
-
-        if (distance.magnitude() < waypoint.thresholdDistance) { // If the vehicle is within the threshold distance of the waypoint, we consider it as reached
-            
-            if (Core::NOW() - waypointThresholdTime_ > waypoint.loiterTime) { // If the vehicle is within the threshold distance for a certain time, we consider it as reached
-                
-                positionSetpoint_(3) = waypoint.position(0); // Set the setpoint position in the reference frame
-                positionSetpoint_(4) = waypoint.position(1);
-                positionSetpoint_(5) = waypoint.position(2);
-
-                if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
-                    currentWaypointIndex_++; // Go to the next waypoint
-                    LOG_MSG("Waypoint reached. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
-                } else {
-                    LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
-                    missionEnd_ = true; // Set the mission end to true
-                }
-
-            }
-
-        } else {
-            waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
-        }
-
-        auto travelDistance = waypoint.position - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the hover position in reference frame
-        if (travelDistance.magnitude() / dTime > waypoint.velocity) {
-            travelDistance = travelDistance.normalize() * waypoint.velocity * dTime;
-        } 
-        positionSetpoint_(3) += travelDistance(0); // Update the setpoint position in the reference frame
-        positionSetpoint_(4) += travelDistance(1); 
-        positionSetpoint_(5) += travelDistance(2); 
+        return 0.5 * vz*vz/aSum; // Return the stopping distance
 
     }
 

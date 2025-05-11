@@ -383,7 +383,7 @@ namespace VCTR
                 //receiveTopic_.publish(bufferArray);
 
                 uint8_t crc = 0;
-                for (int i = 0; i < packetL - 1; i++) crc += bufferArray[i];
+                for (size_t i = 0; i < packetL - 1; i++) crc += bufferArray[i];
                 uint8_t crcRcv = bufferArray[packetL - 1];
 
                 if (crc == crcRcv) { //Only decode if crc is correct.
