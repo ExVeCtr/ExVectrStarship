@@ -42,7 +42,7 @@ private:
 public:
 
     MissionFreefall(Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic, Core::Topic<Core::Timestamped<Math::Vector<float, 6>>> &posTopic, float vehicleMass_kg, float tvcThrustLimit_N, float stopAlt) :
-        Task_Periodic("Mission Freefall", 0.1*Core::SECONDS)
+        Task_Periodic("Mission Freefall", 0.01*Core::SECONDS)
     {
         // Subscribe to the topics
         attSubr_.subscribe(attTopic);
@@ -50,6 +50,7 @@ public:
         vehicleMass_kg_ = vehicleMass_kg; // Set the vehicle mass
         tvcThrustLimit_N_ = tvcThrustLimit_N; // Set the thrust limit
         Core::getSystemScheduler().addTask(*this);
+        disableKinematicSafety_ = true; // Disable the kinematic safety measures
         //setPriority(500);
     }
 
@@ -60,6 +61,7 @@ public:
     void taskInit() override
     {
         missionState_.missionMode = MissionMode::MissionMode_Idle; // Set the mission mode to idle
+        missionEnd_ = true; // Set the mission end to false
     }
 
     const MissionState& getMissionState() const {
@@ -67,22 +69,25 @@ public:
     }
 
     void beginMission(int64_t startTime) override {
-        missionState_.missionMode = MissionMode::MissionMode_Initialisation;
+        missionState_.missionMode = MissionMode::MissionMode_Running;
         missionTime_.setTime(startTime); // Set the mission time to the start time
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
-        LOG_MSG("Started mission waypoint\n"); // Log the mission start
+        LOG_MSG("Started mission freefall\n"); // Log the mission start
     };
 
     void resetMission() override {
         missionState_.missionMode = MissionMode::MissionMode_Idle;
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = true; // Set the mission end to true
-        LOG_MSG("Reset mission waypoint.\n"); // Log the mission reset
+        LOG_MSG("Reset mission freefall.\n"); // Log the mission reset
     }
 
     void taskThread() override 
     {
+
+        if (missionEnd_)
+            return; // If the mission has ended, do nothing
 
         if (posSubr_.isDataNew()) {
             positionIs_ = posSubr_.getItem().data;
@@ -121,6 +126,8 @@ public:
             missionEnd_ = true; // Set the mission end to true
             // Now we simply trust the next mission to take care of the rest. (Jesus take the wheel)
         }
+
+        LOG_MSG("Freefall mode. Alt: %f, Stopping distance: %f\n", positionIs_(5), stoppingDistance); // Log the mission start
 
         missionState_.missionMode = missionState_.missionMode;
         missionState_.missionTime = missionTime_.NOW();

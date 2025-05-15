@@ -60,6 +60,8 @@ namespace VCTR
                 ctrlSubr_.subscribe(flapSettingTopic);
             }
 
+            const StarshipFlapSettings& getFlapSettings() const { return flapSettings_; }
+
             void enableActuators(bool enable) { enableActuators_ = enable; }
 
             

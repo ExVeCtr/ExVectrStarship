@@ -68,14 +68,14 @@ public:
         attSubr_.subscribe(attTopic);
         posSubr_.subscribe(posTopic);
         homePosition_ = homePosition; // Set the home position to the given position
-        homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
+        //homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
     }
 
     void setHomePosition(const Math::Vector<float, 3> &homePosition) {
         homePosition_ = homePosition; // Set the home position to the given position
-        homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
+        //homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
     }
 
     bool missionEnd() override {
@@ -204,7 +204,7 @@ private:
         missionState_.positionSetpoint[4] = posSubr_.getItem().data(4);
         missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
 
-        LOG_MSG("Started mission ReturnToHome. Position: (%f, %f, %f)\n", posSubr_.getItem().data(3), posSubr_.getItem().data(4), posSubr_.getItem().data(5)); // Log the mission start
+        //LOG_MSG("Started mission ReturnToHome. Position: (%f, %f, %f)\n", posSubr_.getItem().data(3), posSubr_.getItem().data(4), posSubr_.getItem().data(5)); // Log the mission start
 
         hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
 
@@ -267,11 +267,12 @@ private:
             auto distance = homePosition_ - positionIs_.block<3, 1>(3); // Get the distance to the home position in reference frame
 
             //LOG_MSG("Translation mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
-            LOG_MSG("Distance to home position: (%f, %f, %f)\n", distance(0), distance(1), distance(2)); // Log the mission start
+            //LOG_MSG("Distance to home position: (%f, %f, %f)\n", distance(0), distance(1), distance(2)); // Log the mission start
 
             if (distance.magnitude() < 1) { // If the vehicle is within 1 m of the home position, we consider it as stopped, and begin descent
                 runningState_ = RunningState::RunningState_Descent; // Go to descent mode
                 descentModeTimestamp_ = Core::NOW(); // Set the time when the descent mode was started
+                positionSetpoint_(5) = positionIs_(5); // Set the setpoint position in the reference frame to the current position
                 //missionState_.missionMode = MissionMode::MissionMode_Descent; // Go to hover mode
             }
         }

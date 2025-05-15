@@ -57,7 +57,7 @@
 #include "starship_flaps.hpp"
 
 #include "board_v_1_0.h"
-#include "starship_connections_v_1_0.h"
+#include "starship_hardware.h"
 #include "memory_keys.hpp"
 
 //#include "SX128XLT.h"
@@ -67,6 +67,7 @@
 
 #include "mission/mission_rth.hpp"
 #include "mission/mission_waypoint.hpp"
+#include "mission/mission_freefall.hpp"
 
 //#include "sx1280_driver/datalink_sx1280.hpp"
 
@@ -125,7 +126,7 @@ DSP::TopicCoordTransform<float> magTransformTopic;
 DSP::IMUAttitudeEKFTask imuTask(1*Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10*Core::MILLISECONDS);
 
-DSP::BodySimulator bodySimulator(1.0, {0.044, 0.044, 0.004});
+DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004});
 
 //DSP::Calibrator_Magnetometer magCalibrator;
 //DSP::Calibrator_Gyroscope gyroCalibrator;
@@ -173,9 +174,9 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 
 
 //Control
-CTRL::ControlRocket controlRocket(1, 15, 30*DEG_TO_RAD);
+CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30*DEG_TO_RAD);
 
-CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, 15*3.14/180, 45*3.14/180, 15);
+CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, 15*3.14/180, 45*3.14/180, TVC_THRUST_LIMIT_N);
 CTRL::StarshipFlaps starshipFlaps(flapServoULPin, flapServoURPin, flapServoDLPin, flapServoDRPin);
 
 
@@ -348,6 +349,7 @@ MagnetometerCalibrationTask magCalibTask;
 
 
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
+MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
@@ -396,7 +398,7 @@ public:
 
     VehicleSafetyAndControlTask() : 
         Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS),
-        defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 0})
+        defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1})
     {
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
@@ -455,13 +457,14 @@ public:
         missionList_.append(&defaultMission_); // Add the mission guidance task to the list of missions
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
-        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 3 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({2, 0, 1}, 1, 0.5, 25 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({2, 0, 2}, 1, 0.5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({0, 0, 1}, 1, 0.5, 2 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-
-        //missionWaypointTask.addWaypoint({0, 0, 100}, 10, 0.5, 1 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //mission
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({0, 2, 1.5}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({0, 2, 2}, 0.5, 1, 10 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({0, 0, 2}, 100, 1, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({10, 5, 100}, 10, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.setNextMission(&missionFreefallTask); // Set the next mission to the mission freefall task
+        //missionFreefallTask.setNextMission(&defaultMission_); // Set the next mission to the default mission
+        
 
         //mission_ = missionGuidanceTask;
 
@@ -641,8 +644,8 @@ public:
                 mission_->resetMission();
                 clearFailures();
                 posEstTask.setPositionReference();
-                bodySimulator.getPositionState() = {0, 0, 0, 0, 0, 0}; // Reset the position state to the origin
-                bodySimulator.getAttitudeState() = {0, 0, 0, 1, 0, 0, 0}; // Reset the attitude state to the origin
+                bodySimulator.setAttitudeState({0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
+                bodySimulator.setPositionState({0, 0, 0, 0, 0, 0}); // Reset the position state to the origin
                 //bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
 
                 starshipTVC.enableMotors(false); // Disable motors
@@ -746,8 +749,8 @@ public:
                     bodySimulator.setTVCInputTopic(controlRocket.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), 30*DEG_TO_RAD, 20); // Subscribe to the TVC input topic
 
                     //bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
-                    bodySimulator.getPositionState() = {0, 0, 0, 0, 0, 0}; // Reset the position state to the origin
-                    bodySimulator.getAttitudeState() = {0, 0, 0, 1, 0, 0, 0}; // Reset the attitude state to the origin
+                    bodySimulator.setAttitudeState({0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
+                    bodySimulator.setPositionState({0, 0, 0, 0, 0, 0}); // Reset the position state to the origin
 
                     bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
 
@@ -900,7 +903,7 @@ public:
 
             auto zAxisBody = attitude.rotate(Math::Vector<float, 3>({0, 0, 1}));
 
-            auto startDistance = position.magnitude(3);
+            auto startDistance = position.magnitude(3, 5);
             auto tilt = zAxisBody.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
 
             if (stationary) {
@@ -980,13 +983,20 @@ public:
         if (shutdown) {
             starshipTVC.enableActuators(false); // Enable actuators
             starshipFlaps.enableActuators(false); // Disable actuators
+            bodySimulator.enableTVC(false); // Disable the TVC for the body simulator
             //starshipTVC.enableMotors(false); // Disable motors
             //posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
             return;
         }
 
-        starshipFlaps.enableActuators(mission_->getActuatorsEnabled()); // Disable actuators
+        if (mission_ == &missionFreefallTask) {
+            starshipFlaps.enableActuators(true); // Disable actuators
+        } else
+            starshipFlaps.enableActuators(mission_->getActuatorsEnabled()); // Disable actuators
+
         starshipTVC.enableActuators(mission_->getActuatorsEnabled()); //Give mission guidance control over the actuators
+        bodySimulator.enableTVC(mission_->getActuatorsEnabled()); // Give mission guidance control over the actuators
+        bodySimulator.enableFlaps(starshipFlaps.getFlapSettings().tlAngle < 0.5); // Give simulator info if flaps are enabled or not
 
     }
 

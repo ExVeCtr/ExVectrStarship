@@ -27,6 +27,9 @@
 
 #define NEO_M8Q_SERIALPORT Serial5
 
+#define VEHICLE_MASS_KG 1.05f // Mass of the vehicle in kg
+#define TVC_THRUST_LIMIT_N 15.0f // Maximum thrust in Newtons
+
 
 
 #endif

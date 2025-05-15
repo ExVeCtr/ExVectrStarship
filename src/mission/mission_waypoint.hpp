@@ -62,10 +62,6 @@ public:
         //setPriority(500);
     }
 
-    void setNextMission(MissionAbstract* nextMission) {
-        nextMission_ = nextMission; // Set the next mission to run after this one is finished.
-    }
-
     /**
      * Adds a waypoint to the list of waypoints to travel to. Waypoint is added to the end of the path
      */
@@ -238,6 +234,7 @@ private:
                 if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
                     currentWaypointIndex_++; // Go to the next waypoint
                     LOG_MSG("Waypoint reached. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
+                    waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
                 } else {
                     LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
                     missionEnd_ = true; // Set the mission end to true

@@ -98,6 +98,10 @@ public:
         return nextMission_; // Return the next mission
     }
 
+    void setNextMission(MissionAbstract* nextMission) {
+        nextMission_ = nextMission; // Set the next mission to run after this one is finished.
+    }
+
     virtual void beginMission(int64_t startTime) {
         missionState_.missionMode = MissionMode::MissionMode_Idle;
         missionTime_.setTime(startTime); // Set the mission time to the start time
