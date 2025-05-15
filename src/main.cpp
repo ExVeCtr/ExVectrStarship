@@ -442,6 +442,15 @@ public:
         return vehicleArmed_;
     }
 
+    void switchMissionTo(MissionAbstract* mission, int64_t startTime = Core::NOW()) {
+        mission_->resetMission(); // Reset the mission
+        mission_ = mission; // Set the mission to the default mission
+        mission_->resetMission(); // Reset the mission
+        mission_->beginMission(startTime); // Start the default mission to return to home
+        starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+        controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+    }
+
     void taskInit() override
     {
         
@@ -537,22 +546,11 @@ public:
 
         if (mission_->missionEnd() && mission_->nextMission() != nullptr) {
             LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the mission end
-            //missionSelection_ = 0;
-            mission_->resetMission(); // Reset the mission
-            mission_ = mission_->nextMission();
-            mission_->resetMission(); // Reset the mission
-            mission_->beginMission(Core::NOW()); // Start the default mission to return to home
-            starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
-            controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+            switchMissionTo(mission_->nextMission()); // Switch to the next mission
         } else if (mission_->missionEnd() && missionSelection_ != 0) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
             LOG_MSG("Mission ended. Switching to default mission.\n"); // Log the mission end
-            missionSelection_ = 0;
-            mission_->resetMission(); // Reset the mission
-            mission_ = &defaultMission_; // Set the mission to the default mission
-            mission_->resetMission(); // Reset the mission
-            mission_->beginMission(Core::NOW()); // Start the default mission to return to home
-            starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
-            controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+            missionSelection_ = 0; // Set the mission selection to the default mission
+            switchMissionTo(&defaultMission_); // Switch to the default mission
         }
 
     }
@@ -694,14 +692,9 @@ public:
             if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
 
                 int64_t startTime = int64_t(telecommand.paramInt) * Core::SECONDS; // Get the start time from the telecommand
-
+                
                 missionSelection_ = 1;
-                mission_->resetMission(); // Reset the mission
-                mission_ = missionList_[missionSelection_]; // Set the mission to the selected mission
-                mission_->resetMission(); // Reset the mission
-                mission_->beginMission(startTime); // Start the mission at the current time
-                starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
-                controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+                switchMissionTo(missionList_[missionSelection_], startTime); // Switch to the selected mission
 
                 vehicleMode_ = VehicleMode::VehicleMode_Running; // Vehicle is now running and will do the mission
 
@@ -721,12 +714,7 @@ public:
             if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
 
                 missionSelection_ = 0;
-                mission_->resetMission(); // Reset the mission
-                mission_ = &defaultMission_; // Set the mission to the default mission
-                mission_->resetMission(); // Reset the mission
-                mission_->beginMission(Core::NOW()); // Start the default mission
-                starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
-                controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+                switchMissionTo(&defaultMission_); // Switch to the default mission
 
                 LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
 
@@ -857,9 +845,10 @@ public:
             sensoryState_.imu = TelemetrySensor::TelemetrySensor_Ready;
         }
 
-        if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT) {
-            vehicleMode_ = VehicleMode::VehicleMode_Failure;
-            failureState_.sensorFailure = true;
+        if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
+            //vehicleMode_ = VehicleMode::VehicleMode_Failure;
+            //failureState_.sensorFailure = true;
+            switchMissionTo(&defaultMission_); // Switch to the default mission
             sensoryState_.mag = TelemetrySensor::TelemetrySensor_Failure;
         } else if (sensoryState_.mag != TelemetrySensor::TelemetrySensor_Calib && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
             sensoryState_.mag = TelemetrySensor::TelemetrySensor_Ready;
@@ -949,7 +938,6 @@ public:
             allSystemsInitialised_ 
             && sensoryState_.imu == TelemetrySensor::TelemetrySensor_Ready
             && sensoryState_.baro == TelemetrySensor::TelemetrySensor_Ready
-            && sensoryState_.mag == TelemetrySensor::TelemetrySensor_Ready
             && sensoryState_.gnss == TelemetrySensor::TelemetrySensor_Ready
             && sensoryState_.attitudeKF == TelemetrySensor::TelemetrySensor_Ready
             && sensoryState_.positionKF == TelemetrySensor::TelemetrySensor_Ready
