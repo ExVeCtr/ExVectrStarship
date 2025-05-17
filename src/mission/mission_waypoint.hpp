@@ -34,6 +34,7 @@ private:
         float velocity; // The velocity to move to the waypoint in m/s.
         float thresholdDistance; // When the waypoint can be considered as reached if within this distance.
         int64_t loiterTime; // The time the vehicle should loiter at the waypoint in seconds.
+        int64_t timeLimit; // If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected.
     };
 
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attSubr_;
@@ -49,6 +50,7 @@ private:
     Core::ListArray<Waypoint> waypoints_; // The list of waypoints to travel to.
     size_t currentWaypointIndex_ = 0; // The index of the current waypoint to travel to.
     int64_t waypointThresholdTime_ = 0; // The time the vehicle should be within the threshold distance to the waypoint to be considered as reached.
+    int64_t waypointStartTime_ = 0; // The time the vehicle started to travel to the waypoint.
     
 public:
 
@@ -64,9 +66,30 @@ public:
 
     /**
      * Adds a waypoint to the list of waypoints to travel to. Waypoint is added to the end of the path
+     * @param position The position of the waypoint to travel to.
+     * @param velocity The velocity to move/lerp to the waypoint in m/s.
+     * @param thresholdDistance When the waypoint can be considered as reached if within this distance. 
+     * @param loiterTime The time the vehicle should loiter at the waypoint in seconds.
+     * @param timeLimit If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected. If not given, the vehicle will calculate the time needed +50% to reach the waypoint.
+     * 
      */
-    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0) {
-        waypoints_.append({position, velocity, thresholdDistance, loiterTime}); // Add the waypoint to the list of waypoints
+    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME) {
+
+        if (timeLimit == Core::END_OF_TIME) { // If the time limit is not given, calculate the time needed to reach the waypoint
+            
+            if (waypoints_.size() > 0) {
+                auto lastWaypointPos = waypoints_[waypoints_.size() - 1].position;
+                auto distance = (position - lastWaypointPos).magnitude(); // Calculate the distance to the waypoint
+                timeLimit = (distance / velocity) * 1.5 * Core::SECONDS; // Calculate the time needed to reach the waypoint +50%
+            } else {
+                auto distance = position.magnitude(); // Calculate the distance to the waypoint
+                timeLimit = (distance / velocity) * 1.5 * Core::SECONDS; // Calculate the time needed to reach the waypoint +50%
+            }
+
+        }
+
+        waypoints_.append({position, velocity, thresholdDistance, loiterTime, timeLimit}); // Add the waypoint to the list of waypoints
+
     }
 
     void clearWaypoints() {
@@ -194,6 +217,7 @@ private:
         missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
 
         hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
+        waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
 
         currentWaypointIndex_ = 0; // Reset the waypoint index
         if (waypoints_.size() == 0) {
@@ -233,8 +257,15 @@ private:
 
                 if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
                     currentWaypointIndex_++; // Go to the next waypoint
+                    waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
                     LOG_MSG("Waypoint reached. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
+                    LOG_MSG("Waypoint position: %.2f %.2f %.2f\n", waypoint.position(0), waypoint.position(1), waypoint.position(2)); // Log the waypoint position
+                    LOG_MSG("Waypoint velocity: %.2f\n", waypoint.velocity); // Log the waypoint velocity
+                    LOG_MSG("Waypoint threshold distance: %.2f\n", waypoint.thresholdDistance); // Log the waypoint threshold distance
+                    LOG_MSG("Waypoint loiter time: %.2f\n", double(waypoint.loiterTime)/Core::SECONDS); // Log the waypoint loiter time
+                    LOG_MSG("Waypoint time limit: %.2f\n", double(waypoint.timeLimit)/Core::SECONDS); // Log the waypoint time limit
                     waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
+                    waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
                 } else {
                     LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
                     missionEnd_ = true; // Set the mission end to true
@@ -243,7 +274,27 @@ private:
             }
 
         } else {
+
             waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
+
+            if (Core::NOW() - waypointStartTime_ > waypoint.timeLimit) { // If the vehicle is within the threshold distance for a certain time, we consider it as not reachable
+
+                positionSetpoint_(3) = waypoint.position(0); // Set the setpoint position in the reference frame
+                positionSetpoint_(4) = waypoint.position(1);
+                positionSetpoint_(5) = waypoint.position(2);
+
+                if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
+                    currentWaypointIndex_++; // Go to the next waypoint
+                    LOG_MSG("Waypoint not reachable. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
+                    waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
+                    waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
+                } else {
+                    LOG_MSG("Waypoint not reachable. Waypoint mission finished\n"); // Log the mission finished
+                    missionEnd_ = true; // Set the mission end to true
+                }
+
+            }
+
         }
 
         auto travelDistance = waypoint.position - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the hover position in reference frame

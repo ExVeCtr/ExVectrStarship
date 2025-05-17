@@ -114,7 +114,7 @@ namespace VCTR
             servoBRPin_.enableOutput(enable);
 
             if (enable) {
-                LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle, flapSettings.brAngle); // Log the flap angles
+                //LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle, flapSettings.brAngle); // Log the flap angles
                 servoTLPin_.setValue(1 - flapSettings.tlAngle/3.1415/2); // Set the top left flap angle
                 servoTRPin_.setValue(flapSettings.trAngle/3.1415/2); // Set the top right flap angle
                 servoBLPin_.setValue(1 - flapSettings.blAngle/3.1415/2); // Set the bottom left flap angle
