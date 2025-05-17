@@ -212,12 +212,12 @@ private:
         flapSettings_.blAngle = 90;// Move bottom flaps in fully
         flapSettings_.brAngle = 90; 
 
-        missionState_.positionSetpoint[0] = 0; // Set the velocity setpoint to 0
-        missionState_.positionSetpoint[1] = 0; 
-        missionState_.positionSetpoint[2] = 0; 
-        missionState_.positionSetpoint[3] = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is
-        missionState_.positionSetpoint[4] = posSubr_.getItem().data(4);
-        missionState_.positionSetpoint[5] = posSubr_.getItem().data(5);
+        positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+        positionSetpoint_(1) = 0; 
+        positionSetpoint_(2) = 0; 
+        positionSetpoint_(3) = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is
+        positionSetpoint_(4) = posSubr_.getItem().data(4);
+        positionSetpoint_(5) = posSubr_.getItem().data(5);
 
         hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
         waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started

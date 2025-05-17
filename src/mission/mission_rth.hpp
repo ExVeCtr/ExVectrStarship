@@ -98,7 +98,7 @@ public:
     void beginMission(int64_t startTime) override {
         missionState_.missionMode = MissionMode::MissionMode_Startup;
         missionTime_.setTime(0); // Set the mission time to the start time
-        actuatorsEnabled_ = false; // Disable actuators
+        actuatorsEnabled_ = true; // Actuators must be enabled immediately to keep the vehicle under control
         missionEnd_ = false; // Set the mission end to false
         positionSetpoint_ = posSubr_.getItem().data; // Set the position setpoint to where the vehicle is
         positionSetpoint_(0) = 0; // Set the velocity setpoint to 0

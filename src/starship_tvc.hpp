@@ -92,6 +92,7 @@ namespace VCTR
             }
 
             void enableActuators(bool enableActuators) {
+                LOG_MSG("TVC Actuators enable?: %d\n", enableActuators);
                 enableActuators_ = enableActuators;
             }
 

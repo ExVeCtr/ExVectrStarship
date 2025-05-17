@@ -75,6 +75,8 @@ namespace VCTR
             auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
             auto thrustMagnitude = tvcSetting.magnitude(0, 3);
 
+            //
+
             bool enableActuators = enableActuators_; //copy to local variable so we can enalbe for testing
 
             float angleFactor = 5;
@@ -161,6 +163,8 @@ namespace VCTR
             if (enableMotors_ && enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) {
 
                 //LOG_MSG("Motor CW: %.2f, Motor CCW: %.2f\n", motorCWOut, motorCCWOut);
+
+                //LOG_MSG("TVC: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1), tvcSetting(2), tvcSetting(3));
 
                 if (Core::NOW() - motorEnableTime_ > 2000 * Core::MILLISECONDS) {
                     float motorIdle = 0.04;
