@@ -470,6 +470,7 @@ public:
         missionList_.append(&defaultMission_); // Add the mission guidance task to the list of missions
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
+        missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 1.5}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 2}, 0.5, 1, 10 * Core::SECONDS); // Add a waypoint to the mission waypoint task
