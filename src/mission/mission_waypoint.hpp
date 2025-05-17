@@ -35,6 +35,7 @@ private:
         float thresholdDistance; // When the waypoint can be considered as reached if within this distance.
         int64_t loiterTime; // The time the vehicle should loiter at the waypoint in seconds.
         int64_t timeLimit; // If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected.
+        bool cancelIfNotReachable; // If the waypoint was not reached within the time limit, the mission will be cancelled and ended.
     };
 
     Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attSubr_;
@@ -51,6 +52,7 @@ private:
     size_t currentWaypointIndex_ = 0; // The index of the current waypoint to travel to.
     int64_t waypointThresholdTime_ = 0; // The time the vehicle should be within the threshold distance to the waypoint to be considered as reached.
     int64_t waypointStartTime_ = 0; // The time the vehicle started to travel to the waypoint.
+    bool waypointReached_ = false; // If the waypoint has been reached or not. This is set to true when the vehicle was within the threshold distance to the waypoint.
     
 public:
 
@@ -71,9 +73,10 @@ public:
      * @param thresholdDistance When the waypoint can be considered as reached if within this distance. 
      * @param loiterTime The time the vehicle should loiter at the waypoint in seconds.
      * @param timeLimit If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected. If not given, the vehicle will calculate the time needed +50% to reach the waypoint.
+     * @param cancelIfNotReachable If the waypoint was not reached within the time limit, the mission will be cancelled and ended.
      * 
      */
-    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME) {
+    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME, bool cancelIfNotReachable = false) {
 
         if (timeLimit == Core::END_OF_TIME) { // If the time limit is not given, calculate the time needed to reach the waypoint
             
@@ -88,7 +91,7 @@ public:
 
         }
 
-        waypoints_.append({position, velocity, thresholdDistance, loiterTime, timeLimit}); // Add the waypoint to the list of waypoints
+        waypoints_.append({position, velocity, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
 
     }
 
@@ -251,6 +254,8 @@ private:
         auto distance = waypoint.position - positionIs_.block<3, 1>(3); // Get the distance to the waypoint in reference frame
 
         if (distance.magnitude() < waypoint.thresholdDistance) { // If the vehicle is within the threshold distance of the waypoint, we consider it as reached
+
+            waypointReached_ = true; // Set the waypoint reached to true
             
             if (Core::NOW() - waypointThresholdTime_ > waypoint.loiterTime) { // If the vehicle is within the threshold distance for a certain time, we consider it as reached
                 
@@ -269,6 +274,7 @@ private:
                     LOG_MSG("Waypoint time limit: %.2f\n", double(waypoint.timeLimit)/Core::SECONDS); // Log the waypoint time limit
                     waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
                     waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
+                    waypointReached_ = false; // Set the waypoint reached to false
                 } else {
                     LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
                     missionEnd_ = true; // Set the mission end to true
@@ -280,17 +286,21 @@ private:
 
             waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
 
-            if (Core::NOW() - waypointStartTime_ > waypoint.timeLimit) { // If the vehicle is within the threshold distance for a certain time, we consider it as not reachable
+            if (!waypointReached_ && Core::NOW() - waypointStartTime_ > waypoint.timeLimit) { // If the vehicle is within the threshold distance for a certain time, we consider it as not reachable
 
                 positionSetpoint_(3) = waypoint.position(0); // Set the setpoint position in the reference frame
                 positionSetpoint_(4) = waypoint.position(1);
                 positionSetpoint_(5) = waypoint.position(2);
 
-                if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
+                if (waypoint.cancelIfNotReachable) { // If the waypoint was not reached within the time limit, the mission will be cancelled and ended
+                    LOG_MSG("Waypoint not reachable. Mission cancelled\n"); // Log the mission cancelled
+                    missionEnd_ = true; // Set the mission end to true
+                } else if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
                     currentWaypointIndex_++; // Go to the next waypoint
                     LOG_MSG("Waypoint not reachable. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
                     waypointThresholdTime_ = Core::NOW(); // Set the time when the waypoint was reached
                     waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
+                    waypointReached_ = false; // Set the waypoint reached to false
                 } else {
                     LOG_MSG("Waypoint not reachable. Waypoint mission finished\n"); // Log the mission finished
                     missionEnd_ = true; // Set the mission end to true

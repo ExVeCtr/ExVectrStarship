@@ -471,7 +471,7 @@ public:
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 45 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 1.5}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 2}, 0.5, 1, 10 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({0, 0, 2}, 100, 1, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
@@ -1663,7 +1663,7 @@ void initialiseTopicConnections() {
     attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
 
 
-    Math::Quat<float> accTilt({1, 0, 0}, -6*DEG_TO_RAD);
+    Math::Quat<float> accTilt({1, 0, 0}, -2*DEG_TO_RAD);
     imuTask.setAccTiltCompensation(accTilt.to3x3RotMat());
 
 
