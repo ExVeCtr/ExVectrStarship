@@ -35,6 +35,8 @@ namespace VCTR
         {
         private:
 
+            const float FLAP_TEST_DURATION = 4.0f;
+
             Core::Simple_Subscriber<StarshipFlapSettings> ctrlSubr_;
 
             ACTR::PWM_Output servoTLPin_;
@@ -45,6 +47,16 @@ namespace VCTR
             StarshipFlapSettings flapSettings_;
 
             bool enableActuators_ = true;
+
+            enum class ActuatorTestingState
+            {
+                WaitBegin,
+                Testing,
+                Idle
+            };
+            ActuatorTestingState actuatorTestState_ = ActuatorTestingState::Idle;
+
+            int64_t actuatorTestStartTime_ = 0;
 
 
         public:
@@ -70,6 +82,10 @@ namespace VCTR
             void taskInit() override;
 
             void taskThread() override;
+
+            void beginActuatorTest(int64_t testOffset);
+
+            bool testingActuators();
 
             
         };

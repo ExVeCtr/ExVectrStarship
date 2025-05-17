@@ -16,7 +16,7 @@
 namespace VCTR
 {
     namespace CTRL
-    {
+    {   
 
         /**
          * @brief Takes the TVC settings from rocket control and maps them to the servos and motors.
@@ -24,6 +24,11 @@ namespace VCTR
         class StarshipTVC : public Core::Task_Periodic
         {
         private:
+
+            const float TVC_TEST_SPIN_TIME = 2;
+            const int64_t TVC_TEST_SPIN_COUNT = 2;
+            const float TVC_TEST_TWIST_TIME = 2;
+            const int64_t TVC_TEST_TWIST_COUNT = 2;
 
             Core::Simple_Subscriber<Math::Vector<float, 4>> ctrlSubr_;
 
@@ -50,6 +55,16 @@ namespace VCTR
             float tvcFinOffsetXN_Rad_ = 0.0f;
             float tvcFinOffsetYP_Rad_ = 0.0f;
             float tvcFinOffsetYN_Rad_ = 0.0f;
+
+            enum class ActuatorTestingState
+            {
+                WaitBegin,
+                Testing,
+                Idle
+            };
+            ActuatorTestingState actuatorTestState_ = ActuatorTestingState::Idle;
+
+            int64_t actuatorTestStartTime_ = 0;
 
 
         public:
@@ -91,6 +106,10 @@ namespace VCTR
             void taskInit() override;
 
             void taskThread() override;
+
+            void beginActuatorTest(int64_t testOffset);
+
+            bool testingActuators();
 
             
         };

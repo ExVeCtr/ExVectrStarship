@@ -169,7 +169,7 @@ private:
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
 
-        if (missionTime_.NOW() > -5 * Core::SECONDS) { // If the mission time is greater than -5 seconds, we consider it as initialised
+        if (missionTime_.NOW() > -10 * Core::SECONDS) { // If the mission time is greater than -5 seconds, we consider it as initialised
             missionState_.missionMode = MissionMode::MissionMode_Startup; // Go to startup mode
         }
 
@@ -181,8 +181,8 @@ private:
         missionEnd_ = false; // Set the mission end to false
 
         flapSettings_.enableActuators = true; // Enable the actuators
-        flapSettings_.tlAngle = 0; // Move top flaps out fully
-        flapSettings_.trAngle = 0; 
+        flapSettings_.tlAngle = 90; // Move top flaps out fully
+        flapSettings_.trAngle = 90; 
         flapSettings_.blAngle = 90;// Move bottom flaps in fully
         flapSettings_.brAngle = 90; 
 

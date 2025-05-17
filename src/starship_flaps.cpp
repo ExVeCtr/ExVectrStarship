@@ -51,13 +51,62 @@ namespace VCTR
 
         }
 
+        void StarshipFlaps::beginActuatorTest(int64_t testOffset) {
+            actuatorTestStartTime_ = Core::NOW() + testOffset;
+            actuatorTestState_ = ActuatorTestingState::WaitBegin;
+            //enableActuators_ = true;
+            LOG_MSG("Flap test begin\n");
+        }
+
+        bool StarshipFlaps::testingActuators() {
+            return actuatorTestState_ != ActuatorTestingState::Idle;
+        }
+
         void StarshipFlaps::taskThread() {
 
             if (ctrlSubr_.isDataNew()) {
                 flapSettings_ = ctrlSubr_.getItem(); // Get the new flap settings from the subscriber
             }
 
+            auto flapSettings = flapSettings_;
+
             bool enable = enableActuators_ && flapSettings_.enableActuators; // Check if the actuators should be enabled
+
+            if (actuatorTestState_ != ActuatorTestingState::Idle) { //Hijack the control loop to test the actuators
+
+                //LOG_MSG("Actuator test state\n");
+
+                bool finished = true;
+
+                if (Core::NOW() - actuatorTestStartTime_ > 0) {
+                    actuatorTestState_ = ActuatorTestingState::Testing;
+                    enable = true;
+                } 
+
+                if (actuatorTestState_ == ActuatorTestingState::WaitBegin) {
+                    finished = false;
+                }
+
+                auto actCalcFunc = [this](float phaseOffset) -> float {
+                    return (sin(phaseOffset + double(Core::NOW() - actuatorTestStartTime_)/Core::SECONDS / FLAP_TEST_DURATION * 2 * 3.1415) + 1) * 3.14/2; // Calculate the flap angle based on the phase offset and the current time
+                };
+
+                if (Core::NOW() - actuatorTestStartTime_ < FLAP_TEST_DURATION * Core::SECONDS && Core::NOW() - actuatorTestStartTime_ > 0) {
+
+                    flapSettings.blAngle = actCalcFunc(0); // Set the top left flap angle
+                    flapSettings.tlAngle = actCalcFunc(3.14/4); // Set the top left flap angle
+                    flapSettings.trAngle = actCalcFunc(3.14/2); // Set the top right flap angle
+                    flapSettings.brAngle = actCalcFunc(3.14*3/4); // Set the bottom left flap angle
+                    finished = false;
+
+                }
+
+                if (finished) {
+                    actuatorTestState_ = ActuatorTestingState::Idle;
+                }
+
+                
+            } 
 
             servoTLPin_.enableOutput(enable);
             servoTRPin_.enableOutput(enable);
@@ -65,11 +114,11 @@ namespace VCTR
             servoBRPin_.enableOutput(enable);
 
             if (enable) {
-                //LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings_.tlAngle, flapSettings_.trAngle, flapSettings_.blAngle, flapSettings_.brAngle); // Log the flap angles
-                servoTLPin_.setValue(1 - flapSettings_.tlAngle/3.1415/2); // Set the top left flap angle
-                servoTRPin_.setValue(flapSettings_.trAngle/3.1415/2); // Set the top right flap angle
-                servoBLPin_.setValue(1 - flapSettings_.blAngle/3.1415/2); // Set the bottom left flap angle
-                servoBRPin_.setValue(flapSettings_.brAngle/3.1415/2); // Set the bottom right flap angle
+                LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle, flapSettings.brAngle); // Log the flap angles
+                servoTLPin_.setValue(1 - flapSettings.tlAngle/3.1415/2); // Set the top left flap angle
+                servoTRPin_.setValue(flapSettings.trAngle/3.1415/2); // Set the top right flap angle
+                servoBLPin_.setValue(1 - flapSettings.blAngle/3.1415/2); // Set the bottom left flap angle
+                servoBRPin_.setValue(flapSettings.brAngle/3.1415/2); // Set the bottom right flap angle
                 /*float setting = 0;
                 servoTLPin_.setValue(1 - setting); // Set the top left flap angle
                 servoTRPin_.setValue(setting); // Set the top right flap angle

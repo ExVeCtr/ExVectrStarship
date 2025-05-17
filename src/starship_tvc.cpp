@@ -56,12 +56,26 @@ namespace VCTR
 
         }
 
+        void StarshipTVC::beginActuatorTest(int64_t testOffset) {
+            actuatorTestStartTime_ = Core::NOW() + testOffset;
+            actuatorTestState_ = ActuatorTestingState::WaitBegin;
+            //enableActuators_ = true;
+            LOG_MSG("TVC test begin\n");
+        }
+
+        bool StarshipTVC::testingActuators() {
+            return actuatorTestState_ != ActuatorTestingState::Idle;
+        }
+
         void StarshipTVC::taskThread()
         {
+            
 
             auto tvcSetting = ctrlSubr_.getItem();
             auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
             auto thrustMagnitude = tvcSetting.magnitude(0, 3);
+
+            bool enableActuators = enableActuators_; //copy to local variable so we can enalbe for testing
 
             float angleFactor = 5;
             float twistFactor = 45;
@@ -73,6 +87,40 @@ namespace VCTR
 
             auto xAngle = atan2(tvcSetting(1), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the X axis as rotation axis
             auto yAngle = atan2(tvcSetting(0), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the Y axis as rotation axis
+
+            if (actuatorTestState_ != ActuatorTestingState::Idle) { //Hijack the control loop to test the actuators
+
+                //LOG_MSG("Actuator test state\n");
+
+                enableActuators = true;
+
+                if (Core::NOW() - actuatorTestStartTime_ > 0) {
+                    actuatorTestState_ = ActuatorTestingState::Testing;
+                }
+
+                if (Core::NOW() - actuatorTestStartTime_ < TVC_TEST_SPIN_TIME * Core::SECONDS) {
+
+                    //LOG_MSG("Actuator test spin\n");
+                    
+                    float angleSin = sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * tvcAngleLimit_Rad_;
+                    float angleCos = cos(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * tvcAngleLimit_Rad_;
+                    xAngle = angleSin;
+                    yAngle = angleCos;
+
+                } else if (Core::NOW() - actuatorTestStartTime_ < (TVC_TEST_TWIST_TIME + TVC_TEST_SPIN_TIME) * Core::SECONDS) {
+
+                    //LOG_MSG("Actuator test twist\n");
+
+                    xAngle = 0;
+                    yAngle = 0;
+                    tvcTwistForce = sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_TWIST_TIME * 2 * M_PI * TVC_TEST_TWIST_COUNT);
+
+                } else {
+                    actuatorTestState_ = ActuatorTestingState::Idle;
+                }
+
+                
+            } 
 
             if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
             else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;
@@ -91,17 +139,17 @@ namespace VCTR
             if (motorCWOut > motorPowerLimit_) motorCWOut = motorPowerLimit_;
             if (motorCCWOut > motorPowerLimit_) motorCCWOut = motorPowerLimit_;
 
-            servoXP_.enableOutput(enableActuators_);
-            servoXN_.enableOutput(enableActuators_);
-            servoYP_.enableOutput(enableActuators_);
-            servoYN_.enableOutput(enableActuators_);
+            servoXP_.enableOutput(enableActuators);
+            servoXN_.enableOutput(enableActuators);
+            servoYP_.enableOutput(enableActuators);
+            servoYN_.enableOutput(enableActuators);
 
-            motorCW_.enableOutput(enableMotors_ && enableActuators_);
-            motorCCW_.enableOutput(enableMotors_ && enableActuators_);
+            motorCW_.enableOutput(enableMotors_ && enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle);
+            motorCCW_.enableOutput(enableMotors_ && enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle);
 
             //LOG_MSG("Motor CW: %.2f, Motor CCW: %.2f\n", motorCWOut, motorCCWOut);
 
-            if (enableActuators_) {
+            if (enableActuators) {
 
                 servoXP_.setValue(servoXPOut * 0.5 + 0.5);
                 servoXN_.setValue(servoXNOut * 0.5 + 0.5);
@@ -110,11 +158,11 @@ namespace VCTR
 
             }
 
-            if (enableMotors_ && enableActuators_) {
+            if (enableMotors_ && enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) {
 
                 //LOG_MSG("Motor CW: %.2f, Motor CCW: %.2f\n", motorCWOut, motorCCWOut);
 
-                if (Core::NOW() - motorEnableTime_ > 3000 * Core::MILLISECONDS) {
+                if (Core::NOW() - motorEnableTime_ > 2000 * Core::MILLISECONDS) {
                     float motorIdle = 0.04;
                     motorCW_.setValue(motorCWOut + motorIdle);
                     motorCCW_.setValue(motorCCWOut + motorIdle);

@@ -71,6 +71,8 @@
 
 //#include "sx1280_driver/datalink_sx1280.hpp"
 
+//#define DO_FLAP_TEST_STARTUP
+
 using namespace VCTR;
 
 #define PMW_CS_PIN 29
@@ -380,6 +382,8 @@ private:
     SensoryState sensoryState_;
     FailureState failureState_;
 
+    MissionMode lastMissionMode_ = MissionMode::MissionMode_Idle; // The last mission mode that was set. This is used to check if the mission mode has changed.
+
     bool vehicleArmed_ = false; // If the vehicle is armed or not. This is set to true when the vehicle is armed.
 
     bool allSystemsInitialised_ = false; // If all systems are initialised or not. This is set to true when all systems are initialised.
@@ -505,42 +509,53 @@ public:
         MissionState missionState = mission_->getMissionState();
         missionState.missionIndex = missionSelection_; // Set the mission index to the current mission index
 
-        if (missionState.missionMode == MissionMode::MissionMode_Idle) {
-            posEstTask.enableZeroingMode(false);
-            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
-            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(false); // Disable control for the rocket
-            //starshipTVC.enableMotors(false); // Enable motors
-            //starshipFlaps.enableActuators(false); // Disable actuators
-        } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
-            posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
-            imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
-            bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(false); // Disable control for the rocket
-            //starshipTVC.enableMotors(false); // Enable motors
-            //starshipFlaps.enableActuators(true); // Disable actuators
-        } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
-            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
-            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
-            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(false); // Disable control for the rocket
-            //starshipTVC.enableMotors(true); // Enable motors
-            //starshipFlaps.enableActuators(false); // Disable actuators
-        } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
-            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
-            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
-            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(true); // Disable control for the rocket
-            //starshipTVC.enableMotors(true); // Enable motors
-            //starshipFlaps.enableActuators(true); // Disable actuators
-        } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
-            posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
-            imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
-            bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-            controlRocket.enableControl(false); // Disable control for the rocket
-            //starshipTVC.enableMotors(false); // Enable motors
-            //starshipFlaps.enableActuators(false); // Disable actuators
+        if (missionState.missionMode != lastMissionMode_) {
+            
+            if (missionState.missionMode == MissionMode::MissionMode_Idle) {
+                posEstTask.enableZeroingMode(false);
+                imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+                bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+                controlRocket.enableControl(false); // Disable control for the rocket
+                //starshipTVC.enableMotors(false); // Enable motors
+                //starshipFlaps.enableActuators(false); // Disable actuators
+            } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
+                posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
+                imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
+                bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
+                controlRocket.enableControl(false); // Disable control for the rocket
+                //starshipTVC.enableMotors(false); // Enable motors
+                //starshipFlaps.enableActuators(true); // Disable actuators
+            } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
+                posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+                imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+                bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+                controlRocket.enableControl(false); // Disable control for the rocket
+                starshipTVC.beginActuatorTest(0); // Start the actuator test
+                #ifdef DO_FLAP_TEST_STARTUP
+                starshipFlaps.beginActuatorTest(4*Core::SECONDS); // Start the actuator test
+                #endif
+                //starshipTVC.enableMotors(true); // Enable motors
+                //starshipFlaps.enableActuators(false); // Disable actuators
+            } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
+                posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+                imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+                bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+                controlRocket.enableControl(true); // Disable control for the rocket
+                //starshipTVC.enableMotors(true); // Enable motors
+                //starshipFlaps.enableActuators(true); // Disable actuators
+            } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
+                posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
+                imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
+                bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
+                controlRocket.enableControl(false); // Disable control for the rocket
+                //starshipTVC.enableMotors(false); // Enable motors
+                //starshipFlaps.enableActuators(false); // Disable actuators
+            }
+
+            lastMissionMode_ = missionState.missionMode; // Set the last mission mode to the current mission mode\
+
         }
+        
 
         missionStateTopic.publish(missionState); // Publish the mission state to the control system
 
