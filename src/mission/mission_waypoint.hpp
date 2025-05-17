@@ -111,10 +111,13 @@ public:
     }
 
     void beginMission(int64_t startTime) override {
+        resetMission();
         missionState_.missionMode = MissionMode::MissionMode_Initialisation;
         missionTime_.setTime(startTime); // Set the mission time to the start time
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
+        currentWaypointIndex_ = 0; // Reset the waypoint index
+        waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
         LOG_MSG("Started mission waypoint\n"); // Log the mission start
     };
 
