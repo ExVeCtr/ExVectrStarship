@@ -471,11 +471,8 @@ public:
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 45 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({0, 0, 1.5}, 0.5, 0.5, 30 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({0, 0, 2}, 0.5, 1, 10 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({0, 0, 2}, 100, 1, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({10, 5, 100}, 10, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 5 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
+        //missionWaypointTask.addWaypoint({10, 0, 100}, 5, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.setNextMission(&missionFreefallTask); // Set the next mission to the mission freefall task
         //missionFreefallTask.setNextMission(&defaultMission_); // Set the next mission to the default mission
         
