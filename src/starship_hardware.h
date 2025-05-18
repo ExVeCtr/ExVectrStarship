@@ -1,16 +1,11 @@
-#ifndef STARSHIP_CONNECTIONS_V_1_0_H
-#define STARSHIP_CONNECTIONS_V_1_0_H
+#ifndef STARSHIP_HARDWARE_H
+#define STARSHIP_HARDWARE_H
 
 /**
  * 
- * This defines all connection pins of servos, motors, sensors etc.
- * This could of course be different from vehicle to vehicle but IMU 
- * and LoRa radios could be the some depending on the board used.
+ * This defines all connection pins of servos, motors etc and also parameters like max TVC thrust and angle.
  * 
 */
-
-//#include "boards/board_v_1_0.h" //Add board used by Starship
-
 
 #define TVC_SERVO_PIN_1 1
 #define TVC_SERVO_PIN_2 22
@@ -29,6 +24,7 @@
 
 #define VEHICLE_MASS_KG 1.05f // Mass of the vehicle in kg
 #define TVC_THRUST_LIMIT_N 15.0f // Maximum thrust in Newtons
+#define TVC_ANGLE_LIMIT_RAD 8*3.14/180 // Maximum angle in radians
 
 
 

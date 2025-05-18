@@ -89,9 +89,9 @@ Platform::BusSPIDevice spiMPU(SPI, mpuPin, true);
 SNSR::MPU9250Driver mpuDriver(spiMPU, true);
 
 //Platform::PinGPIO bmePin(BME280_NCS_PIN);
-//Platform::BusSPIDevice spiBME(SPI, bmePin, true);
-Platform::BusI2CDevice i2cBME(Wire, 0x76);
-SNSR::BME280Driver bme(i2cBME);
+//Platform::BusSPIDevice bmeBus(SPI, bmePin, true);
+Platform::BusI2CDevice bmeBus(Wire, 0x76);
+SNSR::BME280Driver bme(bmeBus);
 
 SNSR::UbloxSerialGNSS gnss(Serial5);
 
@@ -176,9 +176,9 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 
 
 //Control
-CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30*DEG_TO_RAD);
+CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 
-CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, 15*3.14/180, 45*3.14/180, TVC_THRUST_LIMIT_N);
+CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, TVC_ANGLE_LIMIT_RAD, 45*3.14/180, TVC_THRUST_LIMIT_N);
 CTRL::StarshipFlaps starshipFlaps(flapServoULPin, flapServoURPin, flapServoDLPin, flapServoDRPin);
 
 
@@ -1229,7 +1229,7 @@ public:
             auto northRot = attQuat.conjugate().rotate(Math::Vector_F({1, 0, 0}));
             north = atan2(northRot(1), northRot(0));
 
-            if (angle > 80*3.14/180) {
+            /*if (angle > 80*3.14/180) {
                 //gnssRef = gnssSub.getItem().data.position;
                 auto newRef = gnssSub.getItem().data.position;
                 //newRef(2) = accSub.getItem().data.val(5);
@@ -1242,7 +1242,7 @@ public:
                 //    0, 0, 0, attitude(0), attitude(1), attitude(2), attitude(3)
                 //});
                 //imuTask.setState(DSP::ValueCov<float, 7>(attState, 1));
-            }
+            }*/
 
         }
 
@@ -1314,7 +1314,7 @@ public:
     }
 
 };
-//DisplayTask displayTask;
+DisplayTask displayTask;
 
 
 

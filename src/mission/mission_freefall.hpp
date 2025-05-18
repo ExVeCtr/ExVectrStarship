@@ -157,7 +157,7 @@ private:
 
     float calculateStoppingDistance(float thrust, float mass, Math::Vector<float, 6> position) {
 
-        float& pz = position(5); // Get the Z position
+        //float& pz = position(5); // Get the Z position
         float& vz = position(2); // Get the Z velocity
 
         float aSum = thrust / mass - 9.81; // Calculate the acceleration sum
