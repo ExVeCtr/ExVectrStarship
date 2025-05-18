@@ -140,10 +140,10 @@ public:
         positionSetpointTopic_.publish({0, 0, 0, 0, 0, 0}); // Publish the setpoint to the control system
 
         CTRL::StarshipFlapSettings flapSettings_;
-        flapSettings_.blAngle = 90*3.14/180; // Retract bottom flaps, extend top flaps
-        flapSettings_.brAngle = 90*3.14/180;
-        flapSettings_.tlAngle = 0;
-        flapSettings_.trAngle = 0;
+        flapSettings_.blAngle = 90; // Retract bottom flaps, extend top flaps
+        flapSettings_.brAngle = 90;
+        flapSettings_.tlAngle = 20*3.14/180;
+        flapSettings_.trAngle = 20*3.14/180;
         flapSettings_.enableActuators = true; // Enable actuators
         flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control system
 

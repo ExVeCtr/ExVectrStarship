@@ -259,10 +259,10 @@ private:
             positionSetpoint_(5) += travelDistance(2); 
 
             flapSettings_.enableActuators = true; // Enable the actuators
-            flapSettings_.tlAngle = 0; // Move top flaps out fully
-            flapSettings_.trAngle = 0; 
-            flapSettings_.blAngle = 0;// Move bottom flaps in fully
-            flapSettings_.brAngle = 0; 
+            flapSettings_.tlAngle = 90; // Move top flaps out fully
+            flapSettings_.trAngle = 90; 
+            flapSettings_.blAngle = 90;// Move bottom flaps in fully
+            flapSettings_.brAngle = 90; 
 
             auto distance = homePosition_ - positionIs_.block<3, 1>(3); // Get the distance to the home position in reference frame
 
@@ -296,7 +296,13 @@ private:
         descentModeTimestamp_ = Core::NOW(); // Set the time when the descent mode was last updated
 
         actuatorsEnabled_ = true;   
-        missionEnd_ = false; // Set the mission end to false
+        missionEnd_ = false; // Set the mission end to falses
+
+        flapSettings_.enableActuators = true; // Enable the actuators
+        flapSettings_.tlAngle = 90; // Move top flaps out fully
+        flapSettings_.trAngle = 90; 
+        flapSettings_.blAngle = 90;// Move bottom flaps in fully
+        flapSettings_.brAngle = 90; 
         
         if (positionIs_(5) - positionSetpoint_(5) < landingThresholdDistance_*1.5) { //We keep updateting the threshold time. We stop when the vehicle is above the threshold distance. This triggers the start of the timer.
             positionSetpoint_(5) -= dTime*descentRate_; // Update the setpoint position in the reference frame

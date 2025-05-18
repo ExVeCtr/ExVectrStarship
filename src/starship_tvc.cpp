@@ -166,7 +166,9 @@ namespace VCTR
 
                 //LOG_MSG("TVC: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1), tvcSetting(2), tvcSetting(3));
 
-                if (Core::NOW() - motorEnableTime_ > 2000 * Core::MILLISECONDS) {
+                if (Core::NOW() - motorEnableTime_ > 2000 * Core::MILLISECONDS || !firstMotorEnable_) {
+                    //LOG_MSG("Motor enable time: %lld\n", Core::NOW() - motorEnableTime_);
+                    firstMotorEnable_ = false;
                     float motorIdle = 0.04;
                     motorCW_.setValue(motorCWOut + motorIdle);
                     motorCCW_.setValue(motorCCWOut + motorIdle);

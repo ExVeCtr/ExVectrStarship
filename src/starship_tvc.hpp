@@ -43,6 +43,8 @@ namespace VCTR
             bool enableActuators_ = false;
             bool enableMotors_ = false;
 
+            bool firstMotorEnable_ = true;
+
             float motorPowerLimit_ = 0.05;
 
             int64_t motorEnableTime_ = 0;
