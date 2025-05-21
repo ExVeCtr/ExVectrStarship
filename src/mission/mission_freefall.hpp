@@ -145,7 +145,9 @@ public:
         flapSettings_.tlAngle = 55*3.14/180;
         flapSettings_.trAngle = 55*3.14/180;
         flapSettings_.enableActuators = true; // Enable actuators
-        flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control system
+        flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control systems
+
+        disableKinematicSafety_ = true; // Disable the kinematic safety measures
 
 
         //missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time to the control system
