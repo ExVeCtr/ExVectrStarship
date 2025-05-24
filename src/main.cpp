@@ -873,7 +873,7 @@ public:
         if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
             //vehicleMode_ = VehicleMode::VehicleMode_Failure;
             //failureState_.sensorFailure = true;
-            if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
+            if (vehicleMode_ == VehicleMode::VehicleMode_Running && mission_->getMissionState().missionMode == MissionMode::MissionMode_Running) {
                 switchMissionTo(&defaultMission_); // Switch to the default mission
                 LOG_MSG("Magnetometer data timeout. Switching mission to default!\n");
             }
