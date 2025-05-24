@@ -75,7 +75,7 @@ namespace VCTR
             auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
             auto thrustMagnitude = tvcSetting.magnitude(0, 3);
 
-            //
+            //LOG_MSG("TVC setting: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1), tvcSetting(2), tvcTwistForce);
 
             bool enableActuators = enableActuators_; //copy to local variable so we can enalbe for testing
 

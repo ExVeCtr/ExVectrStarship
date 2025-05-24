@@ -128,7 +128,7 @@ DSP::TopicCoordTransform<float> magTransformTopic;
 DSP::IMUAttitudeEKFTask imuTask(1*Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10*Core::MILLISECONDS);
 
-DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004});
+DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004}, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 
 //DSP::Calibrator_Magnetometer magCalibrator;
 //DSP::Calibrator_Gyroscope gyroCalibrator;
@@ -213,7 +213,7 @@ void positionTelemetryCallback(const Core::Timestamped<Math::Vector<float, 6>>& 
 
     static int64_t lastSend = 0;
     //LOG_MSG("Time: %f\n", double(data.timestamp)/Core::SECONDS);
-    if (Core::NOW() - lastSend < 0.2*Core::SECONDS) return;
+    if (Core::NOW() - lastSend < 0.1*Core::SECONDS) return;
     lastSend = Core::NOW();
 
     Net::PacketPosition packet({
@@ -250,7 +250,6 @@ void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData>& data) {
 
 }
 Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssTeleSubr(gnss.getGNSSTopic(), gnssTelemetryCallback);
-
 
 
 class MagnetometerCalibrationTask : public Core::Task_Periodic
@@ -353,7 +352,7 @@ MagnetometerCalibrationTask magCalibTask;
 
 
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
-MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
+MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
@@ -448,6 +447,10 @@ public:
         return vehicleArmed_;
     }
 
+    MissionAbstract* getCurrentMission() {
+        return mission_;
+    }
+
     void switchMissionTo(MissionAbstract* mission, int64_t startTime = 0) {
         mission_->resetMission(); // Reset the mission
         mission_ = mission; // Set the mission to the default mission
@@ -475,10 +478,7 @@ public:
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 15 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({10, 0, 100}, 5, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.setNextMission(&missionFreefallTask); // Set the next mission to the mission freefall task
-        //missionFreefallTask.setNextMission(&defaultMission_); // Set the next mission to the default mission
         
-
         //mission_ = missionGuidanceTask;
 
     }
@@ -559,9 +559,6 @@ public:
             lastMissionMode_ = missionState.missionMode; // Set the last mission mode to the current mission mode\
 
         }
-        
-
-        missionStateTopic.publish(missionState); // Publish the mission state to the control system
 
         if (mission_->missionEnd() && mission_->nextMission() != nullptr) {
             LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the mission end
@@ -753,7 +750,7 @@ public:
                     positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic()); // Subscribe to the position topic of the body simulator
                     attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic()); // Subscribe to the attitude topic of the body simulator
                     
-                    bodySimulator.setTVCInputTopic(controlRocket.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), 30*DEG_TO_RAD, 20); // Subscribe to the TVC input topic
+                    bodySimulator.setTVCInputTopic(controlRocket.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N); // Subscribe to the TVC input topic
 
                     //bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
                     bodySimulator.setAttitudeState({0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
@@ -1061,7 +1058,7 @@ private:
 
 public:
 
-    CommsSystemStateTask() : Task_Periodic("Comms System State", 0.5*Core::SECONDS)
+    CommsSystemStateTask() : Task_Periodic("Comms System State", 0.2*Core::SECONDS)
     {
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
@@ -1092,6 +1089,8 @@ public:
         vehicleState.tvcThrust = controlRocket.getTvcThrustMaxEstimated()/50.0f * UINT16_MAX;
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
+
+        missionStateTopic.publish(vehicleSafetyAndControlTask.getCurrentMission()->getMissionState()); // Publish the mission state to the control system
 
 
     }

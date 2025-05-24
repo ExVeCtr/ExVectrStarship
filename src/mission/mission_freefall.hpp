@@ -51,6 +51,7 @@ public:
         tvcThrustLimit_N_ = tvcThrustLimit_N; // Set the thrust limit
         Core::getSystemScheduler().addTask(*this);
         disableKinematicSafety_ = true; // Disable the kinematic safety measures
+        stopAlt_ = stopAlt; // Set the stopping altitude
         //setPriority(500);
     }
 
@@ -161,6 +162,8 @@ private:
 
         //float& pz = position(5); // Get the Z position
         float& vz = position(2); // Get the Z velocity
+
+        //return vz*vz
 
         float aSum = thrust / mass - 9.81; // Calculate the acceleration sum
 

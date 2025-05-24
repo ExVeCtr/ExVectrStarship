@@ -69,6 +69,7 @@ public:
         posSubr_.subscribe(posTopic);
         homePosition_ = homePosition; // Set the home position to the given position
         //homePosition_(2) += 1; // Set the home position to the given position + 1m in z axis
+        disableKinematicSafety_ = true; // Disable the kinematic safety measures
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
     }
