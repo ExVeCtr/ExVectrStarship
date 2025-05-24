@@ -7,10 +7,10 @@
  * 
 */
 
-#define TVC_SERVO_PIN_1 1
-#define TVC_SERVO_PIN_2 22
-#define TVC_SERVO_PIN_3 0
-#define TVC_SERVO_PIN_4 23
+#define TVC_SERVO_PIN_1 0
+#define TVC_SERVO_PIN_2 23
+#define TVC_SERVO_PIN_3 1
+#define TVC_SERVO_PIN_4 22
 
 #define FLAP_SERVO_PIN_UL 25
 #define FLAP_SERVO_PIN_UR 24

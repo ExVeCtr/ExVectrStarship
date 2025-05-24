@@ -81,11 +81,15 @@ namespace VCTR
 
             float angleFactor = 5;
             float twistFactor = 45;
+            float twistLimit = 0.5;
 
             tvcTwistForce = tvcTwistForce * twistFactor / thrustMagnitude;
             if (thrustMagnitude < 0.01) {
                 tvcTwistForce = 0;
             } 
+
+            if (tvcTwistForce > twistLimit) tvcTwistForce = twistLimit;
+            else if (tvcTwistForce < -twistLimit) tvcTwistForce = -twistLimit;
 
             auto xAngle = atan2(tvcSetting(1), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the X axis as rotation axis
             auto yAngle = atan2(tvcSetting(0), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the Y axis as rotation axis
@@ -123,6 +127,10 @@ namespace VCTR
 
                 
             } 
+
+            //enableActuators = true;
+            //xAngle = 0;
+            //yAngle = 0;
 
             if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
             else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;

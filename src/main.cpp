@@ -471,7 +471,7 @@ public:
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 5 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 0.5, 15 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.addWaypoint({10, 0, 100}, 5, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         //missionWaypointTask.setNextMission(&missionFreefallTask); // Set the next mission to the mission freefall task
         //missionFreefallTask.setNextMission(&defaultMission_); // Set the next mission to the default mission
@@ -490,6 +490,10 @@ public:
             vehicleShutdownControl(true); // Disable everything
             return; // Wait until all systems are initialised
         }
+
+        //if (mission_ == &defaultMission_) {
+        //    LOG_MSG("Default mission selected.\n"); // Log the default mission selection
+        //}
 
         checkForFailures();
 
@@ -707,7 +711,7 @@ public:
                 int64_t startTime = int64_t(telecommand.paramInt) * Core::SECONDS; // Get the start time from the telecommand
                 
                 missionSelection_ = 1;
-                switchMissionTo(missionList_[missionSelection_], startTime); // Switch to the selected mission
+                switchMissionTo(&missionWaypointTask, startTime); // Switch to the selected mission
 
                 vehicleMode_ = VehicleMode::VehicleMode_Running; // Vehicle is now running and will do the mission
 
@@ -861,7 +865,10 @@ public:
         if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
             //vehicleMode_ = VehicleMode::VehicleMode_Failure;
             //failureState_.sensorFailure = true;
-            switchMissionTo(&defaultMission_); // Switch to the default mission
+            if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
+                switchMissionTo(&defaultMission_); // Switch to the default mission
+                LOG_MSG("Magnetometer data timeout. Switching mission to default!\n");
+            }
             sensoryState_.mag = TelemetrySensor::TelemetrySensor_Failure;
         } else if (sensoryState_.mag != TelemetrySensor::TelemetrySensor_Calib && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
             sensoryState_.mag = TelemetrySensor::TelemetrySensor_Ready;
@@ -1080,6 +1087,7 @@ public:
         vehicleState.failureState = failureState;
         vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
         vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed(); // Get the vehicle armed state
+        vehicleState.tvcThrust = controlRocket.getTvcThrustMaxEstimated()/50.0f * UINT16_MAX;
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 
@@ -1485,7 +1493,7 @@ void initialiseHardware() {
 
     //servoTest.setPosition(0);
 
-    starshipTVC.setTVCFinsOffset(0, 0.5*DEG_TO_RAD, -2*DEG_TO_RAD, -1*DEG_TO_RAD);
+    starshipTVC.setTVCFinsOffset(1*DEG_TO_RAD, 0*DEG_TO_RAD, 1.2*DEG_TO_RAD, 0*DEG_TO_RAD);
 
 }
 
