@@ -8,6 +8,7 @@
 #include "ExVectrMath/matrix_vector.hpp"
 
 #include "ExVectrDSP/value_covariance.hpp"
+#include "ExVectrControl/starship/control_attitude_flaps.hpp"
 
 #include "ExVectrHAL/pin_pwm.hpp"
 #include "ExVectrActuator/pwm_output.hpp"
@@ -19,15 +20,6 @@ namespace VCTR
     namespace CTRL
     {
 
-        struct StarshipFlapSettings
-        {
-            float tlAngle; // Angle of the top left flap in radians
-            float trAngle; // Angle of the top right flap in radians
-            float blAngle; // Angle of the bottom left flap in radians
-            float brAngle; // Angle of the bottom right flap in radians
-            bool enableActuators; // Enable or disable the actuators
-        };
-
         /**
          * @brief Simple one dimensional PID controller.
          */
@@ -37,14 +29,14 @@ namespace VCTR
 
             const float FLAP_TEST_DURATION = 4.0f;
 
-            Core::Simple_Subscriber<StarshipFlapSettings> ctrlSubr_;
+            Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> ctrlSubr_;
 
             ACTR::PWM_Output servoTLPin_;
             ACTR::PWM_Output servoTRPin_;
             ACTR::PWM_Output servoBLPin_;
             ACTR::PWM_Output servoBRPin_;
 
-            StarshipFlapSettings flapSettings_;
+            CTRL::ControlAttitudeFlapSetting flapSettings_;
 
             bool enableActuators_ = true;
 
@@ -67,12 +59,12 @@ namespace VCTR
             StarshipFlaps(HAL::PinPWM& flapServoULPin, HAL::PinPWM& flapServoURPin, HAL::PinPWM& flapServoLLPin, HAL::PinPWM& flapServoLRPin);
 
 
-            void setFlapSettingTopic(Core::Topic<StarshipFlapSettings>& flapSettingTopic)
+            void setFlapSettingTopic(Core::Topic<CTRL::ControlAttitudeFlapSetting>& flapSettingTopic)
             {
                 ctrlSubr_.subscribe(flapSettingTopic);
             }
 
-            const StarshipFlapSettings& getFlapSettings() const { return flapSettings_; }
+            const CTRL::ControlAttitudeFlapSetting& getFlapSettings() const { return flapSettings_; }
 
             void enableActuators(bool enable) { enableActuators_ = enable; }
 

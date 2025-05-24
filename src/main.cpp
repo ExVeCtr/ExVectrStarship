@@ -36,7 +36,7 @@
 #include "ExVectrDSP/body_simulator.hpp"
 
 #include "ExVectrControl/control_rocket.hpp"
-
+#include "ExVectrControl/starship/control_attitude_flaps.hpp"
 
 #include "ExVectrArduinoPlatform.hpp"
 
@@ -176,7 +176,10 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 
 
 //Control
+Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
+
 CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
+CTRL::ControlAttitudeFlaps controlAttitudeFlaps;
 
 CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, TVC_ANGLE_LIMIT_RAD, 45*3.14/180, TVC_THRUST_LIMIT_N);
 CTRL::StarshipFlaps starshipFlaps(flapServoULPin, flapServoURPin, flapServoDLPin, flapServoDRPin);
@@ -349,7 +352,6 @@ public:
 MagnetometerCalibrationTask magCalibTask;
 
 
-
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
 
@@ -366,7 +368,7 @@ private:
     const float ANGLE_OUTOFBOUNDS_STATIONARY = 20*DEG_TO_RAD; // rad
 
     const float POSITION_OUTOFBOUNDS_FLIGHT = 20.0f; // m
-    const float ANGLE_OUTOFBOUNDS_FLIGHT = 90*DEG_TO_RAD; // rad
+    const float ANGLE_OUTOFBOUNDS_FLIGHT = 120*DEG_TO_RAD; // rad
 
     Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr;
     Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> gyroSubr;
@@ -451,7 +453,7 @@ public:
         mission_ = mission; // Set the mission to the default mission
         mission_->resetMission(); // Reset the mission
         mission_->beginMission(startTime); // Start the default mission to return to home
-        starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
+        //starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
         controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
     }
 
@@ -518,6 +520,7 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
                 //starshipFlaps.enableActuators(false); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
@@ -525,6 +528,7 @@ public:
                 imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
                 //starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
@@ -532,6 +536,7 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 starshipTVC.beginActuatorTest(0); // Start the actuator test
                 #ifdef DO_FLAP_TEST_STARTUP
                 starshipFlaps.beginActuatorTest(4*Core::SECONDS); // Start the actuator test
@@ -543,6 +548,7 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(true); // Disable control for the rocket
+                controlAttitudeFlaps.enableControl(true); // Enable control for the flaps
                 //starshipTVC.enableMotors(true); // Enable motors
                 //starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
@@ -550,6 +556,7 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
                 //starshipFlaps.enableActuators(false); // Disable actuators
             }
@@ -665,6 +672,7 @@ public:
 
                 starshipTVC.enableMotors(false); // Disable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
+                controlAttitudeFlaps.enableControl(false); // Disable control for the attitude flaps
 
                 missionWaypointTask.resetMission();
 
@@ -1004,7 +1012,7 @@ public:
 
         starshipTVC.enableActuators(mission_->getActuatorsEnabled()); //Give mission guidance control over the actuators
         bodySimulator.enableTVC(mission_->getActuatorsEnabled()); // Give mission guidance control over the actuators
-        bodySimulator.enableFlaps(starshipFlaps.getFlapSettings().tlAngle < 0.5); // Give simulator info if flaps are enabled or not
+        bodySimulator.enableFlaps(starshipFlaps.getFlapSettings().enableFlaps); // Give simulator info if flaps are enabled or not
 
     }
 
@@ -1660,7 +1668,11 @@ void initialiseTopicConnections() {
     controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
     //controlRocket.subscribeSetpoint(positionSetpointTopic);
 
+    controlAttitudeFlaps.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
+    controlAttitudeFlaps.subscribeFlapSettingOutputTopic(flapSettingTopic);
+
     starshipTVC.setTVCInputTopic(controlRocket.getTvcTopic());
+    starshipFlaps.setFlapSettingTopic(flapSettingTopic);
 
     bodySimulator.setPaused(true);
 

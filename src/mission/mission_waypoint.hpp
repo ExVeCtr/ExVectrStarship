@@ -44,7 +44,7 @@ private:
 
     Math::Vector<float, 6> positionSetpoint_;
 
-    CTRL::StarshipFlapSettings flapSettings_;
+    //CTRL::StarshipFlapSettings flapSettings_;
 
     int64_t hoverModeLastUpdate_ = 0; 
 
@@ -175,7 +175,7 @@ public:
 
         positionSetpointTopic_.publish(positionSetpoint_); // Publish the setpoint to the control system
 
-        flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control system
+        //flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control system
 
 
         //missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time to the control system
@@ -209,11 +209,11 @@ private:
         actuatorsEnabled_ = true; // Enable actuators
         missionEnd_ = false; // Set the mission end to false
 
-        flapSettings_.enableActuators = true; // Enable the actuators
-        flapSettings_.tlAngle = 90; // Move top flaps out fully
-        flapSettings_.trAngle = 90; 
-        flapSettings_.blAngle = 90;// Move bottom flaps in fully
-        flapSettings_.brAngle = 90; 
+        //flapSettings_.enableActuators = true; // Enable the actuators
+        //flapSettings_.tlAngle = 90; // Move top flaps out fully
+        //flapSettings_.trAngle = 90; 
+        //flapSettings_.blAngle = 90;// Move bottom flaps in fully
+       // flapSettings_.brAngle = 90; 
 
         positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
         positionSetpoint_(1) = 0; 
@@ -244,11 +244,11 @@ private:
         actuatorsEnabled_ = true;   
         //missionEnd_ = false; // Set the mission end to false
 
-        flapSettings_.enableActuators = true; // Enable the actuators
-        flapSettings_.tlAngle = 90; // Move top flaps out fully
-        flapSettings_.trAngle = 90; 
-        flapSettings_.blAngle = 90;// Move bottom flaps in fully
-        flapSettings_.brAngle = 90; 
+        //flapSettings_.enableActuators = true; // Enable the actuators
+        //flapSettings_.tlAngle = 90; // Move top flaps out fully
+        //flapSettings_.trAngle = 90; 
+        //flapSettings_.blAngle = 90;// Move bottom flaps in fully
+        //flapSettings_.brAngle = 90; 
 
         auto& waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
         auto distance = waypoint.position - positionIs_.block<3, 1>(3); // Get the distance to the waypoint in reference frame

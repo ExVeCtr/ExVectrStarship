@@ -14,8 +14,8 @@
 
 #define FLAP_SERVO_PIN_UL 25
 #define FLAP_SERVO_PIN_UR 24
-#define FLAP_SERVO_PIN_DL 28
-#define FLAP_SERVO_PIN_DR 29
+#define FLAP_SERVO_PIN_DL 29
+#define FLAP_SERVO_PIN_DR 28
 
 #define MOTOR_PIN_CW 8
 #define MOTOR_PIN_CCW 7

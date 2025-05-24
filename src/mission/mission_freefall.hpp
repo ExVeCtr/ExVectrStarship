@@ -139,13 +139,13 @@ public:
         missionState_.positionSetpoint[5] = 0;
         positionSetpointTopic_.publish({0, 0, 0, 0, 0, 0}); // Publish the setpoint to the control system
 
-        CTRL::StarshipFlapSettings flapSettings_;
-        flapSettings_.blAngle = 35*3.14/180; // Retract bottom flaps, extend top flaps
-        flapSettings_.brAngle = 35*3.14/180;
-        flapSettings_.tlAngle = 55*3.14/180;
-        flapSettings_.trAngle = 55*3.14/180;
-        flapSettings_.enableActuators = true; // Enable actuators
-        flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control systems
+        //CTRL::StarshipFlapSettings flapSettings_;
+        //flapSettings_.blAngle = 35*3.14/180; // Retract bottom flaps, extend top flaps
+        //flapSettings_.brAngle = 35*3.14/180;
+        //flapSettings_.tlAngle = 55*3.14/180;
+        //flapSettings_.trAngle = 55*3.14/180;
+        //flapSettings_.enableActuators = true; // Enable actuators
+        //flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to the control systems
 
         disableKinematicSafety_ = true; // Disable the kinematic safety measures
 

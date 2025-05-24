@@ -29,7 +29,7 @@ class MissionAbstract
 protected:
 
     Core::Topic<Math::Vector<float, 6>> positionSetpointTopic_;
-    Core::Topic<CTRL::StarshipFlapSettings> flapSettingTopic_;
+    //Core::Topic<CTRL::StarshipFlapSettings> flapSettingTopic_;
 
     Core::Time_Source missionTime_;
 
@@ -63,9 +63,9 @@ public:
         return positionSetpointTopic_; // Get the setpoint topic
     }
 
-    Core::Topic<CTRL::StarshipFlapSettings>& getFlapSettingTopic() {
-        return flapSettingTopic_; // Get the flap setting topic
-    }
+    //Core::Topic<CTRL::StarshipFlapSettings>& getFlapSettingTopic() {
+    //    return flapSettingTopic_; // Get the flap setting topic
+    //}
 
     const MissionState& getMissionState() {
         return missionState_;
