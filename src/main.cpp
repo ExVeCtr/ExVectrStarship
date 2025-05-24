@@ -520,45 +520,40 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
-                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
-                //starshipFlaps.enableActuators(false); // Disable actuators
+                starshipFlaps.enableActuators(false); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
                 posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
-                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
-                //starshipFlaps.enableActuators(true); // Disable actuators
+                starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
-                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 starshipTVC.beginActuatorTest(0); // Start the actuator test
                 #ifdef DO_FLAP_TEST_STARTUP
                 starshipFlaps.beginActuatorTest(4*Core::SECONDS); // Start the actuator test
                 #endif
                 //starshipTVC.enableMotors(true); // Enable motors
-                //starshipFlaps.enableActuators(false); // Disable actuators
+                starshipFlaps.enableActuators(false); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(true); // Disable control for the rocket
-                controlAttitudeFlaps.enableControl(true); // Enable control for the flaps
                 //starshipTVC.enableMotors(true); // Enable motors
-                //starshipFlaps.enableActuators(true); // Disable actuators
+                starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 controlRocket.enableControl(false); // Disable control for the rocket
-                controlAttitudeFlaps.enableControl(false); // Disable control for the flaps
                 //starshipTVC.enableMotors(false); // Enable motors
-                //starshipFlaps.enableActuators(false); // Disable actuators
+                starshipFlaps.enableActuators(false); // Disable actuators
             }
 
             lastMissionMode_ = missionState.missionMode; // Set the last mission mode to the current mission mode\
@@ -672,7 +667,6 @@ public:
 
                 starshipTVC.enableMotors(false); // Disable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
-                controlAttitudeFlaps.enableControl(false); // Disable control for the attitude flaps
 
                 missionWaypointTask.resetMission();
 
