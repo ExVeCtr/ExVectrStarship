@@ -83,6 +83,18 @@ public:
         return missionEnd_;
     }
 
+    bool stabilising() const {
+        return runningState_ == RunningState::RunningState_Stabilize; // Check if the vehicle is stabilising
+    }
+
+    bool translation() const {
+        return runningState_ == RunningState::RunningState_Translation; // Check if the vehicle is translating
+    }
+
+    bool descent() const {
+        return runningState_ == RunningState::RunningState_Descent; // Check if the vehicle is descending
+    }
+
     MissionAbstract* nextMission() override {
         return nullptr; // Return the next mission
     }

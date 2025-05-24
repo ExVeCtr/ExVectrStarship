@@ -73,6 +73,8 @@
 
 //#define DO_FLAP_TEST_STARTUP
 
+#define EXTEND_FLAPS_ASCENT false
+
 using namespace VCTR;
 
 #define PMW_CS_PIN 29
@@ -177,6 +179,7 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 
 //Control
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
+Core::Topic<CTRL::ControlAttitudeBellyFlopSetting> bellyFlopControlTopic;
 
 CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 CTRL::ControlAttitudeFlaps controlAttitudeFlaps;
@@ -351,6 +354,7 @@ public:
 MagnetometerCalibrationTask magCalibTask;
 
 
+MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 2}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
 
@@ -394,16 +398,13 @@ private:
     size_t missionSelection_ = 0; // The index of the currently selected mission.
     Core::ListArray<MissionAbstract*> missionList_;
 
-    MissionRTH defaultMission_; // The default mission is the return to home mission.
-
     MissionAbstract* mission_;
 
 
 public:
 
     VehicleSafetyAndControlTask() : 
-        Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS),
-        defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1})
+        Task_Periodic("Vehicle Safety and Control", 0.1*Core::SECONDS)
     {
         Core::getSystemScheduler().addTask(*this);
         //setPriority(500);
@@ -427,15 +428,15 @@ public:
 
     }
 
-    VehicleMode getVehicleMode() {
+    const VehicleMode& getVehicleMode() {
         return vehicleMode_;
     }
 
-    SensoryState getSensoryState() {
+    const SensoryState& getSensoryState() {
         return sensoryState_;
     }
 
-    FailureState getFailureState() {
+    const FailureState& getFailureState() {
         return failureState_;
     }
 
@@ -1050,6 +1051,59 @@ public:
 VehicleSafetyAndControlTask vehicleSafetyAndControlTask;
 
 
+class FlapModeObserverTask : public Core::Task_Periodic
+{
+private:
+
+    CTRL::ControlAttitudeBellyFlopSetting starshipFlopSetting; // Flap controller setting.
+
+public:
+
+    FlapModeObserverTask() : Task_Periodic("Flap Mode Observer", 0.1*Core::SECONDS)
+    {
+        Core::getSystemScheduler().addTask(*this);
+        //setPriority(500);
+    }
+
+    void taskInit() override
+    {
+        
+        
+
+    }
+
+    void taskThread() override 
+    {
+
+        auto& vehicleMode = vehicleSafetyAndControlTask.getVehicleMode();
+        auto mission = vehicleSafetyAndControlTask.getCurrentMission();
+
+        if (vehicleMode == VehicleMode::VehicleMode_Running && mission->getMissionState().missionMode == MissionMode::MissionMode_Running) {
+
+            if (mission == &missionFreefallTask) {
+                starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Stabilize;
+                starshipFlopSetting.azimuthAngle_Rad = 0.0f; // Set the azimuth angle to 0
+                starshipFlopSetting.pitchAngle_Rad = 0.0f; // Set the flap angle to 0
+            } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
+                starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Upright; // Enable the belly flop mode
+            } else if (mission == &missionWaypointTask && defaultMission_.stabilising()) {
+                starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Acsent; // Disable the belly flop mode
+                starshipFlopSetting.extentFlapsOnAscent = EXTEND_FLAPS_ASCENT;
+            } else {
+                starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Acsent; // Disable the belly flop mode
+                starshipFlopSetting.extentFlapsOnAscent = false;
+            }
+
+        }
+
+        bellyFlopControlTopic.publish(starshipFlopSetting); // Publish the flap controller setting to the control system
+
+    }
+
+};
+FlapModeObserverTask flapModeObserverTask;
+
+
 class CommsSystemStateTask : public Core::Task_Periodic
 {
 private:
@@ -1661,6 +1715,7 @@ void initialiseTopicConnections() {
     controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
     //controlRocket.subscribeSetpoint(positionSetpointTopic);
 
+    controlAttitudeFlaps.subscribeControlSetting(bellyFlopControlTopic);
     controlAttitudeFlaps.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
     controlAttitudeFlaps.subscribeFlapSettingOutputTopic(flapSettingTopic);
 
