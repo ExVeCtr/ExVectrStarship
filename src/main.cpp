@@ -870,7 +870,7 @@ public:
             sensoryState_.imu = TelemetrySensor::TelemetrySensor_Ready;
         }
 
-        if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
+        if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT*5 && sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
             //vehicleMode_ = VehicleMode::VehicleMode_Failure;
             //failureState_.sensorFailure = true;
             if (vehicleMode_ == VehicleMode::VehicleMode_Running && mission_->getMissionState().missionMode == MissionMode::MissionMode_Running) {

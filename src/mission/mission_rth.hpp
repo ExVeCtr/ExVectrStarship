@@ -104,7 +104,8 @@ public:
         positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
         positionSetpoint_(1) = 0;
         positionSetpoint_(2) = 0;
-        LOG_MSG("Started mission ReturnToHome\n"); // Log the mission start
+        LOG_MSG("Started mission ReturnToHome. Hot starting the mission immedietly\n"); // Log the mission start
+        missionStartup();
     };
 
     void resetMission() override {
