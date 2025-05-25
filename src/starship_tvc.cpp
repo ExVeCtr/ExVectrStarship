@@ -20,7 +20,7 @@ namespace VCTR
 
         
         StarshipTVC::StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad, float servoAngleLimit_Rad, float tvcThrustLimit_N) :
-            Core::Task_Periodic("Starship TVC", 50*Core::MILLISECONDS),
+            Core::Task_Periodic("Starship TVC", 20*Core::MILLISECONDS),
             servoXP_(tvcServoPinXP, ACTR::PWM_Output_Protocol::STANDARD),
             servoXN_(tvcServoPinXN, ACTR::PWM_Output_Protocol::STANDARD),
             servoYP_(tvcServoPinYP, ACTR::PWM_Output_Protocol::STANDARD),

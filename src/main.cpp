@@ -36,7 +36,9 @@
 #include "ExVectrDSP/body_simulator.hpp"
 
 #include "ExVectrControl/control_rocket.hpp"
-#include "ExVectrControl/starship/control_attitude_flaps.hpp"
+#include "ExVectrControl/control_position_standard.hpp"
+#include "ExVectrControl/control_mapping_acctoatt.hpp"
+#include "ExVectrControl/control_attitude_tvc.hpp"
 
 #include "ExVectrArduinoPlatform.hpp"
 
@@ -181,7 +183,10 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
 Core::Topic<CTRL::ControlAttitudeBellyFlopSetting> bellyFlopControlTopic;
 
-CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
+//CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
+CTRL::ControlPositionStandard controlPositionStandard;
+CTRL::ControlMappingAccToAtt controlMappingAccToAtt;
+CTRL::ControlAttitudeTvc controlAttitudeTvc(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 CTRL::ControlAttitudeFlaps controlAttitudeFlaps;
 
 CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, TVC_ANGLE_LIMIT_RAD, 45*3.14/180, TVC_THRUST_LIMIT_N);
@@ -458,7 +463,7 @@ public:
         mission_->resetMission(); // Reset the mission
         mission_->beginMission(startTime); // Start the default mission to return to home
         //starshipFlaps.setFlapSettingTopic(mission_->getFlapSettingTopic()); // Set the flap setting topic to the default mission
-        controlRocket.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
+        controlPositionStandard.subscribeSetpoint(mission_->getSetpointTopic()); // Subscribe to the setpoint topic of the mission
     }
 
     void taskInit() override
@@ -520,21 +525,27 @@ public:
                 posEstTask.enableZeroingMode(false);
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-                controlRocket.enableControl(false); // Disable control for the rocket
+                //controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeTvc.enableControl(false); // Disable control for the attitude
+                controlPositionStandard.enableControl(false); // Disable control for the position
                 //starshipTVC.enableMotors(false); // Enable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Initialisation) {
                 posEstTask.enableZeroingMode(true); // Enable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(true); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(true); // Enable zeroing mode for the body simulator
-                controlRocket.enableControl(false); // Disable control for the rocket
+                //controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeTvc.enableControl(false); // Disable control for the attitude
+                controlPositionStandard.enableControl(false); // Disable control for the position
                 //starshipTVC.enableMotors(false); // Enable motors
                 starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-                controlRocket.enableControl(false); // Disable control for the rocket
+                //controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeTvc.enableControl(false); // Disable control for the attitude
+                controlPositionStandard.enableControl(false); // Disable control for the position
                 starshipTVC.beginActuatorTest(0); // Start the actuator test
                 #ifdef DO_FLAP_TEST_STARTUP
                 starshipFlaps.beginActuatorTest(4*Core::SECONDS); // Start the actuator test
@@ -545,14 +556,18 @@ public:
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-                controlRocket.enableControl(true); // Disable control for the rocket
+                //controlRocket.enableControl(true); // Disable control for the rocket
+                controlAttitudeTvc.enableControl(true); // Disable control for the attitude
+                controlPositionStandard.enableControl(true); // Disable control for the position
                 //starshipTVC.enableMotors(true); // Enable motors
                 starshipFlaps.enableActuators(true); // Disable actuators
             } else if (missionState.missionMode == MissionMode::MissionMode_Finished) {
                 posEstTask.enableZeroingMode(false); // Disable zeroing mode for the position estimator
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
-                controlRocket.enableControl(false); // Disable control for the rocket
+                //controlRocket.enableControl(false); // Disable control for the rocket
+                controlAttitudeTvc.enableControl(false); // Disable control for the attitude
+                controlPositionStandard.enableControl(false); // Disable control for the position
                 //starshipTVC.enableMotors(false); // Enable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
             }
@@ -1144,7 +1159,8 @@ public:
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 
-        missionStateTopic.publish(vehicleSafetyAndControlTask.getCurrentMission()->getMissionState()); // Publish the mission state to the control system
+        auto& missionState = vehicleSafetyAndControlTask.getCurrentMission()->getMissionState();
+        missionStateTopic.publish(missionState); // Publish the mission state to the control system
 
 
     }
@@ -1711,15 +1727,24 @@ void initialiseTopicConnections() {
     posEstTask.setBaroInput(bme.getBaroTopic());
     posEstTask.setGNSSInput(gnss.getGNSSTopic());
 
-    controlRocket.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
-    controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
+    //controlRocket.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
+    //controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
     //controlRocket.subscribeSetpoint(positionSetpointTopic);
+    //controlPositionStandard.subscribeSetpoint(positionSetpointTopic);
+    controlPositionStandard.subscribePositionMeasurement(positionTopicSwitch.getTopic());
+
+    controlMappingAccToAtt.subscribeAccelSetpoint(controlPositionStandard.getAccelTopic());
+
+    controlAttitudeTvc.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
+    controlAttitudeTvc.subscribeAttitudeSetpoint(controlMappingAccToAtt.getAttitudeTopic());
+    controlAttitudeTvc.subscribeAccelerationSetpoint(controlPositionStandard.getAccelTopic());
+    controlAttitudeTvc.setTVCLimitCompensation(true);
 
     controlAttitudeFlaps.subscribeControlSetting(bellyFlopControlTopic);
     controlAttitudeFlaps.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
     controlAttitudeFlaps.subscribeFlapSettingOutputTopic(flapSettingTopic);
 
-    starshipTVC.setTVCInputTopic(controlRocket.getTvcTopic());
+    starshipTVC.setTVCInputTopic(controlAttitudeTvc.getTvcTopic());
     starshipFlaps.setFlapSettingTopic(flapSettingTopic);
 
     bodySimulator.setPaused(true);
