@@ -93,6 +93,8 @@ namespace VCTR
             }
             actualTVCThrustVector_N_ = tvcVector;
 
+            //LOG_MSG("TVC vector: %.2f, %.2f, %.2f |%.1f| Enabled: %s\n", tvcVector(0), tvcVector(1), tvcVector(2), tvcVector.magnitude(), enableActuators ? "true" : "false");
+
             float angleFactor = 5;
             float twistFactor = 45;
             float twistLimit = 0.5;

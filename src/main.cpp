@@ -49,8 +49,6 @@
 
 #include "ExVectrPackets/packet_vehicle.hpp"
 
-#include "mission/mission_abstract.hpp"
-
 #include "subsystems.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
@@ -67,9 +65,11 @@
 
 #include "datalink_sx1280.hpp"
 
+#include "mission/mission_abstract.hpp"
 #include "mission/mission_rth.hpp"
 #include "mission/mission_waypoint.hpp"
 #include "mission/mission_freefall.hpp"
+#include "mission/mission_bellyflop.hpp"
 
 //#include "sx1280_driver/datalink_sx1280.hpp"
 
@@ -362,6 +362,7 @@ MagnetometerCalibrationTask magCalibTask;
 MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 2}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
+MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 2 * Core::SECONDS, 45*DEGREES, 80*DEGREES);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
@@ -375,7 +376,7 @@ private:
     const float POSITION_OUTOFBOUNDS_STATIONARY = 2.0f; // m
     const float ANGLE_OUTOFBOUNDS_STATIONARY = 20*DEG_TO_RAD; // rad
 
-    const float POSITION_OUTOFBOUNDS_FLIGHT = 20.0f; // m
+    const float POSITION_OUTOFBOUNDS_FLIGHT = 50.0f; // m
     const float ANGLE_OUTOFBOUNDS_FLIGHT = 120*DEG_TO_RAD; // rad
 
     Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr;

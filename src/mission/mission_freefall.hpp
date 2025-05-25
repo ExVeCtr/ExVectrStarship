@@ -128,7 +128,7 @@ public:
             // Now we simply trust the next mission to take care of the rest. (Jesus take the wheel)
         }
 
-        LOG_MSG("Freefall mode. Alt: %f, Stopping distance: %f\n", positionIs_(5), stoppingDistance); // Log the mission start
+        //LOG_MSG("Freefall mode. Alt: %f, Stopping distance: %f\n", positionIs_(5), stoppingDistance); // Log the mission start
 
         missionState_.missionMode = missionState_.missionMode;
         missionState_.missionTime = missionTime_.NOW();
