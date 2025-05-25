@@ -58,6 +58,8 @@ namespace VCTR
             float tvcFinOffsetYP_Rad_ = 0.0f;
             float tvcFinOffsetYN_Rad_ = 0.0f;
 
+            Math::Vector_F actualTVCThrustVector_N_ = 0;
+
             enum class ActuatorTestingState
             {
                 WaitBegin,
@@ -100,6 +102,13 @@ namespace VCTR
 
             void motorPowerLimit(float limit) {
                 motorPowerLimit_ = limit;
+            }
+
+            /**
+             * @brief Returns the actual thrust vector in Newtons. This is the vector that is actually applied to the vehicle.
+             */
+            const Math::Vector_F& getTVCThrustVector() const {
+                return actualTVCThrustVector_N_;
             }
 
             void enableMotors(bool enable) { enableMotors_ = enable; }

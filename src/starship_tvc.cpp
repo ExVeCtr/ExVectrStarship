@@ -2,7 +2,7 @@
 #include "ExVectrCore/timestamped.hpp"
 #include "ExVectrCore/task_types.hpp"
 
-#include "ExVectrMath/matrix_vector.hpp"
+#include "ExVectrMath.hpp"
 
 #include "ExVectrDSP/value_covariance.hpp"
 
@@ -74,10 +74,24 @@ namespace VCTR
             auto tvcSetting = ctrlSubr_.getItem();
             auto tvcTwistForce = tvcSetting(3); //Torque in Z axis (roll torque)
             auto thrustMagnitude = tvcSetting.magnitude(0, 3);
+            Math::Vector_F tvcVector = {tvcSetting(0), tvcSetting(1), tvcSetting(2)}; //Force vector in body frame
 
             //LOG_MSG("TVC setting: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1), tvcSetting(2), tvcTwistForce);
 
             bool enableActuators = enableActuators_; //copy to local variable so we can enalbe for testing
+
+            if (thrustMagnitude > tvcThrustLimit_N_) {
+                thrustMagnitude = tvcThrustLimit_N_; //Limit the thrust magnitude to the thrust limit
+                tvcVector = tvcVector.normalize() * tvcThrustLimit_N_; //Scale the vector to the thrust limit
+            }
+
+            auto tvcAngle = tvcVector.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
+            auto tvcRotationAxis = (tvcVector.cross(Math::Vector<float, 3>({0, 0, 1}))).normalize(); //Rotation axis is the cross product of the vector and the Z-Axis.
+            if (tvcAngle > tvcAngleLimit_Rad_) {
+                auto tvcRotation = Math::Quat_F(tvcRotationAxis, tvcAngle - tvcAngleLimit_Rad_).conjugate();
+                tvcVector = tvcRotation.rotate(tvcVector); //Rotate the vector back to the limit.
+            }
+            actualTVCThrustVector_N_ = tvcVector;
 
             float angleFactor = 5;
             float twistFactor = 45;
@@ -87,12 +101,23 @@ namespace VCTR
             if (thrustMagnitude < 0.01) {
                 tvcTwistForce = 0;
             } 
-
+            
+            // Keep the twist force from saturating the fins
             if (tvcTwistForce > twistLimit) tvcTwistForce = twistLimit;
             else if (tvcTwistForce < -twistLimit) tvcTwistForce = -twistLimit;
 
-            auto xAngle = atan2(tvcSetting(1), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the X axis as rotation axis
-            auto yAngle = atan2(tvcSetting(0), tvcSetting(2)) * angleFactor; //angle between vector and Z axis with the Y axis as rotation axis
+            // Calculate the fin angles. DO NOT use the tvcVector as this is angle limited to simulate the factor applied to the fins.
+            auto xAngle = atan2(tvcSetting(1), tvcSetting(2)); //angle between vector and Z axis with the X axis as rotation axis
+            auto yAngle = atan2(tvcSetting(0), tvcSetting(2)); //angle between vector and Z axis with the Y axis as rotation axis
+
+            if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
+            else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;
+
+            if (yAngle > tvcAngleLimit_Rad_) yAngle = tvcAngleLimit_Rad_;
+            else if (yAngle < -tvcAngleLimit_Rad_) yAngle = -tvcAngleLimit_Rad_;
+
+            xAngle *= angleFactor;
+            yAngle *= angleFactor;
 
             if (actuatorTestState_ != ActuatorTestingState::Idle) { //Hijack the control loop to test the actuators
 
@@ -132,16 +157,16 @@ namespace VCTR
             //xAngle = 0;
             //yAngle = 0;
 
-            if (xAngle > tvcAngleLimit_Rad_) xAngle = tvcAngleLimit_Rad_;
-            else if (xAngle < -tvcAngleLimit_Rad_) xAngle = -tvcAngleLimit_Rad_;
+            if (xAngle > servoAngleLimit_Rad_) xAngle = servoAngleLimit_Rad_;
+            else if (xAngle < -servoAngleLimit_Rad_) xAngle = -servoAngleLimit_Rad_;
 
-            if (yAngle > tvcAngleLimit_Rad_) yAngle = tvcAngleLimit_Rad_;
-            else if (yAngle < -tvcAngleLimit_Rad_) yAngle = -tvcAngleLimit_Rad_;
+            if (yAngle > servoAngleLimit_Rad_) yAngle = servoAngleLimit_Rad_;
+            else if (yAngle < -servoAngleLimit_Rad_) yAngle = -servoAngleLimit_Rad_;
 
-            auto servoXPOut = (xAngle + tvcFinOffsetXP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-            auto servoXNOut = -(xAngle - tvcFinOffsetXN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-            auto servoYPOut = (yAngle + tvcFinOffsetYP_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
-            auto servoYNOut = -(yAngle - tvcFinOffsetYN_Rad_) / tvcAngleLimit_Rad_ + tvcTwistForce;
+            auto servoXPOut = (xAngle + tvcFinOffsetXP_Rad_) / servoAngleLimit_Rad_ + tvcTwistForce;
+            auto servoXNOut = -(xAngle - tvcFinOffsetXN_Rad_) / servoAngleLimit_Rad_ + tvcTwistForce;
+            auto servoYPOut = (yAngle + tvcFinOffsetYP_Rad_) / servoAngleLimit_Rad_ + tvcTwistForce;
+            auto servoYNOut = -(yAngle - tvcFinOffsetYN_Rad_) / servoAngleLimit_Rad_ + tvcTwistForce;
 
             auto motorCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;
             auto motorCCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;

@@ -766,7 +766,7 @@ public:
                     positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic()); // Subscribe to the position topic of the body simulator
                     attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic()); // Subscribe to the attitude topic of the body simulator
                     
-                    bodySimulator.setTVCInputTopic(controlRocket.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N); // Subscribe to the TVC input topic
+                    bodySimulator.setTVCInputTopic(controlAttitudeTvc.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N); // Subscribe to the TVC input topic
 
                     //bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
                     bodySimulator.setAttitudeState({0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
@@ -1155,7 +1155,7 @@ public:
         vehicleState.failureState = failureState;
         vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
         vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed(); // Get the vehicle armed state
-        vehicleState.tvcThrust = controlRocket.getTvcThrustMaxEstimated()/50.0f * UINT16_MAX;
+        vehicleState.tvcThrust = starshipTVC.getTVCThrustVector().magnitude()/50.0f * UINT16_MAX;
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 
