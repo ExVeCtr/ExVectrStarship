@@ -95,7 +95,7 @@ namespace VCTR
 
             //LOG_MSG("TVC vector: %.2f, %.2f, %.2f |%.1f| Enabled: %s\n", tvcVector(0), tvcVector(1), tvcVector(2), tvcVector.magnitude(), enableActuators ? "true" : "false");
 
-            float angleFactor = 5;
+            float angleFactor = 19;
             float twistFactor = 45;
             float twistLimit = 0.5;
 
@@ -135,8 +135,8 @@ namespace VCTR
 
                     //LOG_MSG("Actuator test spin\n");
                     
-                    float angleSin = sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * tvcAngleLimit_Rad_;
-                    float angleCos = cos(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * tvcAngleLimit_Rad_;
+                    float angleSin = sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * servoAngleLimit_Rad_;
+                    float angleCos = cos(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS / TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) * servoAngleLimit_Rad_;
                     xAngle = angleSin;
                     yAngle = angleCos;
 
