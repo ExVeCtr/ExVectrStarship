@@ -362,7 +362,7 @@ MagnetometerCalibrationTask magCalibTask;
 MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1.5}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
-MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 2 * Core::SECONDS, 45*DEGREES, 80*DEGREES);
+MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 1 * Core::SECONDS, 45*DEGREES, 45*DEGREES);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
@@ -577,13 +577,18 @@ public:
 
         }
 
-        if (mission_->missionEnd() && mission_->nextMission() != nullptr) {
-            LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the mission end
-            switchMissionTo(mission_->nextMission()); // Switch to the next mission
-        } else if (mission_->missionEnd() && missionSelection_ != 0) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
+        if (mission_ == &defaultMission_ && mission_->missionEnd()) {
+            LOG_MSG("RTH mission ended."); // Log the mission end
+            starshipTVC.enableMotors(false); // Disable motors
+            starshipFlaps.enableActuators(false); // Disable actuators
+            vehicleShutdownControl(true); // Disable everything
+        } else if (mission_->missionEnd() && (mission_->nextMission() == &defaultMission_ || mission_->nextMission() == nullptr)) { // Mission has ended and we are not in the default mission (RTH), then we switch to RTH mission.
             LOG_MSG("Mission ended. Switching to default mission.\n"); // Log the mission end
             missionSelection_ = 0; // Set the mission selection to the default mission
             switchMissionTo(&defaultMission_); // Switch to the default mission
+        } else if (mission_->missionEnd() && mission_->nextMission() != nullptr) { // If the mission has ended and there is a next mission, then we switch to the next mission.
+            LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the mission end
+            switchMissionTo(mission_->nextMission()); // Switch to the next mission
         }
 
     }
@@ -682,8 +687,6 @@ public:
                 starshipTVC.enableMotors(false); // Disable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
 
-                missionWaypointTask.resetMission();
-
                 LOG_MSG("System reset telecommand\n"); // Log the system reset
 
             }
@@ -746,8 +749,17 @@ public:
 
             if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
 
-                missionSelection_ = 0;
-                switchMissionTo(&defaultMission_); // Switch to the default mission
+                if (mission_->getMissionState().missionMode == MissionMode::MissionMode_Running) {
+                    missionSelection_ = 0;
+                    switchMissionTo(&defaultMission_); // Switch to the default mission
+                } else {
+                    starshipTVC.enableActuators(false); // Disable actuators
+                    vehicleShutdownControl(true); // Disable everything
+                    mission_->resetMission();
+                    clearFailures();
+                }
+
+
 
                 LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
 

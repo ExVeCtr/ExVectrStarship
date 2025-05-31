@@ -51,13 +51,18 @@ public:
      * @param angVelThreshold_RadPs If the vehicle rotation is greater then this, then we consider the transition fast enough and we good.
      */
     MissionBellyflop(Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic, CTRL::ControlAttitudeTvc& controlTvc, CTRL::ControlMappingAccToAtt& controlMapping, int64_t transitionTimeLimit, float angleThreshold_Rad, float angVelThreshold_RadPs) :
-        Task_Periodic("Mission Freefall", 0.01*Core::SECONDS), controlTvc_(controlTvc), controlMapping_(controlMapping)
+        Task_Periodic("Mission Freefall", 0.05*Core::SECONDS), controlTvc_(controlTvc), controlMapping_(controlMapping)
     {
         Core::getSystemScheduler().addTask(*this);
         // Subscribe to the topics
         attSubr_.subscribe(attTopic); // Subscribe to the attitude topic to get the current attitude of the vehicle
+        transitionTimeLimit_ = transitionTimeLimit; // Set the transition time limit
+        angleThreshold_Rad_ = angleThreshold_Rad; // Set the angle threshold in radians
+        angVelThreshold_RadPs_ = angVelThreshold_RadPs; // Set the angular velocity threshold in radians per second
         
         disableKinematicSafety_ = true; // Disable the kinematic safety measures
+
+        setPaused(true); // Pause the task initially
         
     }
 
@@ -80,7 +85,7 @@ public:
         missionTime_.setTime(startTime); // Set the mission time to the start time
         actuatorsEnabled_ = true; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
-        LOG_MSG("Started mission transition\n"); // Log the mission start
+        LOG_MSG("Started mission bellyflop transition\n"); // Log the mission start
         setPaused(false); // Unpause the task to start the mission
         controlTvc_.unsubscribeAttitudeSetpoint();
         transitionStartTime_ = Core::NOW(); // Set the time when the transition started
@@ -90,7 +95,7 @@ public:
         missionState_.missionMode = MissionMode::MissionMode_Idle;
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = true; // Set the mission end to true
-        LOG_MSG("Reset mission freefall.\n"); // Log the mission reset
+        LOG_MSG("Reset mission bellyflop transition.\n"); // Log the mission reset
         setPaused(true); // Pause the task to stop the mission
         controlTvc_.subscribeAttitudeSetpoint(controlMapping_.getAttitudeTopic());
     }
@@ -99,15 +104,18 @@ public:
     {
 
         auto attSet = Math::Quat_F(Math::Vector_F({0, 1, 0}), -90*DEGREES);
-        controlTvc_.setAttitudeStateSetpoint({0, -90*DEGREES, attSet(0), attSet(1), attSet(2), attSet(3)}); // Set the attitude setpoint to belly down attitude with angular velocity to really kick it there.
+        controlTvc_.setAttitudeStateSetpoint({0, 0, 0, attSet(0), attSet(1), attSet(2), attSet(3)}); // Set the attitude setpoint to belly down attitude with angular velocity to really kick it there.
 
         Math::Quat_F attIs = attSubr_.getItem().data.block<3, 1>(3, 0); // Get the current attitude of the vehicle
         auto velIs = attSubr_.getItem().data.block<3, 1>(0, 0); // Get the current velocity of the vehicle
 
         auto xAxis = attIs.rotate(Math::Vector_F({1, 0, 0})); // Get the vehicle x axis in world frame
-        auto angle = xAxis.getAngleTo(Math::Vector_F({0, 0, 1})); // Get the angle between the vehicle x axis and the world z axis (Angle to belly down position)
+        auto angle = xAxis.getAngleTo(Math::Vector_F({0, 0, -1})); // Get the angle between the vehicle x axis and the world z axis (Angle to belly down position)
 
-        if (angle < angleThreshold_Rad_ && -velIs(1) > angVelThreshold_RadPs_ && Core::NOW() - transitionStartTime_ > transitionTimeLimit_) { // If the vehicle is within the angle threshold and the angular velocity is below the threshold, we consider the transition finished
+        //LOG_MSG("Transition angle: %.2f deg, angular velocity: %.2f deg/s, Time since start: %.2f s\n", angle/DEGREES, velIs(1)/DEGREES, double(Core::NOW() - transitionStartTime_)/Core::SECONDS); // Log the angle and angular velocity of the vehicle
+        //LOG_MSG("Transition angle threshold: %.2f deg, angular velocity threshold: %.2f deg/s, transition time limit: %.2f s\n", angleThreshold_Rad_/DEGREES, angVelThreshold_RadPs_/DEGREES, double(transitionTimeLimit_)/Core::SECONDS); // Log the angle and angular velocity thresholds
+
+        if (angle < angleThreshold_Rad_ || abs(velIs(1)) > angVelThreshold_RadPs_ || Core::NOW() - transitionStartTime_ > transitionTimeLimit_) { // If the vehicle is within the angle threshold and the angular velocity is below the threshold, we consider the transition finished
             controlTvc_.subscribeAttitudeSetpoint(controlMapping_.getAttitudeTopic()); // Subscribe to the attitude setpoint topic to revert back to original configuration
             missionState_.missionMode = MissionMode::MissionMode_Finished; // Set the mission mode to finished
             missionEnd_ = true; // Set the mission end to true

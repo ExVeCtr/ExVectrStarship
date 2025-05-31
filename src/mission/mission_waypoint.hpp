@@ -250,7 +250,7 @@ private:
         //flapSettings_.blAngle = 90;// Move bottom flaps in fully
         //flapSettings_.brAngle = 90; 
 
-        auto& waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
+        auto waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
         auto distance = waypoint.position - positionIs_.block<3, 1>(3); // Get the distance to the waypoint in reference frame
 
         if (distance.magnitude() < waypoint.thresholdDistance) { // If the vehicle is within the threshold distance of the waypoint, we consider it as reached
