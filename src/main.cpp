@@ -972,8 +972,8 @@ public:
         }
 
         //Auto disarm vehicle once landed.
-        if (missionMode == MissionMode::MissionMode_Finished) {
-            vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in landed mode
+        if (missionMode == MissionMode::MissionMode_Finished && mission_ == &defaultMission_) {
+            vehicleArmed_ = false; // Disarm the vehicle if the default mission is finished
         } 
 
     }
