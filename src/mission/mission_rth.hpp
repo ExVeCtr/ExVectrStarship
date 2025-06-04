@@ -329,7 +329,7 @@ private:
             missionState_.missionMode = MissionMode::MissionMode_Finished; // Go to landed mode
         }
 
-        LOG_MSG("Descent mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
+        //LOG_MSG("Descent mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
 
     }
 
@@ -343,7 +343,7 @@ private:
         actuatorsEnabled_ = false; // Disable actuators
         positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
 
-        LOG_MSG("Landed mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
+        //LOG_MSG("Landed mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
 
     }
 
