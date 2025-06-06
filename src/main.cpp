@@ -361,7 +361,7 @@ MagnetometerCalibrationTask magCalibTask;
 
 MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1.5}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
-MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
+MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
 MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 1 * Core::SECONDS, 60*DEGREES, 20*DEGREES);
 
 /**
@@ -578,7 +578,7 @@ public:
         }
 
         if (mission_ == &defaultMission_ && mission_->missionEnd()) {
-            LOG_MSG("RTH mission ended."); // Log the mission end
+            LOG_MSG("RTH mission ended.\n"); // Log the mission end
             starshipTVC.enableMotors(false); // Disable motors
             starshipFlaps.enableActuators(false); // Disable actuators
             vehicleShutdownControl(true); // Disable everything
