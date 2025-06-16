@@ -1528,7 +1528,7 @@ public:
     {   
 
         //updateBaro();
-        //updateGyroBias();
+        updateGyroBias();
         //updateMagBias();
 
         //tvcTopic.publish(tvcSetting);
@@ -1631,6 +1631,8 @@ void initialiseMemory() {
         memoryManager.allocateItem(gyroCalibData, MEMORY_KEY_GYROCALIB);
         memoryManager.writeItem(gyroCalibData, MEMORY_KEY_GYROCALIB);
 
+    } else {
+        LOG_MSG("Gyro calibration data found: %.3f, %.3f, %.3f\n", gyroCalibData.val(0) * RAD_TO_DEG, gyroCalibData.val(1) * RAD_TO_DEG, gyroCalibData.val(2) * RAD_TO_DEG);
     }
 
     if (!memoryManager.readItem(accCalibData, MEMORY_KEY_ACCCALIB)) {
@@ -1673,6 +1675,10 @@ void initialiseMemory() {
 
     }
 
+    gyroCalibData.val(0) = 0.228 * DEG_TO_RAD;
+    gyroCalibData.val(1) = 1.314 * DEG_TO_RAD;
+    gyroCalibData.val(2) = -0.5085 * DEG_TO_RAD;
+
     gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform, gyroCalibData.val);
     accTransformTopic.setTransform(accCalibData.cov * accTransform, accCalibData.val);
     magTransformTopic.setTransform(magCalibData.cov * magTransform, magCalibData.val);
@@ -1689,7 +1695,7 @@ void initialiseMemory() {
                                                         0, 0, -1});
         //memoryManager.writeItem(accCalibData, MEMORY_KEY_ACCCALIB);
 
-        gyroCalibData.val = Math::Vector<float, 3>({0.185 * DEG_TO_RAD, 1.152 * DEG_TO_RAD, -0.426 * DEG_TO_RAD});
+        gyroCalibData.val = Math::Vector<float, 3>({0.228 * DEG_TO_RAD, 1.314 * DEG_TO_RAD, -0.5085 * DEG_TO_RAD});
         gyroCalibData.cov = Math::Matrix<float, 3, 3>({-1, 0, 0,
                                                         0, 1, 0,
                                                         0, 0, -1});
@@ -1771,8 +1777,9 @@ void initialiseTopicConnections() {
     attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
 
 
-    Math::Quat<float> accTilt({1, 0, 0}, -2*DEG_TO_RAD);
-    imuTask.setAccTiltCompensation(accTilt.to3x3RotMat());
+    Math::Quat<float> accTiltX({1, 0, 0}, -4*DEG_TO_RAD);
+    Math::Quat<float> accTiltY({0, 1, 0}, -4*DEG_TO_RAD);
+    imuTask.setAccTiltCompensation((accTiltX * accTiltY).to3x3RotMat());
 
 
 }
