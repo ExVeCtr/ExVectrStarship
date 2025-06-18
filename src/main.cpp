@@ -778,8 +778,6 @@ public:
 
                     positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic()); // Subscribe to the position topic of the body simulator
                     attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic()); // Subscribe to the attitude topic of the body simulator
-                    
-                    bodySimulator.setTVCInputTopic(controlAttitudeTvc.getTvcTopic(), Math::Vector<float, 3>({0, 0, -0.35}), TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N); // Subscribe to the TVC input topic
 
                     //bodySimulator.setPaused(false); // Unpause the body simulator to start the simulation
                     bodySimulator.setAttitudeState({0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
@@ -1141,7 +1139,7 @@ class CommsSystemStateTask : public Core::Task_Periodic
 {
 private:
 
-    
+    Core::Simple_Subscriber<Math::Vector<float, 4>> tvcActualThrustSubr; // Subscriber for the actual TVC thrust vector
 
 public:
 
@@ -1154,7 +1152,7 @@ public:
     void taskInit() override
     {
         
-        
+        tvcActualThrustSubr.subscribe(starshipTVC.getTVCActualThrustTopic()); // Subscribe to the TVC thrust vector topic
 
     }
 
@@ -1173,7 +1171,7 @@ public:
         vehicleState.failureState = failureState;
         vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
         vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed(); // Get the vehicle armed state
-        vehicleState.tvcThrust = starshipTVC.getTVCThrustVector().magnitude()/50.0f * UINT16_MAX;
+        vehicleState.tvcThrust = tvcActualThrustSubr.getItem().magnitude(0, 3)/50.0f * UINT16_MAX;
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 
@@ -1772,6 +1770,7 @@ void initialiseTopicConnections() {
     starshipFlaps.setFlapSettingTopic(flapSettingTopic);
 
     bodySimulator.setPaused(true);
+    bodySimulator.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(), Math::Vector<float, 3>({0, 0, -0.35}), TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N); // Subscribe to the TVC input topic
 
     positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
     attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());

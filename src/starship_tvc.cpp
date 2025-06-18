@@ -91,7 +91,6 @@ namespace VCTR
                 auto tvcRotation = Math::Quat_F(tvcRotationAxis, tvcAngle - tvcAngleLimit_Rad_).conjugate();
                 tvcVector = tvcRotation.rotate(tvcVector); //Rotate the vector back to the limit.
             }
-            actualTVCThrustVector_N_ = tvcVector;
 
             //LOG_MSG("TVC vector: %.2f, %.2f, %.2f |%.1f| Enabled: %s\n", tvcVector(0), tvcVector(1), tvcVector(2), tvcVector.magnitude(), enableActuators ? "true" : "false");
 
@@ -175,6 +174,19 @@ namespace VCTR
 
             if (motorCWOut > motorPowerLimit_) motorCWOut = motorPowerLimit_;
             if (motorCCWOut > motorPowerLimit_) motorCCWOut = motorPowerLimit_;
+            
+            // Lets update the actual thrust vector with what we expect to get from the motors and servos. This is used for telemetry and simulation purposes.
+            Math::Vector<float, 4> tvcActualThrustVector = 0;
+            if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle){ // Assume disarm if the motors arte
+                auto actualThrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut)/2 * tvcThrustLimit_N_; 
+                tvcActualThrustVector = {
+                    actualThrustVector(0),
+                    actualThrustVector(1),
+                    actualThrustVector(2),
+                    tvcTwistForce * thrustMagnitude / twistFactor
+                };
+            }
+            tvcActualThrustTopic_.publish(tvcActualThrustVector); // Publish the actual thrust vector
 
             servoXP_.enableOutput(enableActuators);
             servoXN_.enableOutput(enableActuators);

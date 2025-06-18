@@ -30,6 +30,8 @@ namespace VCTR
             const float TVC_TEST_TWIST_TIME = 2;
             const int64_t TVC_TEST_TWIST_COUNT = 2;
 
+            Core::Topic<Math::Vector<float, 4>> tvcActualThrustTopic_;
+
             Core::Simple_Subscriber<Math::Vector<float, 4>> ctrlSubr_;
 
             ACTR::PWM_Output servoXP_;
@@ -57,8 +59,6 @@ namespace VCTR
             float tvcFinOffsetXN_Rad_ = 0.0f;
             float tvcFinOffsetYP_Rad_ = 0.0f;
             float tvcFinOffsetYN_Rad_ = 0.0f;
-
-            Math::Vector_F actualTVCThrustVector_N_ = 0;
 
             enum class ActuatorTestingState
             {
@@ -105,10 +105,10 @@ namespace VCTR
             }
 
             /**
-             * @brief Returns the actual thrust vector in Newtons. This is the vector that is actually applied to the vehicle.
+             * @brief Returns the topic to which the actual thrust vector is published. In form: [X, Y, Z, T], where X, Y, Z show the thrust vector in body frame (magnitude of vector is thrust magnitude) and T is the roll torque (Z-Axis) angle in radians.
              */
-            const Math::Vector_F& getTVCThrustVector() const {
-                return actualTVCThrustVector_N_;
+            Core::Topic<Math::Vector<float, 4>>& getTVCActualThrustTopic() {
+                return tvcActualThrustTopic_;
             }
 
             void enableMotors(bool enable) { enableMotors_ = enable; }
