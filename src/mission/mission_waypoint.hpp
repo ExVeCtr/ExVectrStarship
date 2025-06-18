@@ -32,6 +32,7 @@ private:
     {
         Math::Vector<float, 3> position; // The position of the waypoint to travel to.
         float velocity; // The velocity to move to the waypoint in m/s.
+        float acceleration; // The acceleration limit to move the waytpoint in m/s^2. This is used to limit the acceleration/deceleration of the vehicle.
         float thresholdDistance; // When the waypoint can be considered as reached if within this distance.
         int64_t loiterTime; // The time the vehicle should loiter at the waypoint in seconds.
         int64_t timeLimit; // If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected.
@@ -44,9 +45,8 @@ private:
 
     Math::Vector<float, 6> positionSetpoint_;
 
-    //CTRL::StarshipFlapSettings flapSettings_;
-
-    int64_t hoverModeLastUpdate_ = 0; 
+    int64_t lastUpdateTimestamp_ = 0; // Timestamp of the last update in microseconds.
+    float currentVelocity_ = 0; // The current velocity of the vehicle in m/s.
 
     Core::ListArray<Waypoint> waypoints_; // The list of waypoints to travel to.
     size_t currentWaypointIndex_ = 0; // The index of the current waypoint to travel to.
@@ -70,13 +70,14 @@ public:
      * Adds a waypoint to the list of waypoints to travel to. Waypoint is added to the end of the path
      * @param position The position of the waypoint to travel to.
      * @param velocity The velocity to move/lerp to the waypoint in m/s.
+     * @param acceleration The acceleration limit to move the waypoint in m/s^2. This is used to limit the acceleration/deceleration of the vehicle.
      * @param thresholdDistance When the waypoint can be considered as reached if within this distance. 
      * @param loiterTime The time the vehicle should loiter at the waypoint in seconds.
      * @param timeLimit If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected. If not given, the vehicle will calculate the time needed +50% to reach the waypoint.
      * @param cancelIfNotReachable If the waypoint was not reached within the time limit, the mission will be cancelled and ended.
      * 
      */
-    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME, bool cancelIfNotReachable = false) {
+    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float acceleration = 3, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME, bool cancelIfNotReachable = false) {
 
         if (timeLimit == Core::END_OF_TIME) { // If the time limit is not given, calculate the time needed to reach the waypoint
             
@@ -91,7 +92,7 @@ public:
 
         }
 
-        waypoints_.append({position, velocity, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
+        waypoints_.append({position, velocity, acceleration, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
 
     }
 
@@ -107,6 +108,7 @@ public:
     void taskInit() override
     {
         missionState_.missionMode = MissionMode::MissionMode_Idle; // Set the mission mode to idle
+        lastUpdateTimestamp_ = Core::NOW(); // Set the last update timestamp to the current time
     }
 
     const MissionState& getMissionState() const {
@@ -120,7 +122,9 @@ public:
         actuatorsEnabled_ = false; // Disable actuators
         missionEnd_ = false; // Set the mission end to false
         currentWaypointIndex_ = 0; // Reset the waypoint index
+        currentVelocity_ = 0; // Reset the current velocity to 0
         waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
+        lastUpdateTimestamp_ = Core::NOW(); // Reset the last update timestamp
         LOG_MSG("Started mission waypoint\n"); // Log the mission start
     };
 
@@ -130,6 +134,7 @@ public:
         missionEnd_ = true; // Set the mission end to true
         currentWaypointIndex_ = 0; // Reset the waypoint index
         positionSetpoint_ = {0, 0, 0, 0, 0, 0}; // Set the setpoint to the current position and velocity of the vehicle
+        currentVelocity_ = 0; // Reset the current velocity to 0
         LOG_MSG("Reset mission waypoint.\n"); // Log the mission reset
     }
 
@@ -222,7 +227,7 @@ private:
         positionSetpoint_(4) = posSubr_.getItem().data(4);
         positionSetpoint_(5) = posSubr_.getItem().data(5);
 
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
+        lastUpdateTimestamp_ = Core::NOW(); // Set the time when the hover mode was last updated
         waypointStartTime_ = Core::NOW(); // Set the time when the waypoint was started
 
         currentWaypointIndex_ = 0; // Reset the waypoint index
@@ -234,12 +239,14 @@ private:
         if (missionTime_.NOW() > 0)
             missionState_.missionMode = MissionMode::MissionMode_Running; // Go to hover mode
 
+        currentVelocity_ = 0; // Reset the current velocity to 0
+
     }
     
     void missionHover() {
 
-        float dTime = float(Core::NOW() - hoverModeLastUpdate_)/Core::SECONDS;
-        hoverModeLastUpdate_ = Core::NOW(); // Set the time when the hover mode was last updated
+        float dTime = float(Core::NOW() - lastUpdateTimestamp_)/Core::SECONDS;
+        lastUpdateTimestamp_ = Core::NOW(); // Set the time when the hover mode was last updated
 
         actuatorsEnabled_ = true;   
         //missionEnd_ = false; // Set the mission end to false
@@ -252,13 +259,17 @@ private:
 
         auto waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
         auto distance = waypoint.position - positionIs_.block<3, 1>(3); // Get the distance to the waypoint in reference frame
+        auto distanceMagnitude = distance.magnitude(); // Get the magnitude of the distance vector
 
-        if (distance.magnitude() < waypoint.thresholdDistance) { // If the vehicle is within the threshold distance of the waypoint, we consider it as reached
+        if (distanceMagnitude < waypoint.thresholdDistance) { // If the vehicle is within the threshold distance of the waypoint, we consider it as reached
 
             waypointReached_ = true; // Set the waypoint reached to true
             
             if (Core::NOW() - waypointThresholdTime_ > waypoint.loiterTime) { // If the vehicle is within the threshold distance for a certain time, we consider it as reached
                 
+                positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+                positionSetpoint_(1) = 0;
+                positionSetpoint_(2) = 0;
                 positionSetpoint_(3) = waypoint.position(0); // Set the setpoint position in the reference frame
                 positionSetpoint_(4) = waypoint.position(1);
                 positionSetpoint_(5) = waypoint.position(2);
@@ -266,6 +277,7 @@ private:
                 if (currentWaypointIndex_ < waypoints_.size() - 1) { // If we are at the last waypoint, we go to idle mode
                     currentWaypointIndex_++; // Go to the next waypoint
                     waypoint = waypoints_[currentWaypointIndex_]; // Get the current waypoint to travel to
+                    currentVelocity_ = 0; // Reset the current velocity to 0
                     LOG_MSG("Waypoint reached. Next point: %d\n", currentWaypointIndex_); // Log the waypoint reached
                     LOG_MSG("Waypoint position: %.2f %.2f %.2f\n", waypoint.position(0), waypoint.position(1), waypoint.position(2)); // Log the waypoint position
                     LOG_MSG("Waypoint velocity: %.2f\n", waypoint.velocity); // Log the waypoint velocity
@@ -288,6 +300,9 @@ private:
 
             if (!waypointReached_ && Core::NOW() - waypointStartTime_ > waypoint.timeLimit) { // If the vehicle is within the threshold distance for a certain time, we consider it as not reachable
 
+                positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+                positionSetpoint_(1) = 0;
+                positionSetpoint_(2) = 0;
                 positionSetpoint_(3) = waypoint.position(0); // Set the setpoint position in the reference frame
                 positionSetpoint_(4) = waypoint.position(1);
                 positionSetpoint_(5) = waypoint.position(2);
@@ -310,10 +325,27 @@ private:
 
         }
 
+        // Calculate the velocity limit to decelerate at the given amount and stop at the waypoint position
+        auto accelVelocityLimit = sqrtf(distanceMagnitude * waypoint.acceleration);
+
+        // Change the velocity to match the waypoint acceleration characteristics
+        if (currentVelocity_ > accelVelocityLimit) { // The deceleration limit is the strongest limit. We limit the velocity to the deceleration limit
+            currentVelocity_ = accelVelocityLimit;
+        } else if (waypoint.velocity > currentVelocity_) { // If we do not decelerate and we are below the waypoint velocity, we accelerate to the waypoint velocity
+            currentVelocity_ += waypoint.acceleration * dTime; // Increase the current velocity by the acceleration multiplied by the time since the last update
+            if (currentVelocity_ > waypoint.velocity) { // If the current velocity is greater than the waypoint velocity, we set the current velocity to the waypoint velocity
+                currentVelocity_ = waypoint.velocity; // Set the current velocity to the waypoint velocity
+            }
+        }
+
         auto travelDistance = waypoint.position - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the hover position in reference frame
-        if (travelDistance.magnitude() / dTime > waypoint.velocity) {
-            travelDistance = travelDistance.normalize() * waypoint.velocity * dTime;
+        auto travelDistanceNorm = travelDistance.normalize(); // Normalize the travel distance vector
+        if (travelDistance.magnitude() / dTime > currentVelocity_) {
+            travelDistance = travelDistance.normalize() * currentVelocity_ * dTime;
         } 
+        positionSetpoint_(0) = travelDistanceNorm(0) * currentVelocity_; // Set the velocity setpoint in the direction of travel with magnitude of the current velocity
+        positionSetpoint_(1) = travelDistanceNorm(1) * currentVelocity_;
+        positionSetpoint_(2) = travelDistanceNorm(2) * currentVelocity_; 
         positionSetpoint_(3) += travelDistance(0); // Update the setpoint position in the reference frame
         positionSetpoint_(4) += travelDistance(1); 
         positionSetpoint_(5) += travelDistance(2); 
