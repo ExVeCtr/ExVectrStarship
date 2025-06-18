@@ -362,7 +362,7 @@ MagnetometerCalibrationTask magCalibTask;
 MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1.5}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
-MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 1 * Core::SECONDS, 60*DEGREES, 20*DEGREES);
+MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 0.5 * Core::SECONDS, 60*DEGREES, 20*DEGREES);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for the rocket. It also prepares the system for mission start and signals when something is wrong.
