@@ -1580,7 +1580,7 @@ void initialiseHardware() {
 
     //servoTest.setPosition(0);
 
-    starshipTVC.setTVCFinsOffset(1*DEG_TO_RAD, 0*DEG_TO_RAD, 1.2*DEG_TO_RAD, 0*DEG_TO_RAD);
+    starshipTVC.setTVCFinsOffset(1*DEG_TO_RAD, -5*DEG_TO_RAD, 5*DEG_TO_RAD, 2*DEG_TO_RAD);
 
 }
 
@@ -1776,7 +1776,7 @@ void initialiseTopicConnections() {
     attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
 
 
-    Math::Quat<float> accTiltX({1, 0, 0}, -4*DEG_TO_RAD);
+    Math::Quat<float> accTiltX({1, 0, 0}, 0*DEG_TO_RAD);
     Math::Quat<float> accTiltY({0, 1, 0}, -4*DEG_TO_RAD);
     imuTask.setAccTiltCompensation((accTiltX * accTiltY).to3x3RotMat());
 
