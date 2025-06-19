@@ -558,7 +558,7 @@ public:
                 imuTask.enableZeroingMode(false); // Enable zeroing mode for the attitude estimator
                 bodySimulator.enableZeroingMode(false); // Enable zeroing mode for the body simulator
                 //controlRocket.enableControl(true); // Disable control for the rocket
-                controlAttitudeTvc.enableControl(true); // Disable control for the attitude
+                controlAttitudeTvc.enableControl(mission_->getActuatorsEnabled());
                 controlPositionStandard.enableControl(true); // Disable control for the position
                 //starshipTVC.enableMotors(true); // Enable motors
                 starshipFlaps.enableActuators(true); // Disable actuators
@@ -1088,6 +1088,8 @@ private:
 
     CTRL::ControlAttitudeBellyFlopSetting starshipFlopSetting; // Flap controller setting.
 
+    Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr; // Subscriber for the position estimator
+
 public:
 
     FlapModeObserverTask() : Task_Periodic("Flap Mode Observer", 0.1*Core::SECONDS)
@@ -1099,7 +1101,7 @@ public:
     void taskInit() override
     {
         
-        
+        posEstSubr.subscribe(positionTopicSwitch.getTopic()); // Subscribe to the position estimator topic
 
     }
 
@@ -1109,12 +1111,18 @@ public:
         auto& vehicleMode = vehicleSafetyAndControlTask.getVehicleMode();
         auto mission = vehicleSafetyAndControlTask.getCurrentMission();
 
+        auto posEst = posEstSubr.getItem().data.block<3, 1>(0, 3); // Get the position estimate 
+        auto velEst = posEstSubr.getItem().data.block<3, 1>(0, 0); // Get the velocity estimate
+
         if (vehicleMode == VehicleMode::VehicleMode_Running && mission->getMissionState().missionMode == MissionMode::MissionMode_Running) {
 
             if (mission == &missionFreefallTask) {
                 starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Stabilize;
-                starshipFlopSetting.azimuthAngle_Rad = 0.0f; // Set the azimuth angle to 0
+                starshipFlopSetting.azimuthAngle_Rad = 0; // Set the azimuth angle to 0 degrees
                 starshipFlopSetting.pitchAngle_Rad = 0.0f; // Set the flap angle to 0
+                if (posEst(2) > 60) {
+                    starshipFlopSetting.azimuthAngle_Rad = 180 * DEGREES;
+                }
             } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
                 starshipFlopSetting.bellyFlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Upright; // Enable the belly flop mode
             } else if (mission == &missionWaypointTask && defaultMission_.stabilising()) {
