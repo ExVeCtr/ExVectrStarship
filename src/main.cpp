@@ -183,7 +183,6 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode, 
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
 Core::Topic<CTRL::ControlAttitudeBellyFlopSetting> bellyFlopControlTopic;
 
-//CTRL::ControlRocket controlRocket(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 CTRL::ControlPositionStandard controlPositionStandard;
 CTRL::ControlMappingAccToAtt controlMappingAccToAtt;
 CTRL::ControlAttitudeTvc controlAttitudeTvc(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
@@ -198,7 +197,6 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 7>>> attitudeTopicSwitc
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>> positionTopicSwitch;
 
 //Functions
-
 void attitudeTelemetryCallback(const Core::Timestamped<Math::Vector<float, 7>>& data) {
 
     static int64_t lastSend = 0;
@@ -361,7 +359,7 @@ MagnetometerCalibrationTask magCalibTask;
 
 MissionRTH defaultMission_(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), {0, 0, 1.5}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic());
-MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
+MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(), VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 30);
 MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(), controlAttitudeTvc, controlMappingAccToAtt, 0.5 * Core::SECONDS, 60*DEGREES, 20*DEGREES);
 
 /**
@@ -1503,9 +1501,11 @@ public:
 
         auto accData = accelSub.getItem().data.val;
 
-        accelVal = accelVal * 0.999 + accData * 0.001;
+        accelVal = accelVal * 0.99 + accData * 0.01;
 
-        if (firstAcc) {
+        if (firstAcc || Serial.available()) {
+            Serial.flush();
+            Serial.clear();
             accelVal = accData;
             firstAcc = false;
         }
@@ -1534,8 +1534,9 @@ public:
     {   
 
         //updateBaro();
-        updateGyroBias();
+        //updateGyroBias();
         //updateMagBias();
+        updateAccBias();
 
         //tvcTopic.publish(tvcSetting);
 
@@ -1681,9 +1682,19 @@ void initialiseMemory() {
 
     }
 
-    gyroCalibData.val(0) = 0.228 * DEG_TO_RAD;
-    gyroCalibData.val(1) = 1.314 * DEG_TO_RAD;
-    gyroCalibData.val(2) = -0.5085 * DEG_TO_RAD;
+    gyroCalibData.val(0) = 0.92 * DEG_TO_RAD;
+    gyroCalibData.val(1) = 2.0 * DEG_TO_RAD;
+    gyroCalibData.val(2) = 0.6 * DEG_TO_RAD;
+
+    /*accCalibData.val = {0.4278, 0.560, 2.0725};
+    accCalibData.val(0) /= 0.9984;
+    accCalibData.val(1) /= 1.003;
+    accCalibData.val(2) /= 0.9673;
+    accCalibData.cov = {
+        0.9984, 0, 0,
+        0, 1.003, 0,
+        0, 0, 0.9673
+    };*/
 
     gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform, gyroCalibData.val);
     accTransformTopic.setTransform(accCalibData.cov * accTransform, accCalibData.val);
@@ -1695,10 +1706,15 @@ void initialiseMemory() {
     //Lets update the memory with known values for the calibration data. This is only for testing purposes.
     if (false) {
 
-        accCalibData.val = Math::Vector<float, 3>({0.161, -0.045, 0.8835});
-        accCalibData.cov = Math::Matrix<float, 3, 3>({-1, 0, 0,
-                                                        0, 1, 0,
-                                                        0, 0, -1});
+        accCalibData.val = {0.4278, 0.560, 2.0725};
+        accCalibData.val(0) /= 0.9984;
+        accCalibData.val(1) /= 1.003;
+        accCalibData.val(2) /= 0.9673;
+        accCalibData.cov = {
+            0.9984, 0, 0,
+            0, 1.003, 0,
+            0, 0, 0.9673
+        };
         //memoryManager.writeItem(accCalibData, MEMORY_KEY_ACCCALIB);
 
         gyroCalibData.val = Math::Vector<float, 3>({0.228 * DEG_TO_RAD, 1.314 * DEG_TO_RAD, -0.5085 * DEG_TO_RAD});
@@ -1726,15 +1742,17 @@ void initialiseMemory() {
         });
         //memoryManager.writeItem(magCalibData, MEMORY_KEY_MAGCALIB);
 
-        //gyroTransformTopic.setTransform(gyroCalibData.cov, gyroCalibData.val);
-        //accTransformTopic.setTransform(accCalibData.cov, accCalibData.val);
-        //magTransformTopic.setTransform(magCalibData.cov, magCalibData.val);
+        accTransform = {
+            -1, 0, 0,
+            0, 1, 0,
+            0, 0, -1
+        };
 
-        /*memoryManager.writeItem(Math::Matrix<float, 3, 3>({
-            0, 0, -1,
-            1, 0, 0,
-            0, -1, 0
-        }), MEMORY_KEY_MAGTRANSFORM);*/
+        memoryManager.writeItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
+
+        gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform, gyroCalibData.val);
+        accTransformTopic.setTransform(accCalibData.cov * accTransform, accCalibData.val);
+        magTransformTopic.setTransform(magCalibData.cov * magTransform, magCalibData.val);
 
         eeprom.transferFrom(internalMemory);
 
