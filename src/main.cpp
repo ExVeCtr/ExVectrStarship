@@ -482,9 +482,6 @@ public:
 
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 3, 1, 5, 0 * Core::SECONDS); // Add a waypoint to the mission waypoint task
         missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 15 * Core::SECONDS, 10*Core::SECONDS, true); // Add a waypoint to the mission waypoint task
-        //missionWaypointTask.addWaypoint({10, 0, 100}, 5, 5, 5 * Core::SECONDS); // Add a waypoint to the mission waypoint task
-        
-        //mission_ = missionGuidanceTask;
 
     }
 
