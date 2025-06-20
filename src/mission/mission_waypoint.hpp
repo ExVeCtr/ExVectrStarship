@@ -32,7 +32,8 @@ private:
     {
         Math::Vector<float, 3> position; // The position of the waypoint to travel to.
         float velocity; // The velocity to move to the waypoint in m/s.
-        float acceleration; // The acceleration limit to move the waytpoint in m/s^2. This is used to limit the acceleration/deceleration of the vehicle.
+        float startAccel; // The acceleration limit to move the waypoint in m/s^2 at the start of the waypoint travel. This is used to limit the acceleration/deceleration of the vehicle.
+        float stopAccel; // The deceleration limit to stop at the waypoint in m/s^2 at the end of the waypoint travel. This is used to limit the acceleration/deceleration of the vehicle.
         float thresholdDistance; // When the waypoint can be considered as reached if within this distance.
         int64_t loiterTime; // The time the vehicle should loiter at the waypoint in seconds.
         int64_t timeLimit; // If the vehicle takes more than this time, the waypoint is considered as not reachable and the next waypoint is selected.
@@ -77,7 +78,7 @@ public:
      * @param cancelIfNotReachable If the waypoint was not reached within the time limit, the mission will be cancelled and ended.
      * 
      */
-    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float acceleration = 3, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME, bool cancelIfNotReachable = false) {
+    void addWaypoint(const Math::Vector<float, 3> &position, float velocity = 1, float startAccel = 3, float stopAccel = 3, float thresholdDistance = 1, int64_t loiterTime = 0, int64_t timeLimit = Core::END_OF_TIME, bool cancelIfNotReachable = false) {
 
         if (timeLimit == Core::END_OF_TIME) { // If the time limit is not given, calculate the time needed to reach the waypoint
             
@@ -92,7 +93,7 @@ public:
 
         }
 
-        waypoints_.append({position, velocity, acceleration, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
+        waypoints_.append({position, velocity, startAccel, stopAccel, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
 
     }
 
@@ -326,13 +327,13 @@ private:
         }
 
         // Calculate the velocity limit to decelerate at the given amount and stop at the waypoint position
-        auto accelVelocityLimit = sqrtf(distanceMagnitude * waypoint.acceleration);
+        auto accelVelocityLimit = sqrtf(distanceMagnitude * waypoint.stopAccel);
 
         // Change the velocity to match the waypoint acceleration characteristics
         if (currentVelocity_ > accelVelocityLimit) { // The deceleration limit is the strongest limit. We limit the velocity to the deceleration limit
             currentVelocity_ = accelVelocityLimit;
         } else if (waypoint.velocity > currentVelocity_) { // If we do not decelerate and we are below the waypoint velocity, we accelerate to the waypoint velocity
-            currentVelocity_ += waypoint.acceleration * dTime; // Increase the current velocity by the acceleration multiplied by the time since the last update
+            currentVelocity_ += waypoint.startAccel * dTime; // Increase the current velocity by the acceleration multiplied by the time since the last update
             if (currentVelocity_ > waypoint.velocity) { // If the current velocity is greater than the waypoint velocity, we set the current velocity to the waypoint velocity
                 currentVelocity_ = waypoint.velocity; // Set the current velocity to the waypoint velocity
             }
