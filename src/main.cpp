@@ -1174,7 +1174,10 @@ public:
         vehicleState.failureState = failureState;
         vehicleState.simulationModeEnabled = simulationMode; // Get the simulation mode
         vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed(); // Get the vehicle armed state
-        vehicleState.tvcThrust = tvcActualThrustSubr.getItem().magnitude(0, 3)/50.0f * UINT16_MAX;
+        vehicleState.tvcThrustX = tvcActualThrustSubr.getItem()(0)/50.0f * INT16_MAX;
+        vehicleState.tvcThrustY = tvcActualThrustSubr.getItem()(1)/50.0f * INT16_MAX;
+        vehicleState.tvcThrustZ = tvcActualThrustSubr.getItem()(2)/50.0f * INT16_MAX;
+        vehicleState.tvcTorque = tvcActualThrustSubr.getItem()(3)/50.0f * INT16_MAX;
 
         vehicleStateTopic.publish(vehicleState); // Publish the vehicle state to the control system
 

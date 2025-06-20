@@ -96,7 +96,10 @@ namespace VCTR {
 
         bool armed; // If the vehicle is armed or not. This is used to disable dangerous systems (motors) and test the system without the risk of damaging it.
 
-        uint16_t tvcThrust; // assuming 50N max thrust.
+        int16_t tvcThrustX; // assuming 50N max thrust.
+        int16_t tvcThrustY; // assuming 50N max thrust.
+        int16_t tvcThrustZ; // assuming 50N max thrust.
+        int16_t tvcTorque; // assuming 50N max torque.
 
     } __attribute__ ((packed));
 
