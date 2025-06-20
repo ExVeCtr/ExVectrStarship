@@ -1800,7 +1800,7 @@ void initialiseTopicConnections() {
 
 
     Math::Quat<float> accTiltX({1, 0, 0}, 0*DEG_TO_RAD);
-    Math::Quat<float> accTiltY({0, 1, 0}, -4*DEG_TO_RAD);
+    Math::Quat<float> accTiltY({0, 1, 0}, 0*DEG_TO_RAD);
     imuTask.setAccTiltCompensation((accTiltX * accTiltY).to3x3RotMat());
 
 
