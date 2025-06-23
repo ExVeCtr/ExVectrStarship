@@ -22,9 +22,12 @@
 
 #define NEO_M8Q_SERIALPORT Serial5
 
+#define TVC_SERVO_LIMIT 45*DEG_TO_RAD // Maximum angle of the TVC servos in radians in one direction (Full movement range is double this amount)
+#define TVC_ANGLE_FACTOR 15 // What factor to multiply the TVC angle by to achive actual thrust angle.
+
 #define VEHICLE_MASS_KG 1.05f // Mass of the vehicle in kg
 #define TVC_THRUST_LIMIT_N 15.0f // Maximum thrust in Newtons
-#define TVC_ANGLE_LIMIT_RAD 8*3.14/180 // Maximum angle in radians
+#define TVC_ANGLE_LIMIT_RAD (TVC_SERVO_LIMIT/TVC_ANGLE_FACTOR) //8*3.14/180 // Maximum angle in radians
 
 
 

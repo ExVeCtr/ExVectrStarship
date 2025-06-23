@@ -114,12 +114,16 @@ namespace VCTR
             servoBRPin_.enableOutput(enable);
 
             if (enable) {
-                float offset = - 10 * DEGREES;
+                float offset = 0;//- 10 * DEGREES;
+                float offsetTL = 0;
+                float offsetTR = 0;
+                float offsetBL = 0;
+                float offsetBR = 0;
                 //LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle, flapSettings.brAngle); // Log the flap angles
-                servoTLPin_.setValue(1 - (flapSettings.flapTLAngle_Rad + offset)/3.1415*2); // Set the top left flap angle
-                servoTRPin_.setValue((flapSettings.flapTRAngle_Rad + offset)/3.1415*2); // Set the top right flap angle
-                servoBLPin_.setValue((flapSettings.flapBLAngle_Rad + offset)/3.1415*2); // Set the bottom left flap angle
-                servoBRPin_.setValue(1 - (flapSettings.flapBRAngle_Rad + offset)/3.1415*2); // Set the bottom right flap angle
+                servoTLPin_.setValue(1 - (flapSettings.flapTLAngle_Rad + offset + offsetTL)/3.1415*2); // Set the top left flap angle
+                servoTRPin_.setValue((flapSettings.flapTRAngle_Rad + offset + offsetTR)/3.1415*2); // Set the top right flap angle
+                servoBLPin_.setValue((flapSettings.flapBLAngle_Rad + offset + offsetBL)/3.1415*2); // Set the bottom left flap angle
+                servoBRPin_.setValue(1 - (flapSettings.flapBRAngle_Rad + offset + offsetBR)/3.1415*2); // Set the bottom right flap angle
                 /*float setting = 0;
                 servoTLPin_.setValue(1 - setting); // Set the top left flap angle
                 servoTRPin_.setValue(setting); // Set the top right flap angle

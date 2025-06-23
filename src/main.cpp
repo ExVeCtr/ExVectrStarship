@@ -188,7 +188,7 @@ CTRL::ControlMappingAccToAtt controlMappingAccToAtt;
 CTRL::ControlAttitudeTvc controlAttitudeTvc(VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 CTRL::ControlAttitudeFlaps controlAttitudeFlaps;
 
-CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, TVC_ANGLE_LIMIT_RAD, 45*3.14/180, TVC_THRUST_LIMIT_N);
+CTRL::StarshipTVC starshipTVC(servoTVCXPPin, servoTVCXNPin, servoTVCYPPin, servoTVCYNPin, motorCWPIN, motorCCWPIN, TVC_ANGLE_LIMIT_RAD, TVC_SERVO_LIMIT, TVC_THRUST_LIMIT_N);
 CTRL::StarshipFlaps starshipFlaps(flapServoULPin, flapServoURPin, flapServoDLPin, flapServoDRPin);
 
 
@@ -681,6 +681,7 @@ public:
 
                 starshipTVC.enableMotors(false); // Disable motors
                 starshipFlaps.enableActuators(false); // Disable actuators
+                vehicleArmed_ = false; // Disarm the vehicle
 
                 LOG_MSG("System reset telecommand\n"); // Log the system reset
 

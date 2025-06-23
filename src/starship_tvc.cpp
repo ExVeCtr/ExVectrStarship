@@ -19,7 +19,7 @@ namespace VCTR
     {
 
         
-        StarshipTVC::StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad, float servoAngleLimit_Rad, float tvcThrustLimit_N) :
+        StarshipTVC::StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad, float servoAngleLimit_Rad, float tvcThrustLimit_N, float tvcFactor) :
             Core::Task_Periodic("Starship TVC", 20*Core::MILLISECONDS),
             servoXP_(tvcServoPinXP, ACTR::PWM_Output_Protocol::STANDARD),
             servoXN_(tvcServoPinXN, ACTR::PWM_Output_Protocol::STANDARD),
@@ -33,6 +33,7 @@ namespace VCTR
             tvcAngleLimit_Rad_ = tvcAngleLimit_Rad;
             servoAngleLimit_Rad_ = servoAngleLimit_Rad;
             tvcThrustLimit_N_ = tvcThrustLimit_N;
+            tvcFactor_ = tvcFactor;
         }
 
             
@@ -94,7 +95,6 @@ namespace VCTR
 
             //LOG_MSG("TVC vector: %.2f, %.2f, %.2f |%.1f| Enabled: %s\n", tvcVector(0), tvcVector(1), tvcVector(2), tvcVector.magnitude(), enableActuators ? "true" : "false");
 
-            float angleFactor = 19;
             float twistFactor = 45;
             float twistLimit = 0.5;
 
@@ -117,8 +117,8 @@ namespace VCTR
             if (yAngle > tvcAngleLimit_Rad_) yAngle = tvcAngleLimit_Rad_;
             else if (yAngle < -tvcAngleLimit_Rad_) yAngle = -tvcAngleLimit_Rad_;
 
-            xAngle *= angleFactor;
-            yAngle *= angleFactor;
+            xAngle *= tvcFactor_;
+            yAngle *= tvcFactor_;
 
             if (actuatorTestState_ != ActuatorTestingState::Idle) { //Hijack the control loop to test the actuators
 

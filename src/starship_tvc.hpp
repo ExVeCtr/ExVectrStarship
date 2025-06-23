@@ -54,6 +54,7 @@ namespace VCTR
             float tvcAngleLimit_Rad_;
             float servoAngleLimit_Rad_;
             float tvcThrustLimit_N_;
+            float tvcFactor_;
 
             float tvcFinOffsetXP_Rad_ = 0.0f;
             float tvcFinOffsetXN_Rad_ = 0.0f;
@@ -83,7 +84,7 @@ namespace VCTR
              * @param servoAngleLimit_Rad The max angle the servo will reach if commanded to the maximum angle.
              * @param tvcThrustLimit_N The maximum thrust in Newtons for the TVC. This is the maximum thrust that can be commanded to the motors.
              */
-            StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad = 15*3.14/180, float servoAngleLimit_Rad = 45*3.14/180, float tvcThrustLimit_N = 20.0f);
+            StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad = 15*3.14/180, float servoAngleLimit_Rad = 45*3.14/180, float tvcThrustLimit_N = 20.0f, float tvcFactor = 15);
 
 
             void setTVCInputTopic(Core::Topic<Math::Vector<float, 4>> &tvcInputTopic) { ctrlSubr_.subscribe(tvcInputTopic); }
