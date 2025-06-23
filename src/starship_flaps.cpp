@@ -108,6 +108,15 @@ namespace VCTR
                 
             } 
 
+
+            /*enable = true;
+            float angle = 90 * DEGREES;
+            flapSettings.flapTLAngle_Rad = angle;
+            flapSettings.flapTRAngle_Rad = angle;
+            flapSettings.flapBLAngle_Rad = angle;
+            flapSettings.flapBRAngle_Rad = angle;*/
+
+
             servoTLPin_.enableOutput(enable);
             servoTRPin_.enableOutput(enable);
             servoBLPin_.enableOutput(enable);
