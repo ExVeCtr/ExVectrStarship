@@ -239,8 +239,8 @@ private:
         case RunningState::RunningState_Stabilize:
 
             positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
-            positionSetpoint_(1) = 0; 
-            positionSetpoint_(2) = 0; 
+            positionSetpoint_(1) = posSubr_.getItem().data(1)*0.5; 
+            positionSetpoint_(2) = posSubr_.getItem().data(2)*0.5; 
             positionSetpoint_(3) = posSubr_.getItem().data(3); // Set the position setpoint to where the vehicle is. Keep this updated as we only want to stop the vehicle.
             positionSetpoint_(4) = posSubr_.getItem().data(4);
             positionSetpoint_(5) = posSubr_.getItem().data(5);
@@ -251,8 +251,9 @@ private:
             //flapSettings_.blAngle = 90;// Move bottom flaps in fully
             //flapSettings_.brAngle = 90; 
 
-            if (posSubr_.getItem().data.block<3, 1>(0, 0).magnitude() < 1) { // If the vehicle is slower than 0.5 m/s, we consider it as stopped, and begin translation
+            if (posSubr_.getItem().data.block<3, 1>(0, 0).magnitude() < 0.5) { // If the vehicle is slower than 0.5 m/s, we consider it as stopped, and begin translation
                 runningState_ = RunningState::RunningState_Ascent; // Go to ascent mode
+                translationVelocity_ = 0;
             }
 
             break;
@@ -265,8 +266,18 @@ private:
 
         {
             auto travelDistance = homePosition_ - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the home position in reference frame
-            auto travelDistanceNorm = travelDistance.normalize(); // Normalize the travel distance vector
-            if (travelDistance.magnitude() / dTime > translationVelocity_) {
+            auto travelDistanceMag = travelDistance.magnitude(); // Get the magnitude of the travel distance vector
+            auto travelDistanceNorm = travelDistance / travelDistanceMag; // Normalize the travel distance vector
+
+            const float accel = 0.2;
+            if (translationVelocity_ < 2)
+                translationVelocity_ += dTime * accel;
+                
+            if (translationVelocity_ > 2) { // Limit the translation velocity to 2 m/s
+                translationVelocity_ = 2;
+            }
+
+            if (travelDistanceMag / dTime > translationVelocity_) {
                 travelDistance = travelDistanceNorm * translationVelocity_ * dTime;
             } 
             positionSetpoint_(0) = travelDistanceNorm(0) * translationVelocity_;
@@ -323,6 +334,7 @@ private:
         //flapSettings_.brAngle = 90; 
         
         if (positionIs_(5) - positionSetpoint_(5) < landingThresholdDistance_*1.5) { //We keep updateting the threshold time. We stop when the vehicle is above the threshold distance. This triggers the start of the timer.
+            //positionSetpoint_(2) = descentRate_;
             positionSetpoint_(5) -= dTime*descentRate_; // Update the setpoint position in the reference frame
         } 
         if (positionIs_(5) - positionSetpoint_(5) < landingThresholdDistance_) { //We keep updateting the threshold time. We stop when the vehicle is above the threshold distance. This triggers the start of the timer.
