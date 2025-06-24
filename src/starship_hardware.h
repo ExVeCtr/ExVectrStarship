@@ -26,7 +26,7 @@
 #define TVC_ANGLE_FACTOR 15 // What factor to multiply the TVC angle by to achive actual thrust angle.
 
 #define VEHICLE_MASS_KG 1.05f // Mass of the vehicle in kg
-#define TVC_THRUST_LIMIT_N 15.0f // Maximum thrust in Newtons
+#define TVC_THRUST_LIMIT_N 14.0f // Maximum thrust in Newtons
 #define TVC_ANGLE_LIMIT_RAD (TVC_SERVO_LIMIT/TVC_ANGLE_FACTOR) //8*3.14/180 // Maximum angle in radians
 
 
