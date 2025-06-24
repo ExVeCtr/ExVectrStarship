@@ -114,12 +114,26 @@ public:
 
         //LOG_MSG("Transition angle: %.2f deg, angular velocity: %.2f deg/s, Time since start: %.2f s\n", angle/DEGREES, velIs(1)/DEGREES, double(Core::NOW() - transitionStartTime_)/Core::SECONDS); // Log the angle and angular velocity of the vehicle
         //LOG_MSG("Transition angle threshold: %.2f deg, angular velocity threshold: %.2f deg/s, transition time limit: %.2f s\n", angleThreshold_Rad_/DEGREES, angVelThreshold_RadPs_/DEGREES, double(transitionTimeLimit_)/Core::SECONDS); // Log the angle and angular velocity thresholds
-
-        if (angle < angleThreshold_Rad_ || abs(velIs(1)) > angVelThreshold_RadPs_ || Core::NOW() - transitionStartTime_ > transitionTimeLimit_) { // If the vehicle is within the angle threshold and the angular velocity is below the threshold, we consider the transition finished
+        
+        bool stopTrigger = false; // Flag to indicate if the transition is finished
+        auto angleTrigger = angle < angleThreshold_Rad_; // Check if the vehicle is within the angle threshold
+        auto angVelTrigger = abs(velIs(1)) > angVelThreshold_RadPs_;
+        auto timeTrigger = Core::NOW() - transitionStartTime_ > transitionTimeLimit_;
+        if (angleTrigger) {
+            LOG_MSG("Bellyflop Transition finished. Trigger was angle\n");
+            stopTrigger = true; // If the vehicle is within the angle threshold, we consider the transition finished
+        } else if (angVelTrigger) {
+            LOG_MSG("Bellyflop Transition finished. Trigger was angular velocity\n");
+            stopTrigger = true; // If the vehicle angular velocity is below the threshold, we consider the transition finished
+        } else if (timeTrigger) {
+            LOG_MSG("Bellyflop Transition finished. Trigger was time limit\n");
+            stopTrigger = true; // If the transition took longer than the time limit, we consider the transition finished
+        }
+        if (stopTrigger) { // If the vehicle is within the angle threshold and the angular velocity is below the threshold, we consider the transition finished
             controlTvc_.subscribeAttitudeSetpoint(controlMapping_.getAttitudeTopic()); // Subscribe to the attitude setpoint topic to revert back to original configuration
             missionState_.missionMode = MissionMode::MissionMode_Finished; // Set the mission mode to finished
             missionEnd_ = true; // Set the mission end to true
-            LOG_MSG("Transition finished\n"); // Log the mission end
+            LOG_MSG("Transition finished. State: %.2f deg, angular velocity: %.2f deg/s, Time since start: %.2f s\n", angle/DEGREES, velIs(1)/DEGREES, double(Core::NOW() - transitionStartTime_)/Core::SECONDS); // Log the transition finished
             setPaused(true); // Pause the task to stop these calculations
         }
 
