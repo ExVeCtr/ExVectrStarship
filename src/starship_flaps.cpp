@@ -110,7 +110,7 @@ namespace VCTR
 
 
             /*enable = true;
-            float angle = 90 * DEGREES;
+            float angle = 45 * DEGREES;
             flapSettings.flapTLAngle_Rad = angle;
             flapSettings.flapTRAngle_Rad = angle;
             flapSettings.flapBLAngle_Rad = angle;
@@ -125,9 +125,13 @@ namespace VCTR
             if (enable) {
                 float offset = 0;//- 10 * DEGREES;
                 float offsetTL = 0;
-                float offsetTR = 0;
+                float offsetTR = 0*DEGREES;
                 float offsetBL = 0;
-                float offsetBR = 0;
+                float offsetBR = 0*DEGREES;
+                limitAngle(flapSettings.flapTLAngle_Rad);
+                limitAngle(flapSettings.flapTRAngle_Rad);
+                limitAngle(flapSettings.flapBLAngle_Rad);
+                limitAngle(flapSettings.flapBRAngle_Rad);
                 //LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n", flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle, flapSettings.brAngle); // Log the flap angles
                 servoTLPin_.setValue(1 - (flapSettings.flapTLAngle_Rad + offset + offsetTL)/3.1415*2); // Set the top left flap angle
                 servoTRPin_.setValue((flapSettings.flapTRAngle_Rad + offset + offsetTR)/3.1415*2); // Set the top right flap angle

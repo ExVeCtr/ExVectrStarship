@@ -28,6 +28,9 @@ namespace VCTR
         private:
 
             const float FLAP_TEST_DURATION = 4.0f;
+            const float FLAP_MAX_ANGLE = 90*DEGREES;
+            const float FLAP_MIN_ANGLE = 15*DEGREES;
+
 
             Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> ctrlSubr_;
 
@@ -78,6 +81,17 @@ namespace VCTR
             void beginActuatorTest(int64_t testOffset);
 
             bool testingActuators();
+
+        private:
+
+            void limitAngle(float &angle) const
+            {
+                if (angle > FLAP_MAX_ANGLE) {
+                    angle = FLAP_MAX_ANGLE;
+                } else if (angle < FLAP_MIN_ANGLE) {
+                    angle = FLAP_MIN_ANGLE;
+                }
+            }
 
             
         };
