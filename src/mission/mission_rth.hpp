@@ -265,9 +265,13 @@ private:
 
         {
             auto travelDistance = homePosition_ - positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the home position in reference frame
+            auto travelDistanceNorm = travelDistance.normalize(); // Normalize the travel distance vector
             if (travelDistance.magnitude() / dTime > translationVelocity_) {
-                travelDistance = travelDistance.normalize() * translationVelocity_ * dTime;
+                travelDistance = travelDistanceNorm * translationVelocity_ * dTime;
             } 
+            positionSetpoint_(0) = travelDistanceNorm(0) * translationVelocity_;
+            positionSetpoint_(1) = travelDistanceNorm(1) * translationVelocity_;
+            positionSetpoint_(2) = travelDistanceNorm(2) * translationVelocity_;
             positionSetpoint_(3) += travelDistance(0); // Update the setpoint position in the reference frame
             positionSetpoint_(4) += travelDistance(1); 
             positionSetpoint_(5) += travelDistance(2); 
