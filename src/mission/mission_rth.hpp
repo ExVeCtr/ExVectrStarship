@@ -298,7 +298,7 @@ private:
             //LOG_MSG("Translation mode. Position: (%f, %f, %f)\n", positionSetpoint_(3), positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
             //LOG_MSG("Distance to home position: (%f, %f, %f)\n", distance(0), distance(1), distance(2)); // Log the mission start
 
-            if (distance.magnitude() < 1) { // If the vehicle is within 1 m of the home position, we consider it as stopped, and begin descent
+            if (distance.magnitude() < 0.5) { // If the vehicle is within 0.5 m of the home position, we begin descent
                 runningState_ = RunningState::RunningState_Descent; // Go to descent mode
                 descentModeTimestamp_ = Core::NOW(); // Set the time when the descent mode was started
                 positionSetpoint_(5) = positionIs_(5); // Set the setpoint position in the reference frame to the current position
@@ -333,6 +333,12 @@ private:
         //flapSettings_.blAngle = 90;// Move bottom flaps in fully
         //flapSettings_.brAngle = 90; 
         
+        positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
+        positionSetpoint_(1) = 0;
+        positionSetpoint_(2) = 0; // Set the velocity setpoint to
+        positionSetpoint_(3) = homePosition_(0); // Set the position setpoint to where the vehicle is
+        positionSetpoint_(4) = homePosition_(1); // Set the position setpoint to where the vehicle is
+
         if (positionIs_(5) - positionSetpoint_(5) < landingThresholdDistance_*1.5) { //We keep updateting the threshold time. We stop when the vehicle is above the threshold distance. This triggers the start of the timer.
             //positionSetpoint_(2) = descentRate_;
             positionSetpoint_(5) -= dTime*descentRate_; // Update the setpoint position in the reference frame
