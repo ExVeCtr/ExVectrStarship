@@ -475,7 +475,7 @@ public:
         posEstSubr.subscribe(positionTopicSwitch.getTopic());
         attEstSubr.subscribe(attitudeTopicSwitch.getTopic());
 
-        telecommandSubr.subscribe(telecommandTopic);
+        telecommandSubr.subscribe(telecommandTopic); 
 
         missionList_.append(&defaultMission_); // Add the mission guidance task to the list of missions
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
