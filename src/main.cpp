@@ -1590,7 +1590,7 @@ void initialiseHardware() {
 
     //servoTest.setPosition(0);
 
-    starshipTVC.setTVCFinsOffset(1*DEG_TO_RAD, -5*DEG_TO_RAD, 5*DEG_TO_RAD, 2*DEG_TO_RAD);
+    starshipTVC.setTVCFinsOffset(5*DEG_TO_RAD, -2*DEG_TO_RAD, 0*DEG_TO_RAD, 5*DEG_TO_RAD);
 
 }
 
