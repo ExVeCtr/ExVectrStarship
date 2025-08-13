@@ -12,11 +12,10 @@
 #include "ExVectrHAL/pin_pwm.hpp"
 #include "ExVectrActuator/pwm_output.hpp"
 
-
 namespace VCTR
 {
     namespace CTRL
-    {   
+    {
 
         /**
          * @brief Takes the TVC settings from rocket control and maps them to the servos and motors.
@@ -24,7 +23,6 @@ namespace VCTR
         class StarshipTVC : public Core::Task_Periodic
         {
         private:
-
             const float TVC_TEST_SPIN_TIME = 2;
             const int64_t TVC_TEST_SPIN_COUNT = 2;
             const float TVC_TEST_TWIST_TIME = 2;
@@ -71,9 +69,7 @@ namespace VCTR
 
             int64_t actuatorTestStartTime_ = 0;
 
-
         public:
-            
             /**
              * @brief Constructs a new StarshipTVC object.
              * @param tvcServoPinXP Pin number for the servo controlling the fin in the positive X direction.
@@ -84,36 +80,44 @@ namespace VCTR
              * @param servoAngleLimit_Rad The max angle the servo will reach if commanded to the maximum angle.
              * @param tvcThrustLimit_N The maximum thrust in Newtons for the TVC. This is the maximum thrust that can be commanded to the motors.
              */
-            StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN, HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN, HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW, float tvcAngleLimit_Rad = 15*3.14/180, float servoAngleLimit_Rad = 45*3.14/180, float tvcThrustLimit_N = 20.0f, float tvcFactor = 15);
-
+            StarshipTVC(HAL::PinPWM &tvcServoPinXP, HAL::PinPWM &tvcServoPinXN, HAL::PinPWM &tvcServoPinYP, HAL::PinPWM &tvcServoPinYN, HAL::PinPWM &motorCW, HAL::PinPWM &motorCCW, float tvcAngleLimit_Rad = 15 * 3.14 / 180, float servoAngleLimit_Rad = 45 * 3.14 / 180, float tvcThrustLimit_N = 20.0f, float tvcFactor = 15);
 
             void setTVCInputTopic(Core::Topic<Math::Vector<float, 4>> &tvcInputTopic) { ctrlSubr_.subscribe(tvcInputTopic); }
 
-            void setTVCFinsOffset(float finOffsetXP_Rad, float finOffsetXN_Rad, float finOffsetYP_Rad, float finOffsetYN_Rad) {
+            void setTVCFinsOffset(float finOffsetXP_Rad, float finOffsetXN_Rad, float finOffsetYP_Rad, float finOffsetYN_Rad)
+            {
                 tvcFinOffsetXP_Rad_ = finOffsetXP_Rad;
                 tvcFinOffsetXN_Rad_ = finOffsetXN_Rad;
                 tvcFinOffsetYP_Rad_ = finOffsetYP_Rad;
                 tvcFinOffsetYN_Rad_ = finOffsetYN_Rad;
             }
 
-            void enableActuators(bool enableActuators) {
-                //LOG_MSG("TVC Actuators enable?: %d\n", enableActuators);
+            void enableActuators(bool enableActuators)
+            {
+                // LOG_MSG("TVC Actuators enable?: %d\n", enableActuators);
                 enableActuators_ = enableActuators;
             }
 
-            void motorPowerLimit(float limit) {
+            bool isActuatorsEnabled() const
+            {
+                return enableActuators_;
+            }
+
+            void motorPowerLimit(float limit)
+            {
                 motorPowerLimit_ = limit;
             }
 
             /**
              * @brief Returns the topic to which the actual thrust vector is published. In form: [X, Y, Z, T], where X, Y, Z show the thrust vector in body frame (magnitude of vector is thrust magnitude) and T is the roll torque (Z-Axis) angle in radians.
              */
-            Core::Topic<Math::Vector<float, 4>>& getTVCActualThrustTopic() {
+            Core::Topic<Math::Vector<float, 4>> &getTVCActualThrustTopic()
+            {
                 return tvcActualThrustTopic_;
             }
 
             void enableMotors(bool enable) { enableMotors_ = enable; }
-            
+
             void taskCheck() override;
 
             void taskInit() override;
@@ -123,8 +127,6 @@ namespace VCTR
             void beginActuatorTest(int64_t testOffset);
 
             bool testingActuators();
-
-            
         };
 
     }

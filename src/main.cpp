@@ -570,7 +570,12 @@ public:
 
         if (mission_ == &defaultMission_ && mission_->missionEnd())
         {
-            LOG_MSG("RTH mission ended.\n");      // Log the mission end
+
+            if (starshipTVC.isActuatorsEnabled())
+            {
+                LOG_MSG("RTH mission ended.\n"); // Log the mission end
+            }
+
             starshipTVC.enableMotors(false);      // Disable motors
             starshipFlaps.enableActuators(false); // Disable actuators
             vehicleShutdownControl(true);         // Disable everything
