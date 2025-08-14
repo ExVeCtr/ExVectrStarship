@@ -452,7 +452,6 @@ public:
 
     void taskInit() override
     {
-
         gnssSubr.subscribe(gnss.getGNSSTopic());
         gyroSubr.subscribe(gyroTransformTopic.getOutputTopic());
         magSubr.subscribe(magTransformTopic.getOutputTopic());
@@ -466,7 +465,9 @@ public:
         missionList_.append(&missionWaypointTask); // Add the mission waypoint task to the list of missions
 
         missionWaypointTask.addWaypoint({0, 0, 0.3}, 100, 3, 1, 5, 0 * Core::SECONDS);                            // Add a waypoint to the mission waypoint task
-        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 15 * Core::SECONDS, 10 * Core::SECONDS, true); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 10 * Core::SECONDS, 10 * Core::SECONDS, true); // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 2, 1.5}, 100, 10, 10, 0.5, 10 * Core::SECONDS);                       // Add a waypoint to the mission waypoint task
+        missionWaypointTask.addWaypoint({0, 0, 1.5}, 100, 10, 10, 0.5, 30 * Core::SECONDS);                       // Add a waypoint to the mission waypoint task
     }
 
     void taskThread() override
@@ -480,10 +481,6 @@ public:
             vehicleShutdownControl(true);       // Disable everything
             return;                             // Wait until all systems are initialised
         }
-
-        // if (mission_ == &defaultMission_) {
-        //     LOG_MSG("Default mission selected.\n"); // Log the default mission selection
-        // }
 
         checkForFailures();
 
