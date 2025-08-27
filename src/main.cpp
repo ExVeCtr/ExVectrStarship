@@ -149,11 +149,6 @@ Core::Topic<Net::PacketAttitude> attitudeDataTopic;
 Core::Topic<Net::PacketPosition> positionDataTopic;
 Core::Topic<uint8_t> connections;
 
-/*Core::Topic<VehicleMode> vehicleModeTopic;
-Core::Topic<MissionMode> MissionModeTopic;
-Core::Topic<SensoryState> sensoryStateTopic;
-Core::Topic<FailureState> failureStateTopic;
-Core::Topic<int64_t> missionTimeTopic;*/
 Core::Topic<VehicleState> vehicleStateTopic;
 Core::Topic<MissionState> missionStateTopic;
 
@@ -165,11 +160,6 @@ Net::TransportTopic<Net::PacketAttitude> attitudeDataTransport(10, UINT16_MAX, n
 Net::TransportTopic<Net::PacketPosition> positionDataTransport(11, UINT16_MAX, networkNode, positionDataTopic);
 Net::TransportTopic<Net::PacketGPS> gpsDataTransport(12, UINT16_MAX, networkNode, gpsDataTopic);
 
-/*Net::TransportTopic<VehicleMode> vehicleModeTransport(50, UINT16_MAX, networkNode, vehicleModeTopic);
-Net::TransportTopic<MissionMode> MissionModeTransport(51, UINT16_MAX, networkNode, MissionModeTopic);
-Net::TransportTopic<SensoryState> sensoryStateTransport(52, UINT16_MAX, networkNode, sensoryStateTopic);
-Net::TransportTopic<FailureState> failureStateTransport(53, UINT16_MAX, networkNode, failureStateTopic);
-Net::TransportTopic<int64_t> missionTimeTransport(54, UINT16_MAX, networkNode, missionTimeTopic);*/
 Net::TransportTopic<VehicleState> vehicleStateTransport(50, UINT16_MAX, networkNode, vehicleStateTopic);
 Net::TransportTopic<MissionState> missionStateTransport(51, UINT16_MAX, networkNode, missionStateTopic);
 
@@ -1803,7 +1793,7 @@ void initialiseTopicConnections()
     posEstTask.setBaroInput(bme.getBaroTopic());
     posEstTask.setRangeInput(vl53l0xDriver.getRangeTopic(), 0.4, 1.5);
     posEstTask.setGNSSInput(gnss.getGNSSTopic());
-    posEstTask.setUseRangeForAltitude(true);
+    // posEstTask.setUseRangeForAltitude(true);
 
     // controlRocket.subscribeAttitudeMeasurement(attitudeTopicSwitch.getTopic());
     // controlRocket.subscribePositionMeasurement(positionTopicSwitch.getTopic());
