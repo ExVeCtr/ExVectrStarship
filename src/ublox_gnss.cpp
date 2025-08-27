@@ -36,7 +36,16 @@ void SNSR::UbloxSerialGNSS::_getData()
 
     gnssData.positionValid = gnssData.velocityValid = numSats_ >= 5; // && gnss_.getGnssFixOk();
 
-    gnssTopic_.publish(Core::Timestamped<SNSR::GNSSData>(gnssData, time));
+    auto gnssStamped = Core::Timestamped<SNSR::GNSSData>(gnssData, time);
+
+    if (gnssStamped.data.position == gnssStamped.data.position && gnssStamped.data.velocity == gnssStamped.data.velocity && gnssStamped.data.positionCov == gnssStamped.data.positionCov && gnssStamped.data.velocityCov == gnssStamped.data.velocityCov)
+    {
+        gnssTopic_.publish(gnssStamped);
+    }
+    else
+    {
+        LOG_MSG("GNSS Data NaN!\n");
+    }
 }
 
 bool SNSR::UbloxSerialGNSS::initSensor(HAL::DigitalIO &ioBus)
