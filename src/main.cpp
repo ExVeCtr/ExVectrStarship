@@ -529,29 +529,17 @@ class VehicleSafetyAndControlTask : public Core::Task_Periodic {
 
     telecommandSubr.subscribe(telecommandTopic);
 
-    missionList_.append(&defaultMission_);  // Add the mission guidance task to
-                                            // the list of missions
-    missionList_.append(&missionWaypointTask);  // Add the mission waypoint task
-                                                // to the list of missions
+    missionList_.append(&defaultMission_);
+    missionList_.append(&missionWaypointTask);
 
+    missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
     missionWaypointTask.addWaypoint(
-        {0, 0, 0.3}, 0, 3, 1, 5,
-        0 * Core::SECONDS);  // Add a waypoint to the mission waypoint task
-    missionWaypointTask.addWaypoint(
-        {0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS,
-        true);  // Add a waypoint to the mission waypoint task
-    // missionWaypointTask.addWaypoint({0, 5, 2}, 1, 0.2, 0.2, 0.2, 0, 10 *
-    // Core::SECONDS);                      // Add a waypoint to the mission
-    // waypoint task
-    missionWaypointTask.addWaypoint(
-        {30, 10, 120}, 7, 3, 2, 3,
-        5 * Core::SECONDS);  // Add a waypoint to the mission waypoint task
-    missionWaypointTask.setNextMission(&missionBellyflop);
-    missionBellyflop.setNextMission(
-        &missionFreefallTask);  // Set the next mission of the belly flop
-                                // mission to the free fall mission
-    missionFreefallTask.setNextMission(
-        &defaultMission_);  // Set the next mission of
+        {0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
+    // missionWaypointTask.addWaypoint({30, 10, 120}, 7, 3, 2, 3,
+    //                                 5 * Core::SECONDS);
+    // missionWaypointTask.setNextMission(&missionBellyflop);
+    missionBellyflop.setNextMission(&missionFreefallTask);
+    missionFreefallTask.setNextMission(&defaultMission_);
   }
 
   void taskThread() override {
