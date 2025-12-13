@@ -14,7 +14,6 @@
 #include "ExVectrActuator/pwm_output.hpp"
 #include "ExVectrActuator/servo_control.hpp"
 
-
 namespace VCTR
 {
     namespace CTRL
@@ -26,11 +25,9 @@ namespace VCTR
         class StarshipFlaps : public Core::Task_Periodic
         {
         private:
-
             const float FLAP_TEST_DURATION = 4.0f;
-            const float FLAP_MAX_ANGLE = 90*DEGREES;
-            const float FLAP_MIN_ANGLE = 15*DEGREES;
-
+            const float FLAP_MAX_ANGLE = 90 * DEGREES;
+            const float FLAP_MIN_ANGLE = 15 * DEGREES;
 
             Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> ctrlSubr_;
 
@@ -53,26 +50,22 @@ namespace VCTR
 
             int64_t actuatorTestStartTime_ = 0;
 
-
         public:
-            
             /**
              * @brief Constructs a new StarshipFlaps object.
              */
-            StarshipFlaps(HAL::PinPWM& flapServoULPin, HAL::PinPWM& flapServoURPin, HAL::PinPWM& flapServoLLPin, HAL::PinPWM& flapServoLRPin);
+            StarshipFlaps(HAL::PinPWM &flapServoULPin, HAL::PinPWM &flapServoURPin, HAL::PinPWM &flapServoLLPin, HAL::PinPWM &flapServoLRPin);
 
-
-            void setFlapSettingTopic(Core::Topic<CTRL::ControlAttitudeFlapSetting>& flapSettingTopic)
+            void setFlapSettingTopic(Core::Topic<CTRL::ControlAttitudeFlapSetting> &flapSettingTopic)
             {
                 ctrlSubr_.subscribe(flapSettingTopic);
             }
 
-            const CTRL::ControlAttitudeFlapSetting& getFlapSettings() const { return flapSettings_; }
+            const CTRL::ControlAttitudeFlapSetting &getFlapSettings() const { return flapSettings_; }
 
             void enableActuators(bool enable) { enableActuators_ = enable; }
 
-            
-            //void taskCheck() override;
+            // void taskCheck() override;
 
             void taskInit() override;
 
@@ -83,17 +76,17 @@ namespace VCTR
             bool testingActuators();
 
         private:
-
             void limitAngle(float &angle) const
             {
-                if (angle > FLAP_MAX_ANGLE) {
+                if (angle > FLAP_MAX_ANGLE)
+                {
                     angle = FLAP_MAX_ANGLE;
-                } else if (angle < FLAP_MIN_ANGLE) {
+                }
+                else if (angle < FLAP_MIN_ANGLE)
+                {
                     angle = FLAP_MIN_ANGLE;
                 }
             }
-
-            
         };
 
     }

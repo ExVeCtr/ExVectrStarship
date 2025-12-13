@@ -95,6 +95,16 @@ namespace VCTR
             waypoints_.append({position, velocity, startAccel, stopAccel, thresholdDistance, loiterTime, timeLimit, cancelIfNotReachable}); // Add the waypoint to the list of waypoints
         }
 
+        size_t currentWaypointIndex() const
+        {
+            return currentWaypointIndex_; // Get the index of the current waypoint
+        }
+
+        size_t waypointCount() const
+        {
+            return waypoints_.size(); // Get the number of waypoints
+        }
+
         void clearWaypoints()
         {
             waypoints_.clear();        // Clear the list of waypoints

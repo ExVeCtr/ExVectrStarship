@@ -77,6 +77,21 @@ namespace VCTR
         MissionMode_Finished        // Mission is finished.
     };
 
+    /** 
+     * @brief The current phase of the mission. 
+     */
+    enum MissionPhase : uint8_t
+    {
+        MissionPhase_Idle,
+        MissionPhase_Hover,
+        MissionPhase_Ascent,
+        MissionPhase_Descent,
+        MissionPhase_Deceleration,
+        MissionPhase_RTH,
+        MissionPhase_Landing,
+        MissionPhase_Completed,
+    };
+
     /**
      * * @brief All vehicle state data compressed into a single struct.
      */
@@ -111,7 +126,7 @@ namespace VCTR
         MissionMode missionMode;   // The current state of the mission.
         int64_t missionTime;       // The current time of the mission.
         uint8_t missionIndex;      // The index of the current selected mission.
-
+        MissionPhase missionPhase;  // The current phase of the mission.
     } __attribute__((packed));
 
     /**
