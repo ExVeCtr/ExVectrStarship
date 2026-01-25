@@ -162,6 +162,7 @@ Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode,
 
 // Control
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
+Core::Topic<CTRL::ControlAttitudeFlapSetting> trueFlapSettingTopic;
 Core::Topic<CTRL::ControlAttitudeBellyFlopSetting> bellyFlopControlTopic;
 
 CTRL::ControlPositionStandard controlPositionStandard;
@@ -286,7 +287,7 @@ void flapDebugCallback(const CTRL::ControlAttitudeFlapSetting &flapSetting) {
 }
 #ifdef DEBUG_TELEMETRY_SERIAL
 Core::StaticCallback_Subscriber<CTRL::ControlAttitudeFlapSetting>
-    flapDebugSubr(flapSettingTopic, flapDebugCallback);
+    flapDebugSubr(trueFlapSettingTopic, flapDebugCallback);
 #endif
 
 void tvcDebugCallback(const Math::Vector<float, 4> &tvcSetting) {
@@ -300,7 +301,7 @@ void tvcDebugCallback(const Math::Vector<float, 4> &tvcSetting) {
 }
 #ifdef DEBUG_TELEMETRY_SERIAL
 Core::StaticCallback_Subscriber<Math::Vector<float, 4>>
-    tvcDebugSubr(controlAttitudeTvc.getTvcTopic(), tvcDebugCallback);
+    tvcDebugSubr(starshipTVC.getTVCActualThrustTopic(), tvcDebugCallback);
 #endif
 
 void attitudeSetpointCallback(const Math::Vector<float, 7> &attitudeSetpoint) {
@@ -551,10 +552,19 @@ public:
     missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
     missionWaypointTask.addWaypoint(
         {0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
-    missionWaypointTask.addWaypoint({0, 0, 220}, 7, 3, 2, 3, 5 * Core::SECONDS);
+    missionWaypointTask.addWaypoint({0, 0, 120}, 7, 3, 2, 3, 5 * Core::SECONDS);
     missionWaypointTask.setNextMission(&missionBellyflop);
     missionBellyflop.setNextMission(&missionFreefallTask);
     missionFreefallTask.setNextMission(&defaultMission_);
+
+    // missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 *
+    // Core::SECONDS); missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1,
+    // 0.5,
+    //                                 20 * Core::SECONDS, 10 * Core::SECONDS,
+    //                                 true);
+    // missionWaypointTask.addWaypoint({0, -5, 1.5}, 0.5, 0.5, 0.5, 1,
+    //                                 20 * Core::SECONDS);
+    // missionWaypointTask.setNextMission(&defaultMission_);
   }
 
   void taskThread() override {
@@ -566,7 +576,6 @@ public:
       return; // Wait until all systems are initialised
     }
 
-    // Logic to determin the current mission pahse for the telemetry
     if (mission_ == &defaultMission_) {
       if (defaultMission_.missionEnd()) {
         missionPhase_ = MissionPhase::MissionPhase_Completed;
@@ -659,17 +668,11 @@ public:
         // starshipTVC.enableMotors(true); // Enable motors
         starshipFlaps.enableActuators(false); // Disable actuators
       } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
-        posEstTask.enableZeroingMode(
-            false); // Disable zeroing mode for the position estimator
-        imuTask.enableZeroingMode(
-            false); // Enable zeroing mode for the attitude estimator
-        bodySimulator.enableZeroingMode(
-            false); // Enable zeroing mode for the body simulator
-        // controlRocket.enableControl(true); // Disable control for the rocket
+        posEstTask.enableZeroingMode(false);
+        imuTask.enableZeroingMode(false);
+        bodySimulator.enableZeroingMode(false);
         controlAttitudeTvc.enableControl(mission_->getActuatorsEnabled());
-        controlPositionStandard.enableControl(
-            true); // Disable control for the position
-        // starshipTVC.enableMotors(true); // Enable motors
+        controlPositionStandard.enableControl(mission_->getActuatorsEnabled());
         starshipFlaps.enableActuators(true); // Disable actuators
       } else if (missionState.missionMode ==
                  MissionMode::MissionMode_Finished) {
@@ -1183,30 +1186,20 @@ public:
 
   void vehicleShutdownControl(bool shutdown) {
     if (shutdown) {
-      starshipTVC.enableActuators(false);   // Enable actuators
-      starshipFlaps.enableActuators(false); // Disable actuators
-      bodySimulator.enableTVC(false); // Disable the TVC for the body simulator
-      // starshipTVC.enableMotors(false); // Disable motors
-      // posEstTask.enableZeroingMode(true); // Enable zeroing mode for the
-      // position estimator
+      starshipTVC.enableActuators(false);
+      starshipFlaps.enableActuators(false);
+      bodySimulator.enableTVC(false);
       return;
     }
 
     if (mission_ == &missionFreefallTask) {
-      starshipFlaps.enableActuators(true); // Disable actuators
+      starshipFlaps.enableActuators(true);
     } else
-      starshipFlaps.enableActuators(
-          mission_->getActuatorsEnabled()); // Disable actuators
+      starshipFlaps.enableActuators(mission_->getActuatorsEnabled());
 
-    starshipTVC.enableActuators(
-        mission_->getActuatorsEnabled()); // Give mission guidance control over
-    // the actuators
-    bodySimulator.enableTVC(
-        mission_->getActuatorsEnabled()); // Give mission guidance control over
-    // the actuators
-    bodySimulator.enableFlaps(
-        starshipFlaps.getFlapSettings()
-            .enableFlaps); // Give simulator info if flaps are enabled or not
+    starshipTVC.enableActuators(mission_->getActuatorsEnabled());
+    bodySimulator.enableTVC(mission_->getActuatorsEnabled());
+    bodySimulator.enableFlaps(starshipFlaps.actuatorsEnabled());
   }
 
   void vehicleArmingControl() {
@@ -1313,7 +1306,7 @@ public:
             angle = -40;
           starshipFlopSetting.azimuthAngle_Rad = -azimuthTowardsZero;
           starshipFlopSetting.pitchAngle_Rad = (angle + 20) * DEGREES;
-        } else if (posEst(2) < 60) {
+        } else if (posEst(2) < missionFreefallTask.getStopAltitude() + 20) {
           starshipFlopSetting.pitchAngle_Rad = 30 * DEGREES;
         }
       } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
@@ -1967,12 +1960,13 @@ void initialiseTopicConnections() {
 
   starshipTVC.setTVCInputTopic(controlAttitudeTvc.getTvcTopic());
   starshipFlaps.setFlapSettingTopic(flapSettingTopic);
+  starshipFlaps.setTrueFlapSettingTopic(trueFlapSettingTopic);
 
   bodySimulator.setPaused(true);
   bodySimulator.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(),
                                  Math::Vector<float, 3>({0, 0, -0.35}),
                                  TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N);
-  bodySimulator.setFlapSettingInputTopic(flapSettingTopic);
+  bodySimulator.setFlapSettingInputTopic(trueFlapSettingTopic);
 
   positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
   attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());

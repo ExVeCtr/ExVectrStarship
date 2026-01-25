@@ -10,42 +10,68 @@
 #include "ExVectrHAL/pin_pwm.hpp"
 #include "ExVectrMath.hpp"
 
-namespace VCTR {
-namespace CTRL {
+namespace VCTR::CTRL /* ServoAngleSimulator */ {
+ServoAngleSimulator::ServoAngleSimulator(float radsLimit)
+    : radsLimit(radsLimit) {}
+void ServoAngleSimulator::setRadiansPerSecondLimit(float radsPerSecond) {
+  radsLimit = radsPerSecond;
+}
+void ServoAngleSimulator::setTargetAngle(float angleRad) {
+  targetAngleRad_ = angleRad;
+}
+float ServoAngleSimulator::getCurrentAngle() const { return currentAngleRad_; }
+void ServoAngleSimulator::update(int64_t deltaTime) {
+  float angleDiff = targetAngleRad_ - currentAngleRad_;
+  float maxAngleChange = radsLimit * double(deltaTime) / double(Core::SECONDS);
+  if (fabs(angleDiff) <= maxAngleChange) {
+    currentAngleRad_ = targetAngleRad_;
+  } else {
+    currentAngleRad_ +=
+        (angleDiff > 0 ? 1 : -1) * maxAngleChange; // Move towards target angle
+  }
+}
+} // namespace VCTR::CTRL
 
-StarshipFlaps::StarshipFlaps(HAL::PinPWM& flapServoULPin,
-                             HAL::PinPWM& flapServoURPin,
-                             HAL::PinPWM& flapServoLLPin,
-                             HAL::PinPWM& flapServoLRPin)
+namespace VCTR::CTRL /* StarshipFlaps */ {
+
+StarshipFlaps::StarshipFlaps(HAL::PinPWM &flapServoULPin,
+                             HAL::PinPWM &flapServoURPin,
+                             HAL::PinPWM &flapServoLLPin,
+                             HAL::PinPWM &flapServoLRPin)
     : Core::Task_Periodic("Starship Flaps", 20 * Core::MILLISECONDS),
       servoTLPin_(flapServoULPin, ACTR::PWM_Output_Protocol::STANDARD),
       servoTRPin_(flapServoURPin, ACTR::PWM_Output_Protocol::STANDARD),
       servoBLPin_(flapServoLLPin, ACTR::PWM_Output_Protocol::STANDARD),
       servoBRPin_(flapServoLRPin, ACTR::PWM_Output_Protocol::STANDARD) {
-  Core::getSystemScheduler().addTask(*this);  // Attach to the scheduler
+  Core::getSystemScheduler().addTask(*this); // Attach to the scheduler
 }
 
 void StarshipFlaps::taskInit() {
-  servoTLPin_.init();  // Initialize the top left flap servo
-  servoTRPin_.init();  // Initialize the top right flap servo
-  servoBLPin_.init();  // Initialize the bottom left flap servo
-  servoBRPin_.init();  // Initialize the bottom right flap servo
+  servoTLPin_.init(); // Initialize the top left flap servo
+  servoTRPin_.init(); // Initialize the top right flap servo
+  servoBLPin_.init(); // Initialize the bottom left flap servo
+  servoBRPin_.init(); // Initialize the bottom right flap servo
 
   servoTLPin_.enableOutput(false);
   servoTRPin_.enableOutput(false);
   servoBLPin_.enableOutput(false);
   servoBRPin_.enableOutput(false);
 
+  tlFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
+  trFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
+  blFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
+  brFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
+
   flapSettings_.flapTLAngle_Rad =
-      0.0f;  // Initialize the top left flap angle to 0 radians
+      0.0f; // Initialize the top left flap angle to 0 radians
   flapSettings_.flapTRAngle_Rad =
-      0.0f;  // Initialize the top right flap angle to 0 radians
+      0.0f; // Initialize the top right flap angle to 0 radians
   flapSettings_.flapBLAngle_Rad =
-      0.0f;  // Initialize the bottom left flap angle to 0 radians
+      0.0f; // Initialize the bottom left flap angle to 0 radians
   flapSettings_.flapBRAngle_Rad =
-      0.0f;  // Initialize the bottom right flap angle to 0 radians
+      0.0f; // Initialize the bottom right flap angle to 0 radians
   flapSettings_.enableFlaps =
-      false;  // Initialize the actuator enable flag to false
+      false; // Initialize the actuator enable flag to false
 }
 
 void StarshipFlaps::beginActuatorTest(int64_t testOffset) {
@@ -61,21 +87,14 @@ bool StarshipFlaps::testingActuators() {
 
 void StarshipFlaps::taskThread() {
   if (ctrlSubr_.isDataNew()) {
-    flapSettings_ =
-        ctrlSubr_.getItem();  // Get the new flap settings from the subscriber
+    flapSettings_ = ctrlSubr_.getItem();
   }
 
   auto flapSettings = flapSettings_;
 
-  bool enable =
-      enableActuators_ &&
-      flapSettings_.enableFlaps;  // Check if the actuators should be enabled
+  bool enable = enableActuators_ && flapSettings_.enableFlaps;
 
-  if (actuatorTestState_ !=
-      ActuatorTestingState::Idle) {  // Hijack the control loop to test the
-                                     // actuators
-
-    // LOG_MSG("Actuator test state\n");
+  if (actuatorTestState_ != ActuatorTestingState::Idle) {
 
     bool finished = true;
 
@@ -93,21 +112,16 @@ void StarshipFlaps::taskThread() {
                                     Core::SECONDS / FLAP_TEST_DURATION * 2 *
                                     3.1415) +
               1) *
-             3.14 / 2;  // Calculate the flap angle based on the phase offset
-                        // and the current time
+             3.14 / 2;
     };
 
     if (Core::NOW() - actuatorTestStartTime_ <
             FLAP_TEST_DURATION * Core::SECONDS &&
         Core::NOW() - actuatorTestStartTime_ > 0) {
-      flapSettings.flapBLAngle_Rad =
-          actCalcFunc(0);  // Set the top left flap angle
-      flapSettings.flapTRAngle_Rad =
-          actCalcFunc(3.14 / 4);  // Set the top left flap angle
-      flapSettings.flapTLAngle_Rad =
-          actCalcFunc(3.14 / 2);  // Set the top right flap angle
-      flapSettings.flapBRAngle_Rad =
-          actCalcFunc(3.14 * 3 / 4);  // Set the bottom left flap angle
+      flapSettings.flapBLAngle_Rad = actCalcFunc(0);
+      flapSettings.flapTRAngle_Rad = actCalcFunc(3.14 / 4);
+      flapSettings.flapTLAngle_Rad = actCalcFunc(3.14 / 2);
+      flapSettings.flapBRAngle_Rad = actCalcFunc(3.14 * 3 / 4);
       finished = false;
     }
 
@@ -129,7 +143,7 @@ void StarshipFlaps::taskThread() {
   servoBRPin_.enableOutput(enable);
 
   if (enable) {
-    float offset = 0;  //- 10 * DEGREES;
+    float offset = 0;
     float offsetTL = 0;
     float offsetTR = 0 * DEGREES;
     float offsetBL = 0;
@@ -141,23 +155,39 @@ void StarshipFlaps::taskThread() {
     // LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n",
     // flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle,
     // flapSettings.brAngle); // Log the flap angles
-    servoTLPin_.setValue(1 -
-                         (flapSettings.flapTLAngle_Rad + offset + offsetTL) /
-                             3.1415 * 2);  // Set the top left flap angle
+    servoTLPin_.setValue(
+        1 - (flapSettings.flapTLAngle_Rad + offset + offsetTL) / 3.1415 * 2);
     servoTRPin_.setValue((flapSettings.flapTRAngle_Rad + offset + offsetTR) /
-                         3.1415 * 2);  // Set the top right flap angle
+                         3.1415 * 2);
     servoBLPin_.setValue((flapSettings.flapBLAngle_Rad + offset + offsetBL) /
-                         3.1415 * 2);  // Set the bottom left flap angle
-    servoBRPin_.setValue(1 -
-                         (flapSettings.flapBRAngle_Rad + offset + offsetBR) /
-                             3.1415 * 2);  // Set the bottom right flap angle
-                                           /*float setting = 0;
-                                           servoTLPin_.setValue(1 - setting); // Set the top left flap angle
-                                           servoTRPin_.setValue(setting); // Set the top right flap angle
-                                           servoBLPin_.setValue(1 - setting); // Set the bottom left flap angle
-                                           servoBRPin_.setValue(setting); // Set the bottom right flap angle*/
+                         3.1415 * 2);
+    servoBRPin_.setValue(
+        1 - (flapSettings.flapBRAngle_Rad + offset + offsetBR) / 3.1415 * 2);
+
+    auto newUpdateTime = Core::NOW();
+    tlFlapSim_.setTargetAngle(flapSettings.flapTLAngle_Rad);
+    trFlapSim_.setTargetAngle(flapSettings.flapTRAngle_Rad);
+    blFlapSim_.setTargetAngle(flapSettings.flapBLAngle_Rad);
+    brFlapSim_.setTargetAngle(flapSettings.flapBRAngle_Rad);
+    if (newUpdateTime - lastUpdateTime_ > 1 * Core::MILLISECONDS) {
+      int64_t deltaTime = newUpdateTime - lastUpdateTime_;
+      tlFlapSim_.update(deltaTime);
+      trFlapSim_.update(deltaTime);
+      blFlapSim_.update(deltaTime);
+      brFlapSim_.update(deltaTime);
+      lastUpdateTime_ = newUpdateTime;
+    }
+
+    trueFlapPub_.publish(CTRL::ControlAttitudeFlapSetting{
+        .flapTLAngle_Rad = tlFlapSim_.getCurrentAngle(),
+        .flapTRAngle_Rad = trFlapSim_.getCurrentAngle(),
+        .flapBLAngle_Rad = blFlapSim_.getCurrentAngle(),
+        .flapBRAngle_Rad = brFlapSim_.getCurrentAngle(),
+        .enableFlaps = enableActuators_});
+
+  } else {
+    lastUpdateTime_ = Core::NOW();
   }
 }
 
-}  // namespace CTRL
-}  // namespace VCTR
+} // namespace VCTR::CTRL

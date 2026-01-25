@@ -16,63 +16,72 @@
 namespace VCTR {
 
 class MissionFreefall : public MissionAbstract, public Core::Task_Periodic {
- private:
+private:
   Core::Simple_Subscriber<Math::Vector<float, 4>> ctrlSubr_;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attSubr_;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posSubr_;
 
   Math::Vector<float, 6> positionIs_;
 
-  float vehicleMass_kg_ = 1;     // Mass of the vehicle in kg.
-  float tvcThrustLimit_N_ = 15;  // Maximum thrust in Newtons.
-  float stopAlt_ = 0;  // How much above the ground to fully stop the vehicle.
+  float vehicleMass_kg_ = 1;    // Mass of the vehicle in kg.
+  float tvcThrustLimit_N_ = 15; // Maximum thrust in Newtons.
+  float stopAlt_ = 0; // How much above the ground to fully stop the vehicle.
 
- public:
+public:
   MissionFreefall(
-      Core::Topic<Core::Timestamped<Math::Vector<float, 7>>>& attTopic,
-      Core::Topic<Core::Timestamped<Math::Vector<float, 6>>>& posTopic,
+      Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic,
+      Core::Topic<Core::Timestamped<Math::Vector<float, 6>>> &posTopic,
       float vehicleMass_kg, float tvcThrustLimit_N, float stopAlt)
       : Task_Periodic("Mission Freefall", 0.01 * Core::SECONDS) {
     // Subscribe to the topics
     attSubr_.subscribe(attTopic);
     posSubr_.subscribe(posTopic);
-    vehicleMass_kg_ = vehicleMass_kg;      // Set the vehicle mass
-    tvcThrustLimit_N_ = tvcThrustLimit_N;  // Set the thrust limit
+    vehicleMass_kg_ = vehicleMass_kg;     // Set the vehicle mass
+    tvcThrustLimit_N_ = tvcThrustLimit_N; // Set the thrust limit
     Core::getSystemScheduler().addTask(*this);
-    disableKinematicSafety_ = true;  // Disable the kinematic safety measures
-    stopAlt_ = stopAlt;              // Set the stopping altitude
-                                     // setPriority(500);
+    disableKinematicSafety_ = true; // Disable the kinematic safety measures
+    stopAlt_ = stopAlt;             // Set the stopping altitude
+                                    // setPriority(500);
   }
 
   bool missionEnd() override { return missionEnd_; }
 
-  void taskInit() override {
-    missionState_.missionMode =
-        MissionMode::MissionMode_Idle;  // Set the mission mode to idle
-    missionEnd_ = true;                 // Set the mission end to false
+  float getStopTargetAltitude() const { return stopAlt_; }
+
+  float getStopAltitude() const {
+    return calculateStoppingDistance(tvcThrustLimit_N_, vehicleMass_kg_,
+                                     positionIs_) +
+           stopAlt_;
   }
 
-  const MissionState& getMissionState() const {
-    return missionState_;  // Get the mission state
+  void taskInit() override {
+    missionState_.missionMode =
+        MissionMode::MissionMode_Idle; // Set the mission mode to idle
+    missionEnd_ = true;                // Set the mission end to false
+  }
+
+  const MissionState &getMissionState() const {
+    return missionState_; // Get the mission state
   }
 
   void beginMission(int64_t startTime) override {
     missionState_.missionMode = MissionMode::MissionMode_Running;
-    missionTime_.setTime(startTime);  // Set the mission time to the start time
-    actuatorsEnabled_ = false;        // Disable actuators
-    missionEnd_ = false;              // Set the mission end to false
-    LOG_MSG("Started mission freefall\n");  // Log the mission start
+    missionTime_.setTime(startTime); // Set the mission time to the start time
+    actuatorsEnabled_ = false;       // Disable actuators
+    missionEnd_ = false;             // Set the mission end to false
+    LOG_MSG("Started mission freefall\n"); // Log the mission start
   };
 
   void resetMission() override {
     missionState_.missionMode = MissionMode::MissionMode_Idle;
-    actuatorsEnabled_ = false;             // Disable actuators
-    missionEnd_ = true;                    // Set the mission end to true
-    LOG_MSG("Reset mission freefall.\n");  // Log the mission reset
+    actuatorsEnabled_ = false;            // Disable actuators
+    missionEnd_ = true;                   // Set the mission end to true
+    LOG_MSG("Reset mission freefall.\n"); // Log the mission reset
   }
 
   void taskThread() override {
-    if (missionEnd_) return;  // If the mission has ended, do nothing
+    if (missionEnd_)
+      return; // If the mission has ended, do nothing
 
     if (posSubr_.isDataNew()) {
       positionIs_ = posSubr_.getItem().data;
@@ -81,41 +90,35 @@ class MissionFreefall : public MissionAbstract, public Core::Task_Periodic {
     actuatorsEnabled_ = false;
 
     switch (missionState_.missionMode) {
-      case MissionMode::MissionMode_Idle:
-        // actuatorsEnabled_ = false;
-        // missionEnd_ = true; // Set the mission end to true
-        break;
+    case MissionMode::MissionMode_Idle:
+      // actuatorsEnabled_ = false;
+      // missionEnd_ = true; // Set the mission end to true
+      break;
 
-      case MissionMode::MissionMode_Initialisation:
-        // missionEnd_ = false; // Set the mission end to true
-        break;
+    case MissionMode::MissionMode_Initialisation:
+      // missionEnd_ = false; // Set the mission end to true
+      break;
 
-      case MissionMode::MissionMode_Startup:
-        // missionEnd_ = false; // Set the mission end to true
-        break;
+    case MissionMode::MissionMode_Startup:
+      // missionEnd_ = false; // Set the mission end to true
+      break;
 
-      case MissionMode::MissionMode_Running:
-        // missionEnd_ = false; // Set the mission end to true
-        break;
+    case MissionMode::MissionMode_Running:
+      // missionEnd_ = false; // Set the mission end to true
+      break;
 
-      default:
-        missionState_.missionMode = MissionMode::MissionMode_Idle;
-        break;
+    default:
+      missionState_.missionMode = MissionMode::MissionMode_Idle;
+      break;
     }
 
     float stoppingDistance = calculateStoppingDistance(
         tvcThrustLimit_N_, vehicleMass_kg_,
-        positionIs_);  // Calculate the stopping distance
+        positionIs_); // Calculate the stopping distance
 
-    if (positionIs_(5) < stoppingDistance + stopAlt_ &&
-        missionEnd_ ==
-            false) {  // If the stopping distance is less than the Z position
-      missionState_.missionMode =
-          MissionMode::MissionMode_Finished;  // Set the mission mode to
-                                              // finished
-      missionEnd_ = true;                     // Set the mission end to true
-      // Now we simply trust the next mission to take care of the rest. (Jesus
-      // take the wheel)
+    if (positionIs_(5) < stoppingDistance + stopAlt_ && missionEnd_ == false) {
+      missionState_.missionMode = MissionMode::MissionMode_Finished;
+      missionEnd_ = true;
     }
 
     // LOG_MSG("Freefall mode. Alt: %f, Stopping distance: %f\n",
@@ -130,7 +133,7 @@ class MissionFreefall : public MissionAbstract, public Core::Task_Periodic {
     missionState_.positionSetpoint[4] = 0;
     missionState_.positionSetpoint[5] = 0;
     positionSetpointTopic_.publish(
-        {0, 0, 0, 0, 0, 0});  // Publish the setpoint to the control system
+        {0, 0, 0, 0, 0, 0}); // Publish the setpoint to the control system
 
     // CTRL::StarshipFlapSettings flapSettings_;
     // flapSettings_.blAngle = 35*3.14/180; // Retract bottom flaps, extend top
@@ -140,23 +143,23 @@ class MissionFreefall : public MissionAbstract, public Core::Task_Periodic {
     // flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to
     // the control systems
 
-    disableKinematicSafety_ = true;  // Disable the kinematic safety measures
+    disableKinematicSafety_ = true; // Disable the kinematic safety measures
 
     // missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time
     // to the control system
   }
 
- private:
+private:
   float calculateStoppingDistance(float thrust, float mass,
-                                  Math::Vector<float, 6> position) {
-    float& vz = position(2);  // Get the Z velocity
+                                  Math::Vector<float, 6> position) const {
+    float &vz = position(2); // Get the Z velocity
 
-    float aSum = thrust / mass - 9.81;  // Calculate the acceleration sum
+    float aSum = thrust / mass - 9.81; // Calculate the acceleration sum
 
-    return 0.5 * vz * vz / aSum;  // Return the stopping distance
+    return 0.5 * vz * vz / aSum; // Return the stopping distance
   }
 };
 
-}  // namespace VCTR
+} // namespace VCTR
 
 #endif

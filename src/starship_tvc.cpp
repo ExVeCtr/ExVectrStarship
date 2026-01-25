@@ -11,9 +11,9 @@
 namespace VCTR {
 namespace CTRL {
 
-StarshipTVC::StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN,
-                         HAL::PinPWM& tvcServoPinYP, HAL::PinPWM& tvcServoPinYN,
-                         HAL::PinPWM& motorCW, HAL::PinPWM& motorCCW,
+StarshipTVC::StarshipTVC(HAL::PinPWM &tvcServoPinXP, HAL::PinPWM &tvcServoPinXN,
+                         HAL::PinPWM &tvcServoPinYP, HAL::PinPWM &tvcServoPinYN,
+                         HAL::PinPWM &motorCW, HAL::PinPWM &motorCCW,
                          float tvcAngleLimit_Rad, float servoAngleLimit_Rad,
                          float tvcThrustLimit_N, float tvcFactor)
     : Core::Task_Periodic("Starship TVC", 20 * Core::MILLISECONDS),
@@ -23,7 +23,7 @@ StarshipTVC::StarshipTVC(HAL::PinPWM& tvcServoPinXP, HAL::PinPWM& tvcServoPinXN,
       servoYN_(tvcServoPinYN, ACTR::PWM_Output_Protocol::STANDARD),
       motorCW_(motorCW, ACTR::PWM_Output_Protocol::STANDARD),
       motorCCW_(motorCCW, ACTR::PWM_Output_Protocol::STANDARD) {
-  Core::getSystemScheduler().addTask(*this);  // Attach to the scheduler
+  Core::getSystemScheduler().addTask(*this); // Attach to the scheduler
   setRelease(Core::END_OF_TIME);
   tvcAngleLimit_Rad_ = tvcAngleLimit_Rad;
   servoAngleLimit_Rad_ = servoAngleLimit_Rad;
@@ -59,36 +59,37 @@ bool StarshipTVC::testingActuators() {
 }
 
 void StarshipTVC::taskThread() {
+  auto threadStartTime = Core::NOW();
+  double dTime = (threadStartTime - lastThreadTime_) / double(Core::SECONDS);
   auto tvcSetting = ctrlSubr_.getItem();
-  auto tvcTwistForce = tvcSetting(3);  // Torque in Z axis (roll torque)
+  auto tvcTwistForce = tvcSetting(3); // Torque in Z axis (roll torque)
   auto thrustMagnitude = tvcSetting.magnitude(0, 3);
   Math::Vector_F tvcVector = {tvcSetting(0), tvcSetting(1),
-                              tvcSetting(2)};  // Force vector in body frame
+                              tvcSetting(2)}; // Force vector in body frame
 
   // LOG_MSG("TVC setting: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0),
   // tvcSetting(1), tvcSetting(2), tvcTwistForce);
 
   bool enableActuators =
-      enableActuators_;  // copy to local variable so we can enalbe for testing
+      enableActuators_; // copy to local variable so we can enalbe for testing
 
   if (thrustMagnitude > tvcThrustLimit_N_) {
     thrustMagnitude =
-        tvcThrustLimit_N_;  // Limit the thrust magnitude to the thrust limit
+        tvcThrustLimit_N_; // Limit the thrust magnitude to the thrust limit
     tvcVector = tvcVector.normalize() *
-                tvcThrustLimit_N_;  // Scale the vector to the thrust limit
+                tvcThrustLimit_N_; // Scale the vector to the thrust limit
   }
 
   auto tvcAngle = tvcVector.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
-  auto tvcRotationAxis =
-      (tvcVector.cross(Math::Vector<float, 3>({0, 0, 1})))
-          .normalize();  // Rotation axis is the cross product of the vector and
-                         // the Z-Axis.
+  auto tvcRotationAxis = (tvcVector.cross(Math::Vector<float, 3>({0, 0, 1})))
+                             .normalize(); // Rotation axis is the cross product
+                                           // of the vector and the Z-Axis.
   if (tvcAngle > tvcAngleLimit_Rad_) {
     auto tvcRotation =
         Math::Quat_F(tvcRotationAxis, tvcAngle - tvcAngleLimit_Rad_)
             .conjugate();
     tvcVector = tvcRotation.conjugate().rotate(
-        tvcVector);  // Rotate the vector back to the limit.
+        tvcVector); // Rotate the vector back to the limit.
   }
 
   // LOG_MSG("TVC vector: %.2f, %.2f, %.2f |%.1f| Enabled: %s\n", tvcVector(0),
@@ -112,11 +113,11 @@ void StarshipTVC::taskThread() {
   // Calculate the fin angles. DO NOT use the tvcVector as this is angle limited
   // to simulate the factor applied to the fins.
   auto xAngle =
-      atan2(tvcSetting(1), tvcSetting(2));  // angle between vector and Z axis
-                                            // with the X axis as rotation axis
+      atan2(tvcSetting(1), tvcSetting(2)); // angle between vector and Z axis
+                                           // with the X axis as rotation axis
   auto yAngle =
-      atan2(tvcSetting(0), tvcSetting(2));  // angle between vector and Z axis
-                                            // with the Y axis as rotation axis
+      atan2(tvcSetting(0), tvcSetting(2)); // angle between vector and Z axis
+                                           // with the Y axis as rotation axis
 
   if (xAngle > tvcAngleLimit_Rad_)
     xAngle = tvcAngleLimit_Rad_;
@@ -132,8 +133,8 @@ void StarshipTVC::taskThread() {
   yAngle *= tvcFactor_;
 
   if (actuatorTestState_ !=
-      ActuatorTestingState::Idle) {  // Hijack the control loop to test the
-                                     // actuators
+      ActuatorTestingState::Idle) { // Hijack the control loop to test the
+                                    // actuators
 
     // LOG_MSG("Actuator test state\n");
 
@@ -199,25 +200,45 @@ void StarshipTVC::taskThread() {
   auto motorCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;
   auto motorCCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;
 
-  if (motorCWOut > motorPowerLimit_) motorCWOut = motorPowerLimit_;
-  if (motorCCWOut > motorPowerLimit_) motorCCWOut = motorPowerLimit_;
+  if (motorCWOut > motorPowerLimit_)
+    motorCWOut = motorPowerLimit_;
+  if (motorCCWOut > motorPowerLimit_)
+    motorCCWOut = motorPowerLimit_;
 
   // Lets update the actual thrust vector with what we expect to get from the
   // motors and servos. This is used for telemetry and simulation purposes.
-  Math::Vector<float, 4> tvcActualThrustVector = 0;
-  if (enableActuators_ &&
-      actuatorTestState_ ==
-          ActuatorTestingState::Idle) {  // Assume disarm if the motors arte
-    auto actualThrustVector = tvcVector.normalize() *
-                              (motorCWOut + motorCCWOut) / 2 *
-                              tvcThrustLimit_N_;
-    tvcActualThrustVector = {actualThrustVector(0), actualThrustVector(1),
-                             actualThrustVector(2),
-                             tvcTwistForce * thrustMagnitude / twistFactor};
-  }
-  tvcActualThrustTopic_.publish(
-      tvcActualThrustVector);  // Publish the actual thrust vector
+  Math::Vector<float, 4> actualThrustVector = 0;
+  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) {
+    auto thrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut) / 2 *
+                        tvcThrustLimit_N_;
 
+    const float angleRateLimit = 60 * DEGREES / 0.1f;
+    float angleXAxis = atan2(thrustVector(1), thrustVector(2));
+    float angleYAxis = atan2(thrustVector(0), thrustVector(2));
+    float thrustMag = thrustVector.magnitude();
+    float angleXDiff = angleXAxis - actualThrustXAngle;
+    float angleYDiff = angleYAxis - actualThrustYAngle;
+    if (angleXDiff > angleRateLimit * dTime)
+      angleXDiff = angleRateLimit * dTime;
+    else if (angleXDiff < -angleRateLimit * dTime)
+      angleXDiff = -angleRateLimit * dTime;
+    if (angleYDiff > angleRateLimit * dTime)
+      angleYDiff = angleRateLimit * dTime;
+    else if (angleYDiff < -angleRateLimit * dTime)
+      angleYDiff = -angleRateLimit * dTime;
+    actualThrustXAngle += angleXDiff;
+    actualThrustYAngle += angleYDiff;
+    actualThrustMag = thrustMag;
+    actualTwistAngle = tvcTwistForce * thrustMagnitude / twistFactor;
+  } else {
+    actualThrustMag = 0;
+  }
+  tvcActualThrustTopic_.publish({
+      sin(actualThrustYAngle) * actualThrustMag,                           //
+      sin(actualThrustXAngle) * actualThrustMag,                           //
+      cos(actualThrustXAngle) * cos(actualThrustYAngle) * actualThrustMag, //
+      actualTwistAngle                                                     //
+  });
   servoXP_.enableOutput(enableActuators);
   servoXN_.enableOutput(enableActuators);
   servoYP_.enableOutput(enableActuators);
@@ -261,11 +282,13 @@ void StarshipTVC::taskThread() {
 
   } else {
     motorEnableTime_ =
-        Core::NOW();  // Reset the motor enable time to now, so that the motors
-                      // are not enabled again until the next control loop.
+        Core::NOW(); // Reset the motor enable time to now, so that the motors
+                     // are not enabled again until the next control loop.
   }
+
+  lastThreadTime_ = threadStartTime;
 }
 
-}  // namespace CTRL
+} // namespace CTRL
 
-}  // namespace VCTR
+} // namespace VCTR
