@@ -308,6 +308,110 @@ There is no authentication beyond the three magic values. Every port is also rec
 
 ---
 
+## Body frame and actuator layout
+
+Purpose: everything a 3D model or ground-station view needs to place the body axes, flaps, TVC vanes and motors. Each statement is tagged **[code]** (derivable from code, cited) or **[sim]** (only from the simulator's geometry, which is a model, not a measurement) or **UNKNOWN** (needs the user). Line numbers refer to the pinned sources at the time of writing (ExVectrControl `084bea1`, ExVectrSensor `6bd4b01`).
+
+### Body frame
+
+- **[code]** Right-handed, **+Z = long axis toward the nose**, TVC/motors at the aft end at body `(0,0,−0.35)` m (`src/main.cpp:1967`, `lib/ExVectrDSP/src/body_simulator.cpp:34`). Top flaps at z = +0.26 m, bottom flaps at z = −0.26 m.
+- **[code]** **±Y are the flap sides**: TL and BL at +Y, TR and BR at −Y (`body_simulator.cpp`, flap block: `mountY = 0.08`, `mountZ = 0.26`).
+- **[code]** **+X completes the frame** (X = Y × Z). The belly of the vehicle is **−X** and the back is **+X**: `ControlAttitudeFlaps` measures `bellyDownAngle` as the angle between body +X and world +Z, so "belly down" means body +X pointing up (`lib/ExVectrControl/src/starship/control_attitude_flaps.cpp:80-84`).
+- **[code]** Roll axis = body **Z**. `StarshipTVC` roll torque `τz` is about Z. Pitch = rotation about body **Y**, yaw/azimuth for the flap controller is defined from the world projection of body Z (see below). Rotation sign is right-handed (`docs/libs/ExVectrMath.md`).
+- **UNKNOWN (needs the user):** which physical side of the vehicle is "left" vs "right" (i.e. whether +Y, the TL/BL side, is physically the left or the right when seen from behind or from the front), and which way the physical "belly" really faces relative to +X. The code only knows the names TL/TR/BL/BR and the signs above. The names suggest left = +Y when looking along +Z from the tail toward the nose (X up/back, Y to the left makes X × Y = Z pointing away from the viewer: consistent), but this is an inference from naming, not from code.
+
+### Sensor axes into the body frame
+
+| Sensor | Transform | Source |
+|---|---|---|
+| MPU9250 accel | Driver remap, chip `(x,y,z)` to body `(y, x, −z)`, in m/s² | `lib/ExVectrSensor/src/mpu9250.cpp:886-891` |
+| MPU9250 gyro | Driver remap, chip `(x,y,z)` to body `(y, x, −z)`, rad/s | `mpu9250.cpp:893-898` |
+| QMC5883 magnetometer | No axis remap in driver. App transform `sensorToBody_` is the **identity** (`src/main.cpp:786`), then calibration `cov * sensorToBody_` (`:799-801`) | |
+| All three, app level | `TopicCoordTransform` with `calib.cov * stored transform` and `calib.val` offset (`src/main.cpp:1862-1866`, `:1921-1923`). The stored transform matrices (`MEMORY_KEY_ACC/GYRO/MAGTRANSFORM`) default to identity but are read from EEPROM, so **the real values are unknown from code**. | |
+
+The `if (false)` test block (`main.cpp:1886-1917`) documents earlier tried values (`diag(−1,1,−1)` for acc and gyro, a permutation for the mag) that are **not active**. The magnetometer needs its own axis mapping that code alone cannot confirm. **UNKNOWN (needs the user):** contents of the EEPROM transform and calibration matrices, and how the IMU board is physically mounted (the driver remap above says the chip is rotated 90 degrees about Z and flipped, but not how that sits in the airframe). An accel tilt compensation hook exists, set to 0° (`main.cpp:1976-1978`).
+
+### Attitude quaternion
+
+- **[code]** `[w,x,y,z]`, Hamilton, **body to world**: `v_world = q.rotate(v_body)` (`docs/libs/ExVectrMath.md`). The state is `[ω(3), q(4)]`.
+- **[code]** The identity quaternion `[1,0,0,0]` means body axes = world axes: **upright, body +Z (nose) pointing world Up**, body +X pointing North, +Y West. The simulator starts from identity (`body_simulator.cpp:28`) and the tilt check uses body Z rotated into world versus world Z (`main.cpp:1115-1120`).
+- **[code]** Bellyflop setpoint `Quat(Y axis, −90°)` (`src/mission/mission_bellyflop.hpp:102`): body +X (back) points world Up, belly down, nose points world **−X (South)**, horizontal.
+- **Pitch/azimuth convention (flap controller, `control_attitude_flaps.cpp:105-120`):** azimuth = `atan2(zBody.y, zBody.x)` in world (counter-clockwise from North toward West, not a compass heading). **Pitch = elevation of body +Z above the world horizontal plane**, so **positive pitch = nose up, negative pitch = nose tipped down toward the ground**. Body-frame rotation about +Y by a positive angle tips the nose toward body/world +X (right-handed).
+
+### Flaps
+
+Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL** bottom-left, **BR** bottom-right. In the code "top" and "bottom" (UL/UR, DL/DR in `starship_hardware.h`) mean the **forward (+Z, z = +0.26 m)** and **aft (−Z, z = −0.26 m)** flap pairs **[sim]**.
+
+| Flap | PWM pin (`src/starship_hardware.h:15-18`) | Body position (m) [sim] | Servo value (`starship_flaps.cpp:158-165`) |
+|---|---|---|---|
+| TL | 25 (`FLAP_SERVO_PIN_UL`) | `(0, +0.08, +0.26)` | `1 − angle/(π/2)` |
+| TR | 24 (`FLAP_SERVO_PIN_UR`) | `(0, −0.08, +0.26)` | `angle/(π/2)` |
+| BL | 29 (`FLAP_SERVO_PIN_DL`) | `(0, +0.08, −0.26)` | `angle/(π/2)` |
+| BR | 28 (`FLAP_SERVO_PIN_DR`) | `(0, −0.08, −0.26)` | `1 − angle/(π/2)` |
+
+- **Hinge axis [sim]:** all four hinge axes are **parallel to body Z** (the long axis). The simulator rotates each flap about Z by `∓angle` (TL, BL: `−angle`; TR, BR: `+angle`) with the centre of pressure `0.03` m out from the hinge in ±Y (`body_simulator.cpp`, flap block). At angle 0 the flap points straight out sideways (±Y, away from the body). At 90° it has swung to point toward body **+X (the back/top of the vehicle, away from the belly)** on all four. **UNKNOWN (needs the user):** whether the real flaps fold toward the back (+X) or toward the belly (−X), their chord/span dimensions, and the real hinge location. The simulator's model is the only source.
+- **Angle meaning [code]:** radians. **0° = fully extended**, **90° = retracted/folded** against the body. Evidence: ascent without the extend command commands 90° on all four, `Upright` commands top 0° and bottom 90° (`control_attitude_flaps.cpp:174-189`). So during bellyflop the flaps are extended into the airflow.
+- **Sign convention [code]:** one commanded angle per flap, same sense for the left and right flap of a pair (mirroring is done in the servo mapping above). Larger angle = more folded.
+- **Clamp [code]:** the driver limits every angle to **[`FLAP_MIN_ANGLE` = 15°, `FLAP_MAX_ANGLE` = 90°]** (`starship_flaps.hpp:36-37`, `:93-99`). 0° is never commanded in flight. The `Upright` mode's 0° becomes 15°.
+- **Servo [code]:** STANDARD PWM, value 0..1 maps to 1–2 ms, 90° of travel mapped over the full range; trim offsets all zero (`starship_flaps.cpp:146-150`). Slew limited to 200°/s in the simulated "true" position (`:60-63`).
+- **Controller mixing [code]** (Stabilize mode, `control_attitude_flaps.cpp:150-167`): with controller output `u = [azimuth+rates (x), pitch+rates (y), roll rate (z)]`:
+  TL = neutral + (−u0 − u1 + u2)·k, TR = neutral + (+u0 − u1 − u2)·k, BL = neutral + (+u0 + u1 + u2)·k, BR = neutral + (−u0 + u1 − u2)·k (neutral top / bottom set by `flapTopNeutralAngle_Rad_` / `flapBottomNeutralAngle_Rad_`).
+- **Telemetry [code]:** **flap angles are not on the radio link.** `VehicleState` (port 50) carries only TVC thrust and ground distance, and no other packet carries flap data. The only report is the USB debug print `Flap Debug [TL, TR, BL, BR]` in **radians, unscaled floats**, of the simulated true position, when `DEBUG_TELEMETRY_SERIAL` is defined (`main.cpp:278-287`). A ground-station 3D model therefore has to either infer flap angles from the mission/phase, or a new packet has to be added (cross-project change, not done here).
+
+### TVC vanes and motors
+
+- **Vanes [code]:** four exhaust vanes in the thrust flow at the aft end, named by their position on the body axes. XP at +X, XN at −X, YP at +Y, YN at −Y (`starship_tvc.hpp:37-40,73-80`). Servo pins (`src/main.cpp:92-95`, macros in `starship_hardware.h:11-14`): **XP = pin 1 (`TVC_SERVO_PIN_3`), XN = pin 0 (`TVC_SERVO_PIN_1`), YP = pin 23 (`TVC_SERVO_PIN_2`), YN = pin 22 (`TVC_SERVO_PIN_4`)**. The macro numbering is not the XP..YN order.
+- **Vane axis and sign [code, partly inferred]:** the X-pair vanes rotate about body X and deflect the exhaust in **Y**, the Y-pair rotate about body Y and deflect in **X**: `xAngle = atan2(Fy, Fz)` drives the X-pair, `yAngle = atan2(Fx, Fz)` the Y-pair (`starship_tvc.cpp:116-119`). Opposite vanes are mirrored (`XN = −(…)`, `YN = −(…)`), a common offset on all four (`twist`) gives roll torque about Z. Servo travel ±45° maps to ±3° thrust deflection (factor 15). Vane geometry (size, offset from the axis) is **UNKNOWN (needs the user)**. The sign of the physical vane rotation versus the servo direction cannot be confirmed from code.
+- **Trim [code]:** XP +5°, XN −2°, YP 0°, YN +5° (`main.cpp:1771-1772`).
+- **Motors [code]:** two contra-rotating motors on the thrust axis at the aft end. `MOTOR_PIN_CW` = **8** (clockwise), `MOTOR_PIN_CCW` = **7** (counter-clockwise) (`starship_hardware.h:20-21`). **UNKNOWN (needs the user):** clockwise as seen from which end (assumed: looking down the thrust axis from the nose end). They receive identical commands, so no differential yaw. Total thrust limit 14 N.
+- **Lever arm [code]:** the thrust point is **0.35 m aft of the origin**, at body `(0, 0, −0.35)`. Thrust acts along +Z (pure thrust is `+Z` body force) (`main.cpp:1967`).
+- **Origin [code]:** the body origin is the centre of mass in the simulator. **UNKNOWN (needs the user):** the real CoM position and total vehicle length/diameter (needed to scale a 3D model).
+
+### Diagram
+
+```
+ Side view, vehicle upright, looking along +Y (from the -Y side), +X to the right
+ (belly = -X on the left, back = +X on the right)
+
+              +Z (nose, world Up when q = identity)
+               ^
+               |            TL / TR  top (forward) flaps   z = +0.26
+        belly  |  back      hinge parallel to Z, at y = +-0.08
+         -X <--+--> +X      
+               |            origin (CoM)                    z =  0
+               |            BL / BR  bottom (aft) flaps    z = -0.26
+               |            vanes XP(+X) XN(-X)  at aft end
+               |            motors CW(8) CCW(7), thrust along +Z at z = -0.35
+               v   -Z (tail)
+
+ Top view, looking down -Z (from the nose toward the tail), X up the page:
+
+                 +X (back)
+                  ^
+                  |
+        TL/BL     |     TR/BR
+        (+Y)  [flap]   [flap]  (-Y)
+     +Y <---------+---------> -Y
+        (left?)   |          (right?)    left/right: UNKNOWN, see above
+                  |
+        vanes: XP at +X, XN at -X, YP at +Y, YN at -Y
+                  v
+                 -X (belly)
+```
+
+(Looking down −Z from the nose with X up, +Y is on the viewer's **left**, because X × Y = Z points toward the viewer. This is the right-handed arrangement; it is shown as-is and is correct for the frame as defined.)
+
+### Open items for the user
+
+1. Physical left/right: which side of the real vehicle is +Y (TL/BL)?
+2. Which way does the real belly face (assumed −X)?
+3. Real flap hinge location, fold direction at 90° (toward back or belly), and dimensions.
+4. IMU and magnetometer mounting, and the EEPROM transform/calibration matrices.
+5. Vane geometry and physical rotation sign per servo, motor spin direction viewpoint, CoM position and vehicle size.
+6. Whether flap angles should be sent over radio (not currently telemetered).
+
+---
+
 ## Known issues & limitations
 
 | Severity | Location | Issue | Impact |

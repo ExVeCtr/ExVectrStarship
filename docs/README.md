@@ -10,7 +10,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [codebase-structure.md](codebase-structure.md) | Repo layout, what belongs where (lib vs `src/`), runtime model, frames/units, topic graph, radio ports, build |
 | [project/overview.md](project/overview.md) | The vehicle: flight profile, GNC cascade, mode machine, failure detection, actuator gating, operating procedure, simulation mode |
 | [project/missions.md](project/missions.md) | Mission framework and each mission's phases, triggers and parameters |
-| [project/hardware-and-drivers.md](project/hardware-and-drivers.md) | Pinout, TVC/flap mixing, radio, GNSS, rangefinder, telemetry/telecommand byte layouts |
+| [project/hardware-and-drivers.md](project/hardware-and-drivers.md) | Pinout, body frame and actuator layout, TVC/flap mixing, radio, GNSS, rangefinder, telemetry/telecommand byte layouts |
 | [flight-log.md](flight-log.md) | Every flight: tag, goals, outcome, anomalies |
 
 ## ExVectr framework libraries
