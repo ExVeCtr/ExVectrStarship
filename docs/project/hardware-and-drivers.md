@@ -21,16 +21,16 @@ Sources: `src/starship_hardware.h` (actuators, vehicle constants), `src/board_v_
 
 | Pin | Define | Function | Used by |
 |---|---|---|---|
-| 0 | `TVC_SERVO_PIN_1` | TVC vane servo **XN** | `servoTVCXNPin` (main.cpp:93) |
-| 1 | `TVC_SERVO_PIN_3` | TVC vane servo **XP** | `servoTVCXPPin` (main.cpp:92) |
-| 23 | `TVC_SERVO_PIN_2` | TVC vane servo **YP** | main.cpp:94 |
-| 22 | `TVC_SERVO_PIN_4` | TVC vane servo **YN** | main.cpp:95 |
-| 8 | `MOTOR_PIN_CW` | ESC, clockwise motor | main.cpp:96 |
-| 7 | `MOTOR_PIN_CCW` | ESC, counter-clockwise motor | main.cpp:97 |
-| 25 | `FLAP_SERVO_PIN_UL` | Flap servo top-left (TL) | main.cpp:99 |
-| 24 | `FLAP_SERVO_PIN_UR` | Flap servo top-right (TR) | main.cpp:100 |
-| 29 | `FLAP_SERVO_PIN_DL` | Flap servo bottom-left (BL) | main.cpp:101. **Also `PMW_CS_PIN`** (main.cpp:64), driven as a GPIO output HIGH in `initialiseHardware` (main.cpp:1736-1740). |
-| 28 | `FLAP_SERVO_PIN_DR` | Flap servo bottom-right (BR) | main.cpp:102. **Also `PMW_INT_PIN`** (main.cpp:65, otherwise unused). |
+| 0 | `TVC_SERVO_PIN_1` | TVC vane servo **XN** | `servoTVCXNPin` (main.cpp:89) |
+| 1 | `TVC_SERVO_PIN_3` | TVC vane servo **XP** | `servoTVCXPPin` (main.cpp:88) |
+| 23 | `TVC_SERVO_PIN_2` | TVC vane servo **YP** | main.cpp:90 |
+| 22 | `TVC_SERVO_PIN_4` | TVC vane servo **YN** | main.cpp:91 |
+| 8 | `MOTOR_PIN_CW` | ESC, clockwise motor | main.cpp:92 |
+| 7 | `MOTOR_PIN_CCW` | ESC, counter-clockwise motor | main.cpp:93 |
+| 25 | `FLAP_SERVO_PIN_UL` | Flap servo top-left (TL) | main.cpp:95 |
+| 24 | `FLAP_SERVO_PIN_UR` | Flap servo top-right (TR) | main.cpp:96 |
+| 29 | `FLAP_SERVO_PIN_DL` | Flap servo bottom-left (BL) | main.cpp:97 |
+| 28 | `FLAP_SERVO_PIN_DR` | Flap servo bottom-right (BR) | main.cpp:98 |
 | 2 | `MPU9250_INT_PIN` | MPU9250 data-ready interrupt | `mpuIntHandler` |
 | 3 | `MPU9250_NCS_PIN` | MPU9250 SPI chip select | `spiMPU` (SPI) |
 | 6 | `BME280_NCS_PIN` | BME280 SPI CS (**unused**: the BME280 runs on I2C 0x76, main.cpp:79) | — |
@@ -416,7 +416,6 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 
 | Severity | Location | Issue | Impact |
 |---|---|---|---|
-| High | `starship_hardware.h:17-18`, main.cpp:64-65, `:1736-1740` | `PMW_CS_PIN 29` / `PMW_INT_PIN 28` coincide with the BL/DR flap servo pins. Pin 29 is re-initialised as a GPIO output HIGH in `initialiseHardware`. | The BL flap PWM may be overridden or held high depending on init order. Leftover from the PMW3901 optical flow sensor. |
 | High | `ublox_gnss.cpp:199-200`, `:208` | GPS is disabled (Galileo only), and the setting is saved to the receiver's non-volatile config. | Far fewer satellites, worse fix, slower TTFF. It persists even after the code is changed, until the receiver is reconfigured. |
 | High | main.cpp:1233-1237, `starship_tvc.cpp:247-250` | Arming does not gate the motors. Disarmed only sets `motorPowerLimit = 0.1` (+0.04 idle). | Motors spin on a disarmed vehicle whenever `enableMotors_` and the actuators are enabled. |
 | Medium | `starship_tvc.cpp:27`, `:36` | TVC output is event-driven on controller publications only. | If the controller stops publishing, the servo, motor, enable and test state freezes at the last values. Motors keep their last command. |

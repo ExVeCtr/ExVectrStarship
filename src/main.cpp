@@ -61,9 +61,6 @@
 
 using namespace VCTR;
 
-#define PMW_CS_PIN 29
-#define PMW_INT_PIN 28
-
 // auto gnssRef = Math::Vector<double,
 // 3>({49.945884*DEG_TO_RAD, 6.699575*DEG_TO_RAD, 324.7});
 
@@ -81,7 +78,6 @@ SNSR::BME280Driver bme(bmeBus);
 
 SNSR::UbloxSerialGNSS gnss(Serial5);
 
-Platform::PinGPIO pmwPin(PMW_CS_PIN);
 
 Platform::BusI2CDevice qmcBus(Wire, 0x0D);
 SNSR::QMC5883Driver qmc(qmcBus);
@@ -1733,11 +1729,9 @@ void initialiseHardware() {
 
   mpuPin.init(HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
   // bmePin.init(HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
-  pmwPin.init(HAL::GPIO_IOMODE_t::IOMODE_OUTPUT);
 
   mpuPin.setPinValue(1);
   // bmePin.setPinValue(1);
-  pmwPin.setPinValue(1);
 
   mpuIntPin.init(HAL::GPIO_IOMODE_t::IOMODE_INPUT);
 

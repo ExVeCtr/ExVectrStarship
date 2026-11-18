@@ -152,7 +152,6 @@ void loop() { Core::getSystemScheduler().tick(); }
   - `PinGPIO mpuIntPin` :71; `Interrupt_GPIO<SNSR::MPU9250Driver> mpuIntHandler` :72; `PinGPIO mpuPin` :73.
   - `BusSPIDevice spiMPU(SPI, mpuPin, true)` :74.
   - `BusI2CDevice` for the BME280 (0x76) :79, the QMC5883 (0x0D) :86 and the VL53L0X (0x29) :89.
-  - `PinGPIO pmwPin` :84.
   - Ten `PinPWM`s for the TVC servos, motors and flap servos (:92-102).
   - `Data::Memory_ArduinoEEPROM eeprom(EEPROM, EEPROM.length())` :105.
 - `initialiseHardware()` (`main.cpp:1729-1763`):
