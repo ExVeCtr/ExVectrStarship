@@ -2,6 +2,8 @@
 
 Autonomous model-Starship flight software (Teensy 4.0, PlatformIO, Arduino) built on the author's own ExVectr framework (`lib/ExVectr*`, one git submodule per library).
 
+Part of the ExVectrStarship workspace (`../CLAUDE.md` describes the whole system and how sessions and subagents are organised). This file and `docs/` are self-sufficient for working on the flight software alone.
+
 **Read [docs/README.md](docs/README.md) first.** It indexes all developer documentation. Library and project behaviour, frames, units and known bugs are documented there; don't re-derive them from scratch.
 
 ## Rules

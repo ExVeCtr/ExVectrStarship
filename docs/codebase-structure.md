@@ -5,7 +5,7 @@
 ## Repository layout
 
 ```
-ExVectr Testing/
+flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVectrStarship/)
 ├── platformio.ini            Single env: teensy40 (Teensy 4.0, IMXRT1062 600 MHz), Arduino framework
 ├── CLAUDE.md                 Entry point for Claude sessions → points here
 ├── docs/                     Versioned developer documentation (this folder)
