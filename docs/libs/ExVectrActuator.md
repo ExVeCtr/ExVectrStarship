@@ -1,5 +1,5 @@
 # ExVectrActuator
-> Actuator output layer: servo/ESC pulse-width PWM protocols (`PWM_Output`), a rate-limited servo task (`Servo_Control`), H-bridge DC-motor outputs and a servo-motor interface. Repo: https://github.com/ExVeCtr/ExVectrActuator.git `Last verified against commit: db98892`
+> Actuator output layer: servo/ESC pulse-width PWM protocols (`PWM_Output`), a rate-limited servo task (`Servo_Control`), H-bridge DC-motor outputs and a servo-motor interface. Repo: https://github.com/ExVeCtr/ExVectrActuator.git `Last verified against commit: db98892 (pinned now: 4d3c87a = db98892 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
 
 ## Purpose & scope
 Maps normalised commands onto `HAL::PinPWM`/`HAL::PinGPIO` hardware:
@@ -12,7 +12,7 @@ README ToDo: "Create pwm output. Requires testing" and "Servo control … Requir
 
 ## Dependencies (ExVectr libs + external)
 - ExVectrHAL: `PinPWM` (`init`, `setPinValue(0..1 duty)`, `setPinFrequency(Hz)`), `PinGPIO`, `AnalogOutput`, `IO_TYPE_t::ANALOG_HBRIDGE`, `IO_PARAM_t::SPEED`.
-- ExVectrCore: `Task_Periodic`, `Scheduler`, `NOW()`, `printW`.
+- ExVectrCore: `Task_Periodic`, `Scheduler`, `NowNs()`, `printW`.
 - ExVectrMath and ExVectrSensor: only through `servo_motor.hpp`, which includes `ExVectrMath.hpp` and `ExVectrSensor/encoder.hpp`. README lists only Core and HAL.
 - External: none.
 - Build: CMakeLists.txt references `ExVectrHal` (wrong case) and lacks Math/Sensor (host builds only).
@@ -100,7 +100,7 @@ Paths are relative to `lib/ExVectrActuator/`.
 
 | Severity | Location | Issue | Impact |
 |---|---|---|---|
-| High (if used) | src/servo_control.cpp:54 | `(Core::NOW() - lastUpdate_) / Core::SECONDS` is int64 division, so `dTime` is 0 for any period < 1 s. | Every 20 ms update divides by zero (:64). `deltaPos = 0` gives NaN, which then propagates permanently. Unusable. |
+| High (if used) | src/servo_control.cpp:54 | `(Core::NowNs() - lastUpdate_) / Core::SECONDS` is int64 division, so `dTime` is 0 for any period < 1 s. | Every 20 ms update divides by zero (:64). `deltaPos = 0` gives NaN, which then propagates permanently. Unusable. |
 | High (if used) | src/servo_control.cpp:65-67 | `accel_` (the configured maximum) is overwritten with the clamped required acceleration. | The limit shrinks or flips sign on every update, so the motion model diverges or stalls. |
 | Med (if used) | src/servo_control.cpp:23 | `maxVel_` is stored but never used. | No velocity limiting despite the API. |
 | Med (if used) | include/ExVectrActuator/servo_control.hpp:30, 33 | `currentVelocity_` is uninitialised. `lastUpdate_ = 0`, so the first `dTime` is the time since boot. | Garbage initial state and a huge first step. |
@@ -118,4 +118,4 @@ Paths are relative to `lib/ExVectrActuator/`.
 ## Extending
 - **New pulse protocol**: add an enum value to `PWM_Output_Protocol` and a `case` in `PWM_Output::init()`. Set `setPinFrequency(f)` with `1/f` ≥ the maximum pulse, then `offset_ = minPulse`, `factor_ = maxPulse - minPulse`, `interval_ = 1/f`, all in the same time unit. Check that duty stays ≤ 1 at v = 1.
 - **New actuator type**: implement `HAL::AnalogOutput` (`getOutputType`, `setOutputParam`, `writable`, `writeValue`) as the H-bridges do, so control code stays hardware-agnostic. Clamp inputs inside the class.
-- **Rate-limited servo**: fix `Servo_Control` first. Use `float dt = (NOW()-last) * 1e-9f`, initialise `lastUpdate_` in `taskInit`, keep `maxAccel` and `maxVel` constant and clamp velocity, then call `pwm_.init()`. Alternatively implement `ServoMotor`.
+- **Rate-limited servo**: fix `Servo_Control` first. Use `float dt = (NowNs()-last) * 1e-9f`, initialise `lastUpdate_` in `taskInit`, keep `maxAccel` and `maxVel` constant and clamp velocity, then call `pwm_.init()`. Alternatively implement `ServoMotor`.

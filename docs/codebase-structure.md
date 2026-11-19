@@ -62,7 +62,7 @@ Rules of thumb:
 - **One cooperative scheduler, no RTOS.** `loop()` calls `Core::getSystemScheduler().tick()`. Each tick runs **at most one** due task, chosen by `misses*10 + priority`. A task that blocks stalls everything, so never `delay()` or busy-wait in a task.
 - **Tasks** derive from `Core::Task_Periodic` (interval in ns), register themselves with `Core::getSystemScheduler().addTask(*this)` in their constructor, and implement `taskInit()` (once) and `taskThread()` (each period). Most objects are global statics, constructed before `setup()`.
 - **Topics** (`Core::Topic<T>`) are synchronous: `publish()` calls every subscriber's `receive()` immediately, in the publisher's context. Keep callbacks short. Never publish from an ISR unless every subscriber is ISR-safe (the MPU9250 interrupt path is the existing exception; see [libs/ExVectrCore.md](libs/ExVectrCore.md)).
-- **Time** is `int64_t` nanoseconds (`Core::NOW()`, `Core::SECONDS`, `Core::MILLISECONDS` …). Data travels as `Core::Timestamped<T>`; sensor data as `Timestamped<DSP::ValueCov<float,N>>`.
+- **Time** is `int64_t` nanoseconds (`Core::NowNs()`, `Core::SECONDS`, `Core::MILLISECONDS` …). Data travels as `Core::Timestamped<T>`; sensor data as `Timestamped<DSP::ValueCov<float,N>>`.
 - **Priorities in use:** MPU9250 driver 110, attitude EKF and position KF 105, everything else default 100.
 
 ### Conventions (summary; authoritative details in [libs/ExVectrMath.md](libs/ExVectrMath.md))
@@ -116,4 +116,4 @@ The ground station is node 0. Losing its heartbeat sets `radioConnectionLoss`.
 - `pio run` builds, `pio run -t upload` flashes (`upload_port` in `platformio.ini` is a Windows COM port; override it locally with `--upload-port`), `pio device monitor -b 115200` shows serial output.
 - PlatformIO binary on this machine: `~/.platformio/penv/bin/pio`.
 - Debug serial output is controlled by `DEBUG_TELEMETRY_SERIAL` and the other `#define`s at the top of `main.cpp`, and by `LOG_MSG`/`VRBS_MSG` switches in `ExVectrCore/print.hpp`.
-- Resource baseline (Nov 2026): RAM1 ≈ 56 KB variables, 243 KB code, ≈ 205 KB free for stack.
+- Resource baseline (Nov 2026, unchanged by the ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, code 243240 B, padding 18904 B, 205696 B free for local variables; RAM2 variables 12416 B, 511872 B free for malloc/new.

@@ -1,6 +1,6 @@
 # ExVectrControl
 
-> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1`
+> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 8d6efab = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
 
 ## Purpose & scope
 
@@ -14,7 +14,7 @@
 
 ## Dependencies (ExVectr libs + external)
 
-- **ExVectrCore**: `Task_Periodic`, `Topic`, `Simple_Subscriber`, `Callback_Subscriber`, `Topic_Publisher`, `Timestamped`, `NOW()`, `LOG_MSG`.
+- **ExVectrCore**: `Task_Periodic`, `Topic`, `Simple_Subscriber`, `Callback_Subscriber`, `Topic_Publisher`, `Timestamped`, `NowNs()`, `LOG_MSG`.
 - **ExVectrMath**: quaternions and vectors. Conventions are in `docs/libs/ExVectrMath.md`.
 - **ExVectrDSP**: only `value_covariance.hpp` is included. Note the reverse dependency: `DSP/body_simulator.hpp` includes `physics_bodysim.hpp` and `starship/control_attitude_flaps.hpp`, which makes the pair circular.
 - External: `<math.h>`.
@@ -224,7 +224,7 @@ To add a controller:
    - position `Timestamped<Vector<6>> [v,p]`;
    - setpoints `Vector<6>` / `Vector<7>` / `Vector<3>` (world accel including g).
 4. In `taskInit()`, call `setInitialised(false)` until required inputs have arrived, and reset integrators. In `taskThread()`:
-   - compute dt from `Core::NOW()` (ns) and guard dt ≤ 0;
+   - compute dt from `Core::NowNs()` (ns) and guard dt ≤ 0;
    - read with `getItem()`;
    - publish on an owned `Core::Topic<…>`, or a `Topic_Publisher` if the consumer owns the topic.
    - Provide `enableControl(bool)` that zeroes integrators and outputs a safe command when disabled.

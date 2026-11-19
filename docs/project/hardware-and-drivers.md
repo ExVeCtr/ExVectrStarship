@@ -200,7 +200,7 @@ u-blox (NEO-M8Q per the define name) on `Serial5`, wrapping SparkFun `SFE_UBLOX_
 | `velocityCov` | `sAcc/1000` in all three axes | m/s (1σ) |
 | `positionValid = velocityValid` | `numSats ≥ 5` | The fix-OK check is commented out (`.cpp:37`). `minNumSats_` and `maxError_` are unused. |
 | `numSats` | `getSIV()` | |
-| timestamp | `Core::NOW()` at read | Not GNSS time; includes UART latency. |
+| timestamp | `Core::NowNs()` at read | Not GNSS time; includes UART latency. |
 
 Messages containing NaN are dropped (self-equality test, `.cpp:41`).
 
@@ -272,7 +272,7 @@ All structs are `__attribute__((packed))`, little-endian, and sent raw by `Trans
 |---|---|---|---|
 | 0 | 24 | `float positionSetpoint[6]` | `[Vx,Vy,Vz,Px,Py,Pz]`, ref frame |
 | 24 | 1 | `missionMode` | `MissionMode`: 0 Idle, 1 Initialisation, 2 Startup, 3 Running, 4 Finished |
-| 25 | 8 | `int64 missionTime` | **ns** (`Time_Source::NOW()`). Negative during the countdown. |
+| 25 | 8 | `int64 missionTime` | **ns** (`Time_Source::Now()`). Negative during the countdown. |
 | 33 | 1 | `missionIndex` | Effectively always 0 (see [missions.md](missions.md) §6.2) |
 | 34 | 1 | `missionPhase` | `MissionPhase`: 0 Idle, 1 Hover, 2 Ascent, 3 Descent, 4 Deceleration, 5 RTH, 6 Landing, 7 Completed |
 

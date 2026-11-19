@@ -1,16 +1,16 @@
 # ExVectrCore
-> Time base, cooperative scheduler, pub/sub topics, console printing and containers for ExVeCtr projects. Repo: https://github.com/ExVeCtr/ExVectrCore.git `Last verified against commit: a462465`
+> Time base, cooperative scheduler, pub/sub topics, console printing and containers for ExVeCtr projects. Repo: https://github.com/ExVeCtr/ExVectrCore.git `Last verified against commit: 6fe3f8e (18bbb09 plus the ListBuffer overload fix; sections not about the NowNs rename or the additions below are as verified at a462465)`
 
 ## Purpose & scope
 Foundation library of the ExVeCtr framework. Provides:
-- A nanosecond `int64_t` time base (`NOW()`), clock/time-source abstractions and date/time helpers.
+- A nanosecond `int64_t` time base (`NowNs()`), clock/time-source abstractions and date/time helpers.
 - A single-threaded cooperative scheduler (`Scheduler`, `Scheduler::Task`, `Task_Periodic`).
 - Synchronous pub/sub (`Topic<T>`, `Subscriber<T>` and ready-made subscribers).
 - printf-style console output routed through topics (`printM/D/W/E`, `LOG_MSG`).
 - Containers (`List` interface, `ListArray`, `ListBuffer`, `ListStatic`, `ListExtern`, `ListLinked`), `DataBuffer`, CRC-16, PRNG, `Message` interface.
 
 Hardware-independent. A platform library must provide two symbols (README):
-- `const Clock_Source& VCTR::Core::getPlatformClock()` (time_base.hpp:19). Must be fast; `NOW()` calls it.
+- `const Clock_Source& VCTR::Core::getPlatformClock()` (time_base.hpp:19). Must be fast; `NowNs()` calls it.
 - `void VCTR::Core::initialise()` (ExVectrCore.hpp:21). Called first in `setup()`; sets up console output.
 
 The README states it is under initial development and uses dynamic arrays (heap fragmentation), so it is not meant for critical long-life applications.
@@ -24,19 +24,35 @@ The README states it is under initial development and uses dynamic arrays (heap 
 
 ### Time (time_definitions.hpp, time_base.hpp, clock_source.hpp, time_source.hpp, timestamped.hpp)
 - Units: all times are `int64_t` nanoseconds. Constants: `NANOSECONDS=1`, `MICROSECONDS`, `MILLISECONDS`, `SECONDS`, `MINUTES`, `HOURS`, `DAYS`, `WEEKS`, `MONTHS` (30 d), `YEARS` (365 d). `END_OF_TIME = INT64_MAX`.
-- `int64_t NOW()`: returns `getPlatformClock().getCounter().data` (time_definitions.cpp:10-13), i.e. time since boot from the platform clock.
-- `double NOWSeconds()`: `NOW()` converted to seconds.
+- `int64_t NowNs()`: returns `getPlatformClock().getCounter().data` (time_definitions.cpp:10-13), i.e. time since boot from the platform clock.
+- `double NowS()`: `NowNs()` converted to seconds. (Renamed from `NOW()`/`NOWSeconds()` in 18bbb09; the old names no longer exist. `Time_Source::NOWSeconds()` kept its name.)
 - `void delay(int64_t ns)`: busy-wait (time_definitions.cpp:20-25). Deprecated by its own doc comment; it blocks the scheduler.
 - `class Clock_Source`: interface. `virtual const Timestamped<int64_t>& getCounter() const = 0;` returns a clock value in ns, stamped with the internal precise time. Also has a `Topic<Timestamped<int64_t>> timeTopic_` (`getTimeTopic()`) that external clocks (GNSS, RTC) publish to.
-- `class Time_Source : Subscriber<Timestamped<int64_t>>`: an offset/factor view of `Core::NOW()`.
-  - `NOW()` = `int64_t(Core::NOW() * factor_) + offset_`.
-  - `setTime(t)` sets the offset so that `NOW() == t` at that instant.
+- `class Time_Source : Subscriber<Timestamped<int64_t>>`: an offset/factor view of `Core::NowNs()`.
+  - `NowNs()` = `int64_t(Core::NowNs() * factor_) + offset_`.
+  - `setTime(t)` sets the offset so that `NowNs() == t` at that instant.
   - `forceCorrect(src)` applies a one-shot offset from a clock source.
   - `setClockSource(src, correctionAmount)` subscribes to `src.getTimeTopic()`. Each received sample hard-sets the time (time_source.cpp:39-42).
   - `factor_` and `correctionLimit_` are never changed or used, so the documented slewing is not implemented.
 - `template<T> struct Timestamped { T data; int64_t timestamp; }`: the timestamp defaults to 0. This is the standard payload wrapper for sensor topics.
-- `TimedBool`: converts to `true` while `NOW() < releaseTime`.
+- `TimedBool`: converts to `true` while `NowNs() < releaseTime`.
 - `TimeSpan` (ns span with y/m/d accessors; months are 30 days) and `TimeDate` (RTClib port, 2000-based, no time zone/DST) in time_units.hpp / date_time.cpp.
+
+### Added in 18bbb09 (not used by this project yet)
+Present in the pinned Core but not referenced by `src/` (they are for the new ExVectrNetwork stack, see `../docs/network-design.md` in the workspace):
+- `handler.hpp`: `HandlerGroup<Args...>` with `addHandler(std::function)`, `callHandlers(args...)`, `clearHandlers()`. Backed by a `ListArray` of `std::function` (heap, see the ExVectrNetwork heap notes).
+- `IntervalTimer.hpp`: periodic/one-shot high/low phase timer with rising/falling edge callback (`start()`, `update()`, `sync()`, `adjustPhase()`, miss policy `FireAll`/`SkipMissed`). Driven by calling `update()` from a task; takes `int64_t` ns.
+- `CanSerialize.hpp`: C++20 `concept` (`numBytes()`, `serialize()`, `deserialize()`). The Teensy build uses `-std=gnu++17`; including it compiles but warns (`-Wc++20-compat`: `concept`/`requires` are keywords in C++20). Probed 2026-11-19 together with handler.hpp and IntervalTimer.hpp: all three compile for Teensy 4.0.
+- `ListArray`: `getPtr() const`, `pop()`, `pop(n)`, `popDiscard(n)`, `appendList()`.
+
+### API changes in 18bbb09 (all mechanical for this project)
+| Old | New |
+|---|---|
+| `Core::NOW()` | `Core::NowNs()` (same value: platform clock counter, int64 ns) |
+| `Core::NOWSeconds()` | `Core::NowS()` |
+| `Time_Source::NOW()` | `Time_Source::Now()` (`Time_Source::NOWSeconds()` unchanged) |
+| `ListBuffer::getStandardDeviation(T avg = getAverage())` | Does not compile on arm-none-eabi-gcc (member call in default argument). Fixed on branch `feature/exvectrcore-update` (commit 6fe3f8e) with a no-argument overload plus the `(T average)` overload. Not yet on Core's `Development`. |
+The scheduler, `Task_Periodic`, `TimedBool`, topic routers and print macros changed only by the rename and formatting; their logic is unchanged (checked with a whitespace-insensitive diff against a462465).
 
 ### Scheduler (scheduler2.hpp, scheduler2.cpp)
 Threading model: one cooperative loop with no preemption and no RTOS. The app calls `getSystemScheduler().tick()` from `loop()`. Each `tick()` runs at most one task.
@@ -54,20 +70,20 @@ Threading model: one cooperative loop with no preemption and no RTOS. The app ca
 - `bool addTask(Task&)`: appends the task's embedded list node and always returns true. Adding the same task twice is not guarded against.
 - `bool removeTask(Task&)`: unlinks the task (see the `ListLinked::remove` issue below).
 - `const List<Task*>& getTasks() const`, `int64_t getNextTaskRelease() const`.
-- `void setSleepFunction(void(*)(int64_t ns))`: optional. When no task is due, every task allows sleep, and the next release is more than `sleepMargin_ + minSleepTime_` (1 ms + 1 ms) away, the scheduler calls `sleep(next - NOW() - 1 ms)`. `maxSleepTime_` (100 ms) is declared but not used.
-- `Scheduler(Clock_Source&)` stores a `Time_Source`, but `tick()` always uses `Core::NOW()`.
+- `void setSleepFunction(void(*)(int64_t ns))`: optional. When no task is due, every task allows sleep, and the next release is more than `sleepMargin_ + minSleepTime_` (1 ms + 1 ms) away, the scheduler calls `sleep(next - NowNs() - 1 ms)`. `maxSleepTime_` (100 ms) is declared but not used.
+- `Scheduler(Clock_Source&)` stores a `Time_Source`, but `tick()` always uses `Core::NowNs()`.
 - `getSystemScheduler()`: a function-local static, so it is safe to use from global constructors in any translation unit.
 
 `tick()` algorithm (scheduler2.cpp:120-225):
 1. For every task: call `taskCheck()`, then compute the pseudo-priority `misses*10 + priority` (scheduler2.cpp:95).
-2. For every unpaused task with `NOW() > release`: increment `misses` and track the highest pseudo-priority.
+2. For every unpaused task with `NowNs() > release`: increment `misses` and track the highest pseudo-priority.
 3. Run the winner: reset `misses = 0`, call `taskInit()` if not yet initialised (the init flag is set before the call, so `taskInit` may clear it to signal failure), then `taskRun()`, then update runtime and rate.
 4. If nothing was due, consider sleeping (see `setSleepFunction`).
 
 Deadlines do not affect selection; only release time, priority and miss count do. A task that is starved for longer than another accumulates misses and eventually wins.
 
 `class Task_Periodic : Scheduler::Task` (task_types.hpp/.cpp):
-- `Task_Periodic(const char* name, int64_t interval_ns, int64_t start = NOW(), int64_t timeSlip_ns = 1 ms, bool skipOverdueRun = true)`.
+- `Task_Periodic(const char* name, int64_t interval_ns, int64_t start = NowNs(), int64_t timeSlip_ns = 1 ms, bool skipOverdueRun = true)`.
 - `taskRun()` (final) computes the next release and then calls `taskThread()`:
   - With `skipOverdueRun`, the next release is the next multiple of `interval` counted from absolute 0 (not from `start`).
   - Otherwise, `deadline_ += interval`.
@@ -96,7 +112,7 @@ ISR safety: none. Do not call scheduler methods from interrupts.
 - `printM` (message), `printD` (debug), `printW` (warning), `printE` (error), and `printTopic(Topic<const char*>&, fmt, ...)`.
 - Each one sets a module-global `currentTopic`, formats with the bundled `vprintf`, and lets `_putchar` collect characters into a static `ListArray<char>`. On the terminating NUL it publishes the string to the topic.
 - Topics are function-local statics: `getMessageTopic()`, `getDebugTopic()`, `getWarningTopic()`, `getErrorTopic()`. The platform subscribes an output (e.g. Serial) to them. If nothing is subscribed, output is dropped.
-- `LOG_MSG(...)`: enabled by `#define EXVECTR_DEBUG_ENABLE` at print.hpp:4. Prints `"<sec> LOG from file, line, func: "` and then the message, on the debug topic. It uses unqualified `Core::NOWSeconds()`, so it only compiles where `VCTR` is in scope (e.g. after `using namespace VCTR`).
+- `LOG_MSG(...)`: enabled by `#define EXVECTR_DEBUG_ENABLE` at print.hpp:4. Prints `"<sec> LOG from file, line, func: "` and then the message, on the debug topic. It uses unqualified `Core::NowS()`, so it only compiles where `VCTR` is in scope (e.g. after `using namespace VCTR`).
 - `VRBS_MSG(...)`: enabled by `EXVECTR_DEBUG_VRBS_ENABLE` (print.hpp:5, commented out). The scheduler uses it per task run, so enabling it is very noisy.
 - Not reentrant and not ISR-safe; it allocates on the heap.
 - print.cpp defines global `printf`, `sprintf`, `snprintf`, `vprintf`, `vsnprintf` and `fctprintf`, replacing newlib's versions for the whole firmware.
@@ -150,7 +166,7 @@ Core::StaticCallback_Subscriber<Core::Timestamped<float>> altCb(altitudeTopic, o
 void setup() { Core::initialise(); }
 void loop()  { Core::getSystemScheduler().tick(); }
 ```
-Producer side: `altitudeTopic.publish(Core::Timestamped<float>(alt, Core::NOW()));`
+Producer side: `altitudeTopic.publish(Core::Timestamped<float>(alt, Core::NowNs()));`
 
 ## Conventions
 - Namespace `VCTR::Core`. Headers live under `include/ExVectrCore/`; the umbrella header `ExVectrCore.hpp` pulls in print, time definitions, scheduler, task types, topic and topic subscribers.
@@ -183,10 +199,10 @@ Producer side: `altitudeTopic.publish(Core::Timestamped<float>(alt, Core::NOW())
 | High | include/ExVectrCore/list_linked.hpp:273-279 | `remove()` sets `next->next_ = nullptr` before testing it, so the successor's `prev_` is never updated and still points at the removed node. | After `Scheduler::removeTask` (e.g. main.cpp:1426), removing or destroying the successor goes through a stale `prev_`. The successor then stays linked in the scheduler list (it can still run after "removal"), or memory is written through a dangling pointer if the removed node no longer exists. |
 | High | src/print.cpp:1195-1232 (decls :53-93) | Defines global `printf`/`sprintf`/`snprintf`/`vprintf`/`vsnprintf`, overriding newlib for the whole firmware. Plain `printf` output goes to `currentTopic` (usually null), so it is discarded. | Third-party code calling `snprintf` silently gets the tiny-printf implementation (floats above `PRINTF_MAX_FLOAT`=1e9 (:282) switch to exponent notation, etc.). `printf` output is lost. |
 | Med | src/task_types.cpp:10-18 (member task_types.hpp:40) | The `timeSlip_ns` constructor argument is never stored, so `timeSlip_ns_` stays 0. `offset_` (=start) is never used. | The deadline always equals the release; the documented slip has no effect. |
-| Med | src/task_types.cpp:32-35 | With `skipOverdueRun=false`, `deadline_` starts at 0 (not `start`), so the task runs back-to-back until it has caught up from t=0. With skip enabled, releases align to multiples of `interval` from absolute 0, not from `start`, and `NOW()` is called twice. | Bursts of runs at startup for non-skipping tasks; phase offsets via `start` are lost after the first run. |
+| Med | src/task_types.cpp:32-35 | With `skipOverdueRun=false`, `deadline_` starts at 0 (not `start`), so the task runs back-to-back until it has caught up from t=0. With skip enabled, releases align to multiples of `interval` from absolute 0, not from `start`, and `NowNs()` is called twice. | Bursts of runs at startup for non-skipping tasks; phase offsets via `start` are lost after the first run. |
 | Med | include/ExVectrCore/scheduler2.hpp:203 | `tasks_` has no initializer. | Only zero-initialized for static or global `Scheduler`s (e.g. `getSystemScheduler()`). Any automatic or heap `Scheduler` dereferences garbage in `addTask` or `tick`. |
-| Med | src/scheduler2.cpp:120-225, scheduler2.hpp:207 | `tick()` always uses `Core::NOW()`. The `timeSource_` member (and the `Scheduler(Clock_Source&)` constructor) has no effect, although the header comment marks this feature "Finished". `maxSleepTime_` is unused. | A misleading API; the sleep length is not capped. |
-| Med | src/time_source.cpp:15 | `Core::NOW() * factor_` is an `int64 * float` multiplication, so the result is computed in `float` (24-bit mantissa). | `Time_Source::NOW()` is quantised: about 65 µs steps after ~18 min, about 262 µs after ~1 h. Affects mission time (`mission_abstract.hpp:34`). |
+| Med | src/scheduler2.cpp:120-225, scheduler2.hpp:207 | `tick()` always uses `Core::NowNs()`. The `timeSource_` member (and the `Scheduler(Clock_Source&)` constructor) has no effect, although the header comment marks this feature "Finished". `maxSleepTime_` is unused. | A misleading API; the sleep length is not capped. |
+| Med | src/time_source.cpp:15 | `Core::NowNs() * factor_` is an `int64 * float` multiplication, so the result is computed in `float` (24-bit mantissa). | `Time_Source::Now()` is quantised: about 65 µs steps after ~18 min, about 262 µs after ~1 h. Affects mission time (`mission_abstract.hpp:34`). |
 | Med | src/time_source.cpp:39-42, time_source.hpp:28-30 | `receive()` hard-sets the time; `factor_` and `correctionLimit_` are never used. | Slewing correction as documented is not implemented; time jumps on every external clock sample (possibly backwards). |
 | Med | include/ExVectrCore/list_buffer.hpp:492 | `peekFront` reads `(front_+1)%SIZE`; `takeFront` reads `front_-1`. | `peekFront` returns the wrong element (often stale data). |
 | Med | include/ExVectrCore/list_buffer.hpp:396-402 | `removeElementIndex` shifts elements through `operator[]` and decrements the count without adjusting `back_`. | After a removal, `peekBack`/`takeBack`/`placeBack` see a corrupted buffer. Also reachable via `removeElement`. |
@@ -202,19 +218,19 @@ Producer side: `altitudeTopic.publish(Core::Timestamped<float>(alt, Core::NOW())
 | Low | src/date_time.cpp:107-135 | The `TimeDate`/`TimeSpan` operators are defined in the global namespace but declared in `VCTR::Core` (time_units.hpp:103-111). | Undefined references at link time if used. |
 | Low | src/date_time.cpp:63-65 | `sscanf("%s")` writes into a 4-byte static buffer. | Overflow on malformed date strings. |
 | Low | include/ExVectrCore/data_buffer.hpp:157,192 | Uses `memcpy` without including `string.h`/`cstring`. | Compiles only if an earlier include provides it. |
-| Low | include/ExVectrCore/print.hpp:72,82 | `LOG_MSG`/`VRBS_MSG` use unqualified `Core::NOWSeconds()`. `EXVECTR_DEBUG_ENABLE` is hard-coded on (:4). | Does not compile outside `namespace VCTR` or `using namespace VCTR`. Logging cannot be disabled without editing the library. |
+| Low | include/ExVectrCore/print.hpp:72,82 | `LOG_MSG`/`VRBS_MSG` use unqualified `Core::NowS()`. `EXVECTR_DEBUG_ENABLE` is hard-coded on (:4). | Does not compile outside `namespace VCTR` or `using namespace VCTR`. Logging cannot be disabled without editing the library. |
 | Low | src/time_definitions.cpp:20-25 | `delay()` busy-waits. | Blocks all tasks; deprecated per its own comment. |
 | Low | src/random.cpp:9-19, :34 | Static PRNG state; a nonzero seed is added on every call; π approximated as 3.14. | Weak, non-reentrant randomness; slight bias in `randNorm`. |
 | Low | include/ExVectrCore/task_types.hpp:50 vs scheduler2.hpp:60 | Name length documented as 20 chars; the buffer actually holds 49 + NUL. | Documentation mismatch. |
 | Low | README.md | Lists documentation, simulation and vehicle library as unfinished (to-do items). | Project is in initial development. |
 
 ## Extending
-- **New task:** derive from `Core::Task_Periodic` (or from `Scheduler::Task` for event-driven tasks that manage `setRelease()` themselves, e.g. set the release to `NOW()` when data arrives and to `END_OF_TIME` when idle, as `PlatformArduino` does).
+- **New task:** derive from `Core::Task_Periodic` (or from `Scheduler::Task` for event-driven tasks that manage `setRelease()` themselves, e.g. set the release to `NowNs()` when data arrives and to `END_OF_TIME` when idle, as `PlatformArduino` does).
   - Call `getSystemScheduler().addTask(*this)` in the constructor.
   - Put hardware init in `taskInit()`; call `setInitialised(false)` inside it to retry on the next tick.
   - Keep `taskThread()` short: one long task delays all others.
 - **New task type:** derive from `Scheduler::Task` and override `taskRun()` (plan the next release, then call `taskThread()`) and/or `taskCheck()` (runs on every tick).
-- **New topic payload:** any copyable type works as `Topic<T>`. Wrap sensor data in `Timestamped<T>` and stamp it with `Core::NOW()` at acquisition.
+- **New topic payload:** any copyable type works as `Topic<T>`. Wrap sensor data in `Timestamped<T>` and stamp it with `Core::NowNs()` at acquisition.
 - **New subscriber kind:** derive from `Subscriber<T>` and implement `receive(const T&, const Topic<T>*)`. Keep it cheap and non-blocking; it runs in the publisher's context.
 - **New container:** derive from `List<T>`; implement `size()` and both `operator[]`. Override `operator()` const (the base version recurses).
 - **New platform:** implement `getPlatformClock()` (return a static `Clock_Source` whose `getCounter()` is monotonic ns since boot) and `initialise()` (subscribe console output to the four print topics). See ExVectrArduinoPlatform `src/time_implementation.cpp` and `src/print_implementation.cpp`.

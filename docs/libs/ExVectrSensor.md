@@ -1,5 +1,5 @@
 # ExVectrSensor
-> Abstract sensor interfaces that publish timestamped value+covariance samples on topics, plus drivers for MPU9250 (IMU), BME280/BMP280 (baro) and QMC5883L (mag). Repo: https://github.com/ExVeCtr/ExVectrSensor.git `Last verified against commit: 6bd4b01`
+> Abstract sensor interfaces that publish timestamped value+covariance samples on topics, plus drivers for MPU9250 (IMU), BME280/BMP280 (baro) and QMC5883L (mag). Repo: https://github.com/ExVeCtr/ExVectrSensor.git `Last verified against commit: 6bd4b01 (pinned now: bfe9b4e = 6bd4b01 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
 
 ## Purpose & scope
 - `include/ExVectrSensor/*.hpp`: one interface per sensor kind. Each owns a `Core::Topic` and a pure virtual `readX()`. Fusion code (ExVectrDSP) depends only on these interfaces.
@@ -8,7 +8,7 @@
 README roadmap: MPU9250, BME280 and QMC5883 are done. Still open: u-blox GPS (implemented in the app instead, `src/ublox_gnss.*`), "reduce MPU9250 read overhead", docs. The rangefinder (VL53L0X, `src/vl53l0x/`) and GNSS drivers live in the application, not in this library.
 
 ## Dependencies (ExVectr libs + external)
-- ExVectrCore: `Topic`, `Timestamped<T>` (`data` + `int64_t timestamp` in ns), `Task_Periodic`, `Scheduler`, `NOW()`, `delay()`, `print`.
+- ExVectrCore: `Topic`, `Timestamped<T>` (`data` + `int64_t timestamp` in ns), `Task_Periodic`, `Scheduler`, `NowNs()`, `delay()`, `print`.
 - ExVectrHAL: `DigitalIO` (I2C/SPI bus device), `IO_TYPE_t`, `IO_PARAM_t`, `PinGPIO`.
 - ExVectrDSP: `DSP::ValueCov<T,N>` (`Math::Vector<T,N> val`, `Math::Matrix<T,N,N> cov`). README omits this dependency. Assigning a scalar to `cov` sets the diagonal.
 - ExVectrMath: vectors and matrices.
@@ -38,7 +38,7 @@ All are in namespace `VCTR::SNSR`. Topic payload is `Core::Timestamped<DSP::Valu
   - `Vector_F positionCov`, `velocityCov` (defaults 1)
   - `positionValid`, `velocityValid`, `numSats`
 - `readX()` returns false on failure or no new data, and publishes only on success.
-- Timestamps are `Core::NOW()` in ns, taken *before* the bus read (or the MPU9250 interrupt time).
+- Timestamps are `Core::NowNs()` in ns, taken *before* the bus read (or the MPU9250 interrupt time).
 
 ### MPU9250 / MPU9250Driver (Sensors/mpu9250.hpp, src/mpu9250.cpp)
 - `MPU9250 : Gyroscope, Accelerometer, Magnetometer, Thermometer`.
@@ -58,7 +58,7 @@ All are in namespace `VCTR::SNSR`. Topic payload is `Core::Timestamped<DSP::Valu
 - Covariances (diagonal): gyro 0.002, accel 0.78, mag 1, temperature 0.5 (mpu9250.hpp:50-53).
 - `MPU9250Driver(bus, disableMag = false)` or `(bus, scheduler, disableMag)`:
   - Task period 1 ms; `taskInit()` calls `initSensor`; `taskThread()` calls `readAll()`.
-  - `interruptHandler()` stores `NOW()` for precise timestamps.
+  - `interruptHandler()` stores `NowNs()` for precise timestamps.
   - `enable4kHzRate()` sets DLPF 250 Hz and a 250 µs period; `enable32kHzRate()` disables the DLPF and sets a 31.25 µs period.
 
 ### BME280 / BME280Driver (Sensors/bme280.hpp, src/bme280.cpp)
@@ -114,7 +114,7 @@ sub.setCallback(this, &MyClass::onGyro); sub.subscribe(imu.getGyroTopic());
 
 ## Conventions
 - Publish SI units in the sensor frame. Let downstream code (`DSP::TopicCoordTransform` with calibration from ExVectrData) handle bias, scale and sensor-to-body rotation. The existing mag drivers break this rule (µT / gauss). Because the mag calibration scale absorbs the unit, the mag units only have to be consistent per sensor.
-- Always fill `cov` (a scalar sets the diagonal) and timestamp with `Core::NOW()` (ns), as close to the physical sample as possible.
+- Always fill `cov` (a scalar sets the diagonal) and timestamp with `Core::NowNs()` (ns), as close to the physical sample as possible.
 - Drivers are passive classes plus an optional `...Driver : Task_Periodic` that registers with `getSystemScheduler()` by default.
 - Bus parameters (speed, SPI mode) are set by the driver in `initSensor()` through `setInput/OutputParam`.
 - Namespace `VCTR::SNSR`. Include `ExVectrSensor/Sensors/<drv>.hpp` or `ExVectrSensor/<iface>.hpp`. The umbrella `ExVectrSensor.hpp` is empty.
@@ -164,7 +164,7 @@ New sensor driver (pattern of qmc5883.*):
    - verify the WHOAMI register, configure the chip
    - set `initialised_ = true` last
 3. In `readX`:
-   - capture `int64_t t = Core::NOW()` before the transfer
+   - capture `int64_t t = Core::NowNs()` before the transfer
    - read in one burst and convert to SI units in the sensor frame
    - fill `DSP::ValueCov` (val + cov), then `topic_.publish(Core::Timestamped<...>(vc, t))`
    - return false without publishing when there is no new data

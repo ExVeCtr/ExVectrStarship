@@ -1,6 +1,6 @@
 # ExVectrDSP
 
-> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, plus a rigid-body flight simulator. Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 3e1f070`
+> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, plus a rigid-body flight simulator. Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 3e1f070 (pinned now: fc99b99 = 3e1f070 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
 
 ## Purpose & scope
 
@@ -20,7 +20,7 @@
 
 ## Dependencies (ExVectr libs + external)
 
-- **ExVectrCore**: `Topic`, `Simple_Subscriber`, `Buffer_Subscriber`, `Callback_Subscriber`, `Task_Periodic`, `Timestamped`, `ListBuffer`, `NOW()`, `LOG_MSG`, `randGen`.
+- **ExVectrCore**: `Topic`, `Simple_Subscriber`, `Buffer_Subscriber`, `Callback_Subscriber`, `Task_Periodic`, `Timestamped`, `ListBuffer`, `NowNs()`, `LOG_MSG`, `randGen`.
 - **ExVectrMath**: all algebra. Frame conventions come from `docs/libs/ExVectrMath.md`.
 - **ExVectrSensor**: `SNSR::GNSSData` (`gnss.hpp`). Lat/lon in rad, alt in m above the ellipsoid, velocity documented as NED (`imu_gps_position_kf.hpp:128`).
 - **ExVectrData**: `Data::Memory_Interface` and memory manager, used by `Calibrator_Manager`.
@@ -59,7 +59,7 @@ Common pattern:
   - `setMagInput`, scaled so that |B| ≈ 0.05. In practice this is mT: the acceptance window is 0.01–0.1, even though the docs say tesla.
   - `setAccTiltCompensation(R3x3)` is applied in `updateAcc` only.
 - **Outputs:**
-  - `getAttitudeEstTopic()` publishes `Timestamped<Vector<7>>` = `[ω_meas − b (rad/s, body), q]`, timestamp `NOW()`.
+  - `getAttitudeEstTopic()` publishes `Timestamped<Vector<7>>` = `[ω_meas − b (rad/s, body), q]`, timestamp `NowNs()`.
   - `getBiasEstTopic()` publishes `Timestamped<Vector<3>>` = b.
   - Both are published only when a gyro, accel or mag update ran.
 - **`update()` order:**

@@ -1,5 +1,5 @@
 # ExVectrNetwork
-> Layered (OSI-like) networking: datalink over any `HAL::DigitalIO`, 16-bit-addressed network node with heartbeats, UDP-like segmenting transport and topic-over-network bridging. Repo: https://github.com/ExVeCtr/ExVectrNetwork.git `Last verified against commit: cabddce`
+> Layered (OSI-like) networking: datalink over any `HAL::DigitalIO`, 16-bit-addressed network node with heartbeats, UDP-like segmenting transport and topic-over-network bridging. Repo: https://github.com/ExVeCtr/ExVectrNetwork.git `Last verified against commit: cabddce (pinned now: 7072cfe = cabddce plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
 
 ## Purpose & scope
 Connects ExVectr devices (vehicle ↔ ground station) by linking `Core::Topic`s across a radio or bus. Layers communicate only through topics:
@@ -183,7 +183,7 @@ Paths are relative to `lib/ExVectrNetwork/`.
 | Low | src/network_node.cpp:30 | The constructor always registers with `getSystemScheduler()`. | You can't put a node on another scheduler. |
 | Med | src/datalink.cpp:84-89, 179-189 | No arbitration: a node sends BLOCK whenever it thinks the medium is free. Two nodes can BLOCK simultaneously. | Interleaved, corrupt frames on shared buses (not CRC-protected at this layer). |
 | Med | src/datalink.cpp:100-101, 133-145 | After a DATA header the length byte is read without checking it is available. `size` is derived from `readLen` measured *before* the header bytes were consumed, and the `readData` return value is ignored. | On byte-streaming physical layers (UART) garbage lengths or bytes enter the frame. |
-| Low | src/datalink.cpp:61 | `taskInit` sets the block timestamp to `NOW() - 1 s` with the comment "listen for an extra second". With the 100 ms release time the medium is released immediately (it should be `+ 1 s`). | No startup listen period when joining a running network. |
+| Low | src/datalink.cpp:61 | `taskInit` sets the block timestamp to `NowNs() - 1 s` with the comment "listen for an extra second". With the 100 ms release time the medium is released immediately (it should be `+ 1 s`). | No startup listen period when joining a running network. |
 | Med | src/topic_io.cpp:38 | Loop counter is `uint8_t i` while `i < item.size()`, and items up to 1024 bytes are accepted. | Infinite loop (hang) on any item > 255 bytes. |
 | Med | lib/ExVectrPackets/include/ExVectrPackets.hpp:1 vs include/ExVectrNetwork.hpp:1 | Both umbrella headers use the include guard `EXVECTRNETWORK_H_`. | Whichever is included second is silently empty. |
 

@@ -1,5 +1,5 @@
 # ExVectrArduinoPlatform
-> Arduino/Teensy implementation of the ExVectrCore platform hooks (clock, console) and the ExVectrHAL interfaces (I2C, SPI, UART, GPIO, PWM, ADC, pin interrupt, EEPROM). Repo: https://github.com/ExVeCtr/ExVectrArduinoPlatform.git `Last verified against commit: 4f31846`
+> Arduino/Teensy implementation of the ExVectrCore platform hooks (clock, console) and the ExVectrHAL interfaces (I2C, SPI, UART, GPIO, PWM, ADC, pin interrupt, EEPROM). Repo: https://github.com/ExVeCtr/ExVectrArduinoPlatform.git `Last verified against commit: 4f31846 (unchanged pin; it needs no change for Core 18bbb09, the platform clock hook `getPlatformClock()` is unchanged)`
 
 ## Purpose & scope
 - Provides the two symbols ExVectrCore requires:
@@ -22,7 +22,7 @@ Branch `Development` targets Teensy 4.0. `PinPWM::setPinFrequency` calls the Tee
 ### Platform clock (src/time_implementation.cpp)
 - `PlatformClock : Core::Clock_Source`, a function-local static returned by `getPlatformClock()` (:41-47).
 - `getCounter()` reads the 32-bit `micros()` and accumulates the signed 32-bit difference into a static `int64_t` ns counter (:18-29). Both `data` and `timestamp` are set to that value.
-- Resolution: 1 µs. Wrap-safe as long as it is called at least every ~35 min (2^31 µs). `Core::NOW()` calls it constantly.
+- Resolution: 1 µs. Wrap-safe as long as it is called at least every ~35 min (2^31 µs). `Core::NowNs()` calls it constantly.
 - Re-entrancy: a plain `static bool lock` (:15). If the lock is held (an ISR interrupted a task-context call), the call computes a value without updating the state.
 - Returns a reference to a shared static `Timestamped`, which an ISR call can overwrite while the caller reads it.
 
@@ -167,8 +167,8 @@ void loop() { Core::getSystemScheduler().tick(); }
 | Severity | Location | Issue | Impact |
 |---|---|---|---|
 | High | include/ExVectrArduinoPlatform/interrupt_event.hpp:17-25 | A non-inline global `interruptEvent` and the function `pinInterruptHandler()` are defined in a header. | A multiple-definition link error as soon as a second .cpp includes it. Today only main.cpp does. |
-| Med | include/ExVectrArduinoPlatform/interrupt_event.hpp:17,46-52 | A single global slot (not `volatile`); pull-up and RISING edge are hard-coded; the callback runs in ISR context. | Only one pin interrupt is possible. The callback (MPU driver) must be ISR-safe, but Core topics, print and `NOW()` are not. |
-| Med | src/time_implementation.cpp:13-34 | The `lock` flag is a plain `static bool` (not atomic or volatile). The function returns a reference to a shared static that the ISR path also writes (:21). | A 64-bit time value can be torn or overwritten mid-read when `NOW()` is called from both an ISR (e.g. the MPU interrupt) and a task. Time stays monotonic only if no call gap exceeds ~35 min. |
+| Med | include/ExVectrArduinoPlatform/interrupt_event.hpp:17,46-52 | A single global slot (not `volatile`); pull-up and RISING edge are hard-coded; the callback runs in ISR context. | Only one pin interrupt is possible. The callback (MPU driver) must be ISR-safe, but Core topics, print and `NowNs()` are not. |
+| Med | src/time_implementation.cpp:13-34 | The `lock` flag is a plain `static bool` (not atomic or volatile). The function returns a reference to a shared static that the ISR path also writes (:21). | A 64-bit time value can be torn or overwritten mid-read when `NowNs()` is called from both an ISR (e.g. the MPU interrupt) and a task. Time stays monotonic only if no call gap exceeds ~35 min. |
 | Med | src/bus_spi.cpp:178-179 | `writeRead` copies `max(wn, rn)` bytes from `writeBuf`. | Reads past the end of `writeBuf` when `readSize > writeSize`. |
 | Med | src/bus_spi.cpp:172-205 | `writeRead` is a single full-duplex transfer; `readBuf` receives bytes clocked during the write. | The header doc says "writes then reads". Callers must offset by `writeSize` themselves. |
 | Med | include/ExVectrArduinoPlatform/bus_spi.hpp:28-30 | Defaults are LSB first, 100 kHz, mode 0. | A driver that forgets `MSB_FIRST` silently gets bit-reversed data. |

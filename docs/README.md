@@ -29,6 +29,20 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [ExVectrPackets](libs/ExVectrPackets.md) | Fixed-point telemetry packet formats |
 | [ExVectrData](libs/ExVectrData.md) | Memory backends and key/value memory manager |
 
+## Pinned library versions (feature/exvectrcore-update, 2026-11-19)
+
+| Library | Pin | Base | Note |
+|---|---|---|---|
+| ExVectrCore | 6fe3f8e | 18bbb09 (`origin/Development`) | `NowNs()` API, plus a local `ListBuffer` overload fix (not yet on Core `Development`) |
+| ExVectrSensor | bfe9b4e | 6bd4b01 | NowNs port only. `origin/Development` 86a35a3 is **not** taken (functional rewrite, still uses `NOW()`) |
+| ExVectrDSP | fc99b99 | 3e1f070 | NowNs port only. `origin/Development` 402831f (position KF rewrite) is **not** taken |
+| ExVectrControl | 8d6efab | 084bea1 | NowNs port only |
+| ExVectrActuator | 4d3c87a | db98892 | NowNs port only |
+| ExVectrNetwork | 7072cfe | cabddce | Old stack, NowNs port only. The new stack (33241a8) is a later task |
+| ExVectrPackets, ExVectrMath, ExVectrHAL, ExVectrArduinoPlatform, ExVectrData | unchanged | | No change needed |
+
+The port commits are local feature-branch commits until the main session pushes them. See [development-workflow.md](development-workflow.md#dependency-updates-and-bench-re-verification) for the bench re-verification checklist that belongs to this update.
+
 ## Doc conventions
 
 - Library docs share one structure: Purpose · Dependencies · Key concepts & API · Usage · Conventions · How this project uses it · Known issues · Extending.

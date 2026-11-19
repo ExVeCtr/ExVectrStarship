@@ -62,6 +62,17 @@ The parent repo pins each library to an exact commit. That pin, not the library'
 - **No uncommitted changes inside submodules** when committing the parent: `git status` must not show ` m lib/...` (lowercase m = dirty submodule work tree). The parent cannot record those changes; the flown firmware would differ from what is in git.
 - Library default branches: most use `master`; `ExVectrDSP` and `ExVectrPackets` use `main`. `Development` exists in all.
 
+## Dependency updates and bench re-verification
+
+A library or core-API update that is meant to change no behaviour (for example the ExVectrCore `NOW()` -> `NowNs()` update, branch `feature/exvectrcore-update`) is still a flight-software change. Keep it reviewable: one library commit per library, parent commits that separate library pins from `src/` changes, and no other edits mixed in. The build alone does not prove identical behaviour, so before merging into `Development` the user re-verifies on the bench:
+
+1. **Startup sequence:** power on, Startup -> Ready after every input (GNSS, gyro, mag, baro, both estimators) has published; display and serial log as before; Startup actuator test (`beginActuatorTest`) traces the same circle then twist with motors held off.
+2. **Simulation mission:** `SimulationMode` (0xA9), Arm, `MissionBegin`; the full waypoint mission passes through Initialisation, Startup, Running and the same phases at the same times as the previous firmware (compare phase timestamps in the log), and RTH on end. Repeat for the bellyflop/freefall/RTH missions that are used for flight. Compare mission time (`missionTime`, ns) in telemetry: negative countdown, then monotonic.
+3. **Telemetry:** all packets on the same ports at the same rates; `timestamp` and `missionTime` fields advance in real time (a 1 s wall-clock interval reads 1 s in the data); attitude, position and sensor values unchanged on a stationary vehicle.
+4. **Link-loss failsafe:** with the ground station silent for more than 2 s the vehicle enters Failure (`radioConnectionLoss`) and actuators are gated off exactly as before; check also the 0.5 s sensor-age failure (unplug a sensor) and the 2.5 s magnetometer timeout switching a running mission to RTH.
+5. **Telecommands:** Arm/Disarm, MissionBegin/MissionAbort, SystemReset (0xC5), SimulationMode, CalibStart/CalibApply/Save each behave as before.
+6. **Timing:** no new scheduler misses or serial warnings; the 10 Hz safety task and the control loop keep their rates (watch the scheduler statistics if enabled).
+
 ## Flight release (Development → master)
 
 Run this before a test flight. Claude: use the `flight-release` skill.
