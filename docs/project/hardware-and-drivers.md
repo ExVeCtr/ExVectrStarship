@@ -1,8 +1,8 @@
 # Hardware and Drivers
 
-Pinout, vehicle constants and the application-level drivers in `src/` (TVC, flaps, SX1280 datalink, u-blox GNSS, VL53L0X), plus memory keys, telemetry and telecommand wire formats.
+Pinout, vehicle constants and the application-level drivers in `src/` (TVC, flaps, ExVectrNetwork links, u-blox GNSS, VL53L0X), plus memory keys, telemetry and telecommand wire formats.
 
-Last verified against commit: b073d07
+Last verified against commit: b073d07 (sections 1, 5, 9, 10 and the Known issues re-verified on `feature/network-migration`, 2026-11-19)
 
 Target: Teensy 4.0 (`platformio.ini` `[env:teensy40]`), little-endian. Frames and units follow [../codebase-structure.md](../codebase-structure.md): NWU reference, body +Z = thrust axis (nose), SI units, time in ns. Library internals (PWM_Output, controllers, KF) are documented in [../libs/](../libs/). This file covers only how `src/` uses them.
 
@@ -11,7 +11,7 @@ Vendored third-party code (gitignored, not ExVectr):
 | Folder | What it is |
 |---|---|
 | `src/gnssdriver/` | SparkFun u-blox GNSS Arduino Library v2.2.27 (`SFE_UBLOX_GNSS`), used by `ublox_gnss.*`. |
-| `src/sx12xxAL/` | StuartsProjects SX12XX-LoRa library (`SX128XLT`), "modified for use with ExVectr" per its ReadMe, used by `datalink_sx1280.*`. |
+| `src/sx12xxAL/` | StuartsProjects SX12XX-LoRa library (`SX128XLT`). **No longer used** (the on-board SX1280 datalink was removed in T9a); excluded from the build by `build_src_filter` in `platformio.ini`. The folder can be deleted locally. |
 
 ---
 
@@ -34,18 +34,15 @@ Sources: `src/starship_hardware.h` (actuators, vehicle constants), `src/board_v_
 | 2 | `MPU9250_INT_PIN` | MPU9250 data-ready interrupt | `mpuIntHandler` |
 | 3 | `MPU9250_NCS_PIN` | MPU9250 SPI chip select | `spiMPU` (SPI) |
 | 6 | `BME280_NCS_PIN` | BME280 SPI CS (**unused**: the BME280 runs on I2C 0x76, main.cpp:79) | — |
-| 16 | `QMC5883L_INT_PIN` | Magnetometer interrupt (**unused**) | — |
-| 9 | `SX1280_NSS_PIN` | SX1280 SPI CS | `datalinkSX1280` |
-| 5 | `SX1280_NRESET_PIN` | SX1280 reset | 〃 |
-| 15 | `SX1280_RFBUSY_PIN` | SX1280 BUSY | 〃 |
-| 14 | `SX1280_DIO1_PIN` | SX1280 DIO1 (IRQ, polled) | 〃 |
-| 10 | `SX1280_RXEN_PIN` | RF switch RX enable | 〃. Also set HIGH in `initialiseHardware` (main.cpp:1744-1745). |
-| 17 | `SX1280_TXEN_PIN` | RF switch TX enable | 〃. Also set LOW (main.cpp:1747-1748). |
+| 9, 5, 15, 14, 10 | `SX1280_NSS_PIN`, `_NRESET_PIN`, `_RFBUSY_PIN`, `_DIO1_PIN`, `_RXEN_PIN` | Old on-board SX1280 (CS, reset, BUSY, DIO1, RX enable) | **Unused** since T9a (defines kept in `board_v_1_0.h`). The pins are no longer initialised. |
+| 17 | `SX1280_TXEN_PIN` | Old SX1280 TX enable | **Now TX4** (UART to the RX module) |
+| 16 | `QMC5883L_INT_PIN` | Magnetometer interrupt (unused in software) | **Now RX4** (UART from the RX module) |
 | 4 | `RGBLED_PIN` | RGB LED (**unused**) | — |
 | 26 | `INPUT_VOLTAGE_ADC_PIN` | Battery ADC, factor 1.0 (**unused**) | — |
+| Serial4 | `RX_MODULE_SERIALPORT` | ExVectrLink RX module, ExVectrNetwork stream link, 460800 8N1 (pins 16/17, **wiring to be confirmed**) | `vehicleComms` (section 5) |
 | Serial5 | `NEO_M8Q_SERIALPORT` (define unused; main.cpp:82 hard-codes `Serial5`) | u-blox GNSS UART | `gnss` |
 
-Buses (main.cpp:1729-1732): `SPI` for the MPU9250 and SX1280. `Wire` at 100 kHz for the BME280 (0x76), QMC5883 (0x0D), VL53L0X (0x29) and SSD1306 128×32 OLED (0x3C). The VL53L0X driver requests 400 kHz on its bus device (`vl53l0x_driver.cpp:72-73`), and that bus is the same `Wire`.
+Buses (`initialiseHardware`, main.cpp): `SPI` for the MPU9250. `Wire` at 100 kHz for the BME280 (0x76), QMC5883 (0x0D), VL53L0X (0x29) and SSD1306 128×32 OLED (0x3C). The VL53L0X driver requests 400 kHz on its bus device (`vl53l0x_driver.cpp:72-73`), and that bus is the same `Wire`.
 
 ## 2. Vehicle constants (`starship_hardware.h`)
 
@@ -76,7 +73,7 @@ Maps the attitude controller's force/torque demand to four exhaust vanes (XP, XN
 | Direction | Topic | Format |
 |---|---|---|
 | in | `setTVCInputTopic(controlAttitudeTvc.getTvcTopic())` (main.cpp:1961) | `[Fx, Fy, Fz, τz]`: force in N (body), roll torque in N·m |
-| out | `getTVCActualThrustTopic()` | `[X, Y, Z, T]`: modelled achieved thrust vector (N, body) and roll term. Consumed by `bodySimulator`, `CommsSystemStateTask` and debug print. |
+| out | `getTVCActualThrustTopic()` | `[X, Y, Z, T]`: modelled achieved thrust vector (N, body) and roll term. Consumed by `bodySimulator` and the telemetry task (`ACTUATORS`). |
 
 **Mixing (`taskThread`, `.cpp:61-290`):**
 
@@ -129,55 +126,35 @@ Drives four flap servos from `ControlAttitudeFlapSetting` (`lib/ExVectrControl/i
 
 ---
 
-## 5. `Datalink_SX1280` (`src/datalink_sx1280.hpp/.cpp`)
+## 5. ExVectrNetwork links (`src/comms/`)
 
-Implements `Net::Datalink_Interface` on an SX1280 at 2.4 GHz for `Net::NetworkNode networkNode(1, datalinkSX1280, 2 s)` (main.cpp:131): vehicle node address 1, ground station node 0, peer timeout 2 s.
+Since the network migration (T9a) the vehicle has **no on-board radio**. `Datalink_SX1280` and the on-board SX1280 are gone. The vehicle talks ExVectrNetwork (library doc: [../libs/ExVectrNetwork.md](../libs/ExVectrNetwork.md); wire format and design: workspace `docs/network-design.md`) over two byte-stream links:
 
-**Radio configuration (`taskInit`, `.cpp:39-71`):**
-
-| Parameter | Value |
-|---|---|
-| Modem | **LoRa** (FLRC is not used) |
-| Frequency | 2 445 000 000 Hz, offset 0 (`.cpp:62`) |
-| SF / BW / CR | SF5 / 1600 kHz / 4:6 |
-| Packet params (library `setupLoRa`) | 12-symbol preamble, explicit (variable-length) header, max 255, LoRa CRC on, IQ normal |
-| Regulator | LDO. `setHighSensitivity()` |
-| TX power | 12 dBm (`transmit(..., 12, NO_WAIT)`, `.cpp:353`) |
-| RF switch | `lora_.begin(..., RX_EN_PIN_, TX_EN_PIN_, DEVICE_SX1280)`. The library toggles RXEN (10) and TXEN (17) itself. The pins start LOW. |
-
-**Framing:** upper layers hand frames of ≤ `dataLinkMaxFrameLength = 200` B to `dataframeReceiveFunc`. These are queued as `[len][bytes…]` in a 1000 B ring (`transmitBuffer_`); a full buffer drops the frame. One radio packet packs whole frames while `size + len + 2 ≤ 250` (`.cpp:301-309`) and appends a 1-byte **additive checksum** over all preceding bytes:
-
-```
-| len0 | frame0 ... | len1 | frame1 ... | ... | sum8 |
-```
-
-RX accepts a packet only if the IRQ shows `RX_DONE && HEADER_VALID && !CRC_ERROR` and the sum8 matches. It then splits the packet into frames and publishes each one on `receiveTopic_`.
-
-**Half-duplex state machine** (polled: `taskCheck` releases the 10 ms task immediately when DIO1 is high or TX is pending while Idle):
-
-| State | Entered when | Leaves on |
-|---|---|---|
-| Idle | IRQ done, error or timeout | Immediately `beginReceive()` → Receiving (single RX, timeout 0) |
-| Receiving | `beginReceive` | RX_DONE, error or timeout → Idle. Re-armed every 500 ms. TX pending and ≥ 1 ms since the last TX end → ActivityDetection. |
-| ActivityDetection | `startCAD(LORA_CAD_08_SYMBOL)` (`.cpp:243`), listen-before-talk | `CAD_DONE` → transmit → Transmitting. `CAD_ACTIVITY_DETECTED` → `beginReceive(1000)`. 500 ms timeout → Idle. |
-| ChannelBusy | `PREAMBLE_DETECTED` | RX completes, or 500 ms → Idle |
-| Transmitting | after `transmit()` | `TX_DONE`, `TX_TIMEOUT`, or 500 ms → Idle |
-
-RSSI and SNR of the last packet: `lastPacketRSSI()`, `lastPacketSNR()`.
-
-**Network ports in use** (`Net::TransportTopic(port, dst = UINT16_MAX, networkNode, topic)`, main.cpp:145-161). All are bidirectional (`noReceive = false`).
-
-| Port | Type | Direction (by use) | Source and rate |
+| Link | Port | Settings | Peer |
 |---|---|---|---|
-| 10 | `Net::PacketAttitude` | TX | `attitudeTelemetryCallback`, ≤ 5 Hz (main.cpp:189-206) |
-| 11 | `Net::PacketPosition` | TX | `positionTelemetryCallback`, ≤ 10 Hz (main.cpp:225-243) |
-| 12 | `Net::PacketGPS` | TX | `gnssTelemetryCallback`, ≤ 1 Hz (main.cpp:262-274) |
-| 50 | `VehicleState` | TX | `CommsSystemStateTask`, 5 Hz (main.cpp:1343-1378) |
-| 51 | `MissionState` | TX | `CommsSystemStateTask`, 5 Hz (main.cpp:1385-1389) |
-| 100 | `uint8_t` connection counter | TX | `DisplayTask`, 10 Hz (main.cpp:1559). **Only if the OLED init succeeds**; otherwise the task removes itself (main.cpp:1424-1427). |
-| 1000 | `Telecommand` | RX | → `telecommandTopic` → safety task |
+| USB | `Serial` (Teensy USB CDC) | baud ignored | ground station (node 0) on the bench |
+| UART | `RX_MODULE_SERIALPORT` = **Serial4** (pin 16 RX4, pin 17 TX4), `starship_hardware.h` | **460800 8N1**, extra buffers 1024 B RX / 512 B TX (`addMemoryFor*`) | ExVectrLink RX module (node 3), router to the TX module (node 2) and the ground station over the air |
 
-The `Net::Packet*` layouts belong to ExVectrPackets ([../libs/ExVectrPackets.md](../libs/ExVectrPackets.md)).
+**USB Serial carries only stream frames** (`COBS(0x01 ‖ frame ‖ CRC-16) ‖ 0x00`). Console text is never printed to it: the platform console is disabled with `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (ExVectrArduinoPlatform), and Core print output (`printM/D/W/E`, `LOG_MSG`) is collected into lines and sent as `LOG_TEXT` (port 0x02) on USB only (`LogTextQueue`: 8 lines of up to 200 characters, at most 4 lines per tick, overflow drops lines). The old `DEBUG_TELEMETRY_SERIAL` prints are removed: their content is in the USB telemetry set. Do not add `Serial.print` anywhere (`CalibrationTesting`, not instantiated, and the u-blox `usbPassthrough_`, off, still touch `Serial`).
+
+**Structure:**
+- `VehicleNetwork` (`vehicle_network.hpp/.cpp`, platform-free, host-tested): `StreamFrameLink<2048>` (USB) and `StreamFrameLink<1024>` (UART); **two `Node`s, both address 1**, end nodes (never forward), one per link, so each link gets its own telemetry set and rates; one shared `PortMux<2>` (a frame that arrives on both links is delivered once). UART egress filter: ports >= 0x80 dropped.
+- `VehicleComms` (`vehicle_comms.hpp/.cpp`): a `Core::Task_Periodic` at **100 Hz, priority 50** (below all control tasks, 100-110). Per tick: read both links, heartbeats, sample the vehicle (`TelemetryProvider` in main.cpp: latest-value subscribers and getters, read-only), queue the telemetry due on this tick, push bytes out.
+- `telemetry_mapping.hpp/.cpp` (pure, host-tested): snapshot -> packets, flight-software bit fields, legacy telecommand codec.
+- The `VehicleComms` object (links, rings, nodes, log queue, UART buffers: about 10 KB) is in **DMAMEM** (RAM2).
+
+**Constant cost:** every tick builds and encodes the same packets whatever is connected. Writes are bounded by `availableForWrite()` and never block (the Teensy USB write would otherwise wait up to 120 ms for a host that does not read). With nothing draining a link its TX ring fills and further frames are dropped (`stats.txDropped`); encoding happens before that check. Telemetry is no longer produced inside the estimator topic callbacks (the old 5/10/1 Hz attitude, position and GNSS callbacks ran in the EKF/KF publish context): the control path does less work than before.
+
+**Heartbeats:** each node sends the vehicle heartbeat (role 1, schema hash `Packets::kSchemaHash`) at 1 Hz on its link. Heartbeats and `LINK_STATS` of the modules are informational: they fill the node table and the `INCOMPATIBLE` flag (a present node with another network version or schema hash), nothing else.
+
+**Ground-station presence and `radioConnectionLoss`:** `VehicleComms::isGroundStationPresent()` is true while any valid frame (heartbeat or data) from node 0 arrived on USB or UART within **2 s** (`presenceTimeoutNs`). `checkForFailures` uses it exactly where it used `NetworkNode::isNodeReachable(0)` (old timeout 2 s). Consequences on the new topology:
+- **USB (bench):** the ground station's 1 Hz heartbeat keeps node 0 present, as the old radio heartbeat did.
+- **Radio path:** the TX and RX modules drop node 0 heartbeats (and `RC_STATE`) before the vehicle, by design. Only node 0 *data* frames reach the vehicle over the radio (for example `REQUEST`, or the temporary telecommand). Until T9b, a ground station connected only through the radio must send such data at least every 2 s, or the vehicle enters Failure (`radioConnectionLoss`) after initialisation. Frames from nodes 2 and 3 never count.
+- T9b replaces this with the `RC_STATE` control-source timeout.
+
+**Port table:** [../codebase-structure.md](../codebase-structure.md#radio-and-usb-network).
+
+**Hardware note:** Serial4 was chosen because both pins are electrically safe on the existing board: pin 17 was the SX1280 `TXEN` output (the Teensy already drove it), pin 16 the unused QMC5883 interrupt (input). Serial3 (pins 14/15) would drive the SX1280 `DIO1` output if the old module is still fitted. **The wiring to the RX module must be confirmed on the bench** (Known issues).
 
 ---
 
@@ -236,49 +213,80 @@ Applied as `TopicCoordTransform::setTransform(calib.cov * transform, calib.val)`
 
 ---
 
-## 9. Telemetry structs (`src/telemetry.hpp`)
+## 9. Telemetry: generated packets (`src/comms/telemetry_mapping.cpp`)
 
-All structs are `__attribute__((packed))`, little-endian, and sent raw by `TransportTopic`.
+The packets are the generated ExVectrPackets classes (schema hash 0x3AFA3CCE, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
 
-### `VehicleState`: 27 bytes, port 50
+**Sets and rates** (100 Hz tick, rates from the generated `kUsbRateHz` / `kAirRateHz`):
 
-| Off | Size | Field | Encoding (filled at main.cpp:1360-1377) |
-|---|---|---|---|
-| 0 | 1 | `mode` | `VehicleMode`: 0 Startup, 1 SensorInit, 2 SensorCalib, 3 Ready, 4 Running, 5 Failure |
-| 1 | 1 | `sensoryState.gnss` | `TelemetrySensor`: 0 Init, 1 Calib, 2 Ready, 3 Failure |
-| 2 | 1 | `sensoryState.imu` | 〃 |
-| 3 | 1 | `sensoryState.baro` | 〃 |
-| 4 | 1 | `sensoryState.mag` | 〃 |
-| 5 | 1 | `sensoryState.attitudeKF` | 〃 |
-| 6 | 1 | `sensoryState.positionKF` | 〃 |
-| 7 | 1 | `failureState.sensorFailure` | bool |
-| 8 | 1 | `failureState.attitudeFailure` | bool (never set) |
-| 9 | 1 | `failureState.positionFailure` | bool (never set) |
-| 10 | 1 | `failureState.positionOutOfBounds` | bool |
-| 11 | 1 | `failureState.attitudeOutOfBounds` | bool |
-| 12 | 1 | `failureState.radioConnectionLoss` | bool |
-| 13 | 1 | `simulationModeEnabled` | bool |
-| 14 | 1 | `armed` | bool |
-| 15 | 2 | `tvcThrustX` | int16 = `actual.X / 50 · 32767` (N) |
-| 17 | 2 | `tvcThrustY` | int16, same scale |
-| 19 | 2 | `tvcThrustZ` | int16, same scale |
-| 21 | 2 | `tvcTorque` | int16 = `actual.T / 50 · 32767` |
-| 23 | 2 | `groundDistance` | int16 = `g(1) / 2 · 32767` (m, full scale 2 m) |
-| 25 | 2 | `groundDistanceCov` | int16 = `P(1,1) · 32767` (full scale 1) |
+| Port | Packet | USB | UART (radio set) | dst |
+|---|---|---|---|---|
+| 0x80 | `POSE` | 100 Hz | – | 0 |
+| 0x90 | `IMU_RAW` | 100 Hz | – | 0 |
+| 0x81 | `ACTUATORS` | 50 Hz | – | 0 |
+| 0x20 | `VEHICLE_STATUS` | 20 Hz | 5 Hz | 0 |
+| 0x82 | `MISSION` | 20 Hz | – | 0 |
+| 0x91 | `ESTIMATOR` | 20 Hz | – | 0 |
+| 0x83 | `GNSS` | 5 Hz | – | 0 |
+| 0x92 | `TASK_TIMING` | 5 Hz | – | 0 |
+| 0x03 | `HANDSET_TELEM` | 2 Hz | 2 Hz | 0xFF |
+| 0x21 | `AIR_POSE` | – | 10 Hz | 0 |
+| 0x02 | `LOG_TEXT` | as printed | – | 0 |
+| – | heartbeat | 1 Hz | 1 Hz | 0xFF |
 
-### `MissionState`: 35 bytes, port 51
+UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB about 18 kB/s plus log text.
 
-| Off | Size | Field | Notes |
-|---|---|---|---|
-| 0 | 24 | `float positionSetpoint[6]` | `[Vx,Vy,Vz,Px,Py,Pz]`, ref frame |
-| 24 | 1 | `missionMode` | `MissionMode`: 0 Idle, 1 Initialisation, 2 Startup, 3 Running, 4 Finished |
-| 25 | 8 | `int64 missionTime` | **ns** (`Time_Source::Now()`). Negative during the countdown. |
-| 33 | 1 | `missionIndex` | Effectively always 0 (see [missions.md](missions.md) §6.2) |
-| 34 | 1 | `missionPhase` | `MissionPhase`: 0 Idle, 1 Hover, 2 Ascent, 3 Descent, 4 Deceleration, 5 RTH, 6 Landing, 7 Completed |
+**Sources** (`TelemetryProvider`, main.cpp; read-only, in the telemetry task): attitude and position from the topic switches (estimators, or the body simulator in simulation mode, as everything downstream sees them), ground distance from the ground topic switch, GNSS from `gnss`, flap angles from `trueFlapSettingTopic`, TVC from `StarshipTVC::getTVCActualThrustTopic()`, raw sensors from the MPU9250, QMC5883 and BME280 topics, standard deviations from the estimators' covariances, mode/mission/failures from `VehicleSafetyAndControlTask`.
 
-## 10. Telecommands (`src/telecommand.hpp`), port 1000
+**Field mapping:**
 
-### `Telecommand`: 8 bytes, packed
+| Packet | Field | From |
+|---|---|---|
+| all | `t_us` | `(NowNs() / 1000) mod 2^32` |
+| `VEHICLE_STATUS` | `t_ns` | `NowNs()` |
+| | `mode` | `VehicleMode`: 0 Startup, 1 SensorInit, 2 SensorCalib, 3 Ready, 4 Running, 5 Failure |
+| | `mission_mode`, `mission_phase` | `MissionMode` (0 Idle … 4 Finished), `MissionPhase` (0 Idle … 7 Completed) |
+| | `ctrl_source` | 0 (NONE): no RC control source until T9b |
+| | `flags` | ARMED = `vehicleArmed_`; SIMULATION; MOTORS_ENABLED = `StarshipTVC` motors enabled **and** actuators enabled (the existing logic; there is no hard motor gate before T9b); GS_PRESENT = ground-station presence (above); INCOMPATIBLE; FAILSAFE = mode is Failure (actuators cut) |
+| | `failure_bits` | bit 0 sensor, 1 attitude, 2 position, 3 position out of bounds, 4 attitude out of bounds, 5 radio connection loss |
+| | `sensor_state` | 2 bits per sensor, `TelemetrySensor` (0 Init, 1 Calib, 2 Ready, 3 Failure): bits 0-1 GNSS, 2-3 IMU, 4-5 baro, 6-7 mag, 8-9 attitude KF, 10-11 position KF |
+| | `last_req_id`, `last_req_status`, `rc_age` | 0, 0, NaN (no `REQUEST` / `RC_STATE` until T9b) |
+| `POSE` | `omega`, `q`, `vel`, `pos` | attitude state `[ω, q]`, position state `[V, P]` (f32) |
+| `AIR_POSE` | `q`, `pos` (0.1 m, ±3276 m), `vel` (0.01 m/s, ±327 m/s) | as `POSE`, fixed point, saturating |
+| `ACTUATORS` | `flaps` | true flap angles `[TL, TR, BL, BR]`, rad |
+| | `tvc` | `[atan2(Fx, Fz), atan2(Fy, Fz)]` of the actual thrust vector (body frame), rad |
+| | `thrust` | `|[Fx, Fy, Fz]|`, N. The roll torque `T` has no field (Known issues) |
+| | `ground_distance` | ground topic switch `data(1)` (KF state `[rate, distance]`), m; NaN before the first sample |
+| `MISSION` | `setpoint_pos`, `setpoint_vel` | `positionSetpoint[3..5]`, `[0..2]` |
+| | `mission_time` | `missionTime` ns -> s (1 ms wire resolution; negative in the countdown) |
+| | `index`, `phase` | `MissionState.missionIndex` (always 0, see missions.md), current `MissionPhase` |
+| `GNSS` | `latitude`, `longitude` | rad (f64) |
+| | `altitude`, `vel` | m above the ellipsoid; NWU m/s |
+| | `h_acc`, `v_acc`, `s_acc` | the driver's `positionCov(0)`, `positionCov(2)`, `velocityCov(0)`: 1σ in m, m, m/s |
+| | `fix_type` | 3 if `positionValid` (>= 5 satellites), else 0 |
+| `HANDSET_TELEM` | `flags` | armed, failure (mode Failure), simulation, GNSS fix |
+| | `mode_text` | `INIT` (Startup, SensorInit), `CALIB`, `RDY` / `ARMD`, `FAIL`; in Running by phase: `HOVR`, `ASCN`, `DESC`, `DECL`, `RTH`, `LAND`, `DONE`, else `RUN`. `" S"` is appended in simulation mode (for example `HOVR S`) |
+| | `latitude`, `longitude`, `satellites` | GNSS |
+| | `ground_speed`, `heading` | from the estimated velocity: `|[Vx, Vy]|`, course over ground clockwise from North |
+| | `altitude`, `vertical_speed` | estimated `Pz`, `Vz` (above the reference) |
+| | `roll`, `pitch`, `yaw` | ZYX Euler angles of q (NWU; yaw counterclockwise about +Z, 0 = body X North) |
+| | `battery` | NaN -> 0 = unknown (no battery monitoring) |
+| `IMU_RAW` | `gyro`, `accel` | MPU9250 driver outputs, sensor frame (before calibration and the body transform) |
+| | `mag` | QMC5883 gauss × 1e-4 -> T, sensor frame |
+| | `pressure`, `temperature` | BME280 Pa; MPU9250 °C + 273.15 -> K |
+| `ESTIMATOR` | `att_std` | `2·sqrt(P_q)` of the attitude EKF quaternion vector part (small angle), rad |
+| | `vel_std`, `pos_std` | `sqrt` of the position-KF covariance diagonal |
+| `TASK_TIMING` | `count`, `avg` | first 8 scheduler tasks in registration order, average run time (EMA), s; `max` NaN |
+
+## 10. Telecommands (`src/telecommand.hpp`): TEMPORARY adapter on port 0x7F
+
+**Temporary (network migration T9a, removed in T9b).** The new command path (`RC_STATE` mapping, control-source arbitration, `REQUEST`) is task T9b and needs the user's approval. Until then the old `Telecommand` is carried unchanged through the new stack, so the vehicle stays commandable:
+
+- **Port 0x7F** (`LegacyTelecommandPacket::kPort`, `src/comms/telemetry_mapping.hpp`). The old port 1000 does not fit the 8-bit port field. 0x7F is below 0x80, so it passes the RX and TX modules' filters and works over USB and over the radio. It is **not in the ExVectrPackets schema** (the ground station has no encoder for it yet).
+- Accepted only from **node 0** (the ground station, the only sender on the old link), exactly **8 bytes**, on either link. Frames from other nodes are counted and dropped.
+- Delivered once even if it arrives on both links (shared sequence filter), then published on `telecommandTopic` and handled by `VehicleSafetyAndControlTask::handleTelecommands` exactly as before (same struct, same handler, newest one per 100 ms tick).
+
+### `Telecommand`: 8 bytes, explicit little-endian (identical to the old packed struct)
 
 | Off | Size | Field |
 |---|---|---|
@@ -287,7 +295,9 @@ All structs are `__attribute__((packed))`, little-endian, and sent raw by `Trans
 | 2 | 2 | `int16 paramInt` |
 | 4 | 4 | `float paramFloat` (unused by every handler) |
 
-### Command list (handler: `VehicleSafetyAndControlTask::handleTelecommands`, main.cpp:728-978)
+Network frame from the ground station: CTRL `0x48` (DATA, QoS EVENT, not latest), TTL 3, DST 1, SRC 0, PORT 0x7F, SEQ (+1 per command), then the 8 bytes.
+
+### Command list (handler: `VehicleSafetyAndControlTask::handleTelecommands`, main.cpp:537-787)
 
 Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 
@@ -304,7 +314,7 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 | 8 | `MissionSelect` | — | mode `Ready` | No-op (log only). |
 | 9 | `MissionAbort` | none | mode `Running` | Mission mode `Running`: switch to RTH. Else: actuators off, reset mission, clear failures. |
 
-There is no authentication beyond the three magic values. Every port is also receivable, so a ground node can inject data on ports 10-100. Those topics feed only telemetry and debug paths today.
+There is no authentication beyond the three magic values and the source address 0 (which any node on a link can claim). The vehicle subscribes to no other port: telemetry ports are send-only now.
 
 ---
 
@@ -356,7 +366,7 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 - **Servo [code]:** STANDARD PWM, value 0..1 maps to 1–2 ms, 90° of travel mapped over the full range; trim offsets all zero (`starship_flaps.cpp:146-150`). Slew limited to 200°/s in the simulated "true" position (`:60-63`).
 - **Controller mixing [code]** (Stabilize mode, `control_attitude_flaps.cpp:150-167`): with controller output `u = [azimuth+rates (x), pitch+rates (y), roll rate (z)]`:
   TL = neutral + (−u0 − u1 + u2)·k, TR = neutral + (+u0 − u1 − u2)·k, BL = neutral + (+u0 + u1 + u2)·k, BR = neutral + (−u0 + u1 − u2)·k (neutral top / bottom set by `flapTopNeutralAngle_Rad_` / `flapBottomNeutralAngle_Rad_`).
-- **Telemetry [code]:** **flap angles are not on the radio link.** `VehicleState` (port 50) carries only TVC thrust and ground distance, and no other packet carries flap data. The only report is the USB debug print `Flap Debug [TL, TR, BL, BR]` in **radians, unscaled floats**, of the simulated true position, when `DEBUG_TELEMETRY_SERIAL` is defined (`main.cpp:278-287`). A ground-station 3D model therefore has to either infer flap angles from the mission/phase, or a new packet has to be added (cross-project change, not done here).
+- **Telemetry [code]:** the true flap angles `[TL, TR, BL, BR]` (rad) are in `ACTUATORS` (port 0x81, 50 Hz) on **USB only**. They are not in the radio set ("bare minimum on the radio", section 9).
 
 ### TVC vanes and motors
 
@@ -408,7 +418,7 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 3. Real flap hinge location, fold direction at 90° (toward back or belly), and dimensions.
 4. IMU and magnetometer mounting, and the EEPROM transform/calibration matrices.
 5. Vane geometry and physical rotation sign per servo, motor spin direction viewpoint, CoM position and vehicle size.
-6. Whether flap angles should be sent over radio (not currently telemetered).
+6. Whether flap angles should be sent over radio (today USB only, `ACTUATORS`).
 
 ---
 
@@ -421,9 +431,6 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Medium | `starship_tvc.cpp:27`, `:36` | TVC output is event-driven on controller publications only. | If the controller stops publishing, the servo, motor, enable and test state freezes at the last values. Motors keep their last command. |
 | Medium | `starship_tvc.cpp:191-198` | Trim (up to 5°/45° = 0.11), roll twist (±0.5) and full deflection (±1) are summed with no prioritisation. PWM clips at 0/1. | Pitch/yaw authority is lost asymmetrically under roll demand. Saturation is not reported to the controller (the "actual" topic does not model it). |
 | Medium | `starship_tvc.cpp:116-119` vs `:76-92` | Vane angles use the unclamped force direction, while the "actual" topic uses the 3°-cone-clamped vector. The rate-limit model (600°/s) is not applied to the real servos. | Simulator and telemetry thrust direction can differ from what the vanes do near the limits. |
-| Medium | `datalink_sx1280.cpp:183-226` | CAD_DONE is always raised at the end of CAD, including when CAD_ACTIVITY_DETECTED is also set. Both branches run in the same pass, and the CAD_DONE branch transmits anyway. | Listen-before-talk is ineffective: the vehicle transmits over an active channel. |
-| Medium | `datalink_sx1280.cpp:239-243`, `:274` | Entering ActivityDetection does not update `channelBusyStart_`, so the 500 ms busy timeout usually fires in the same pass, and the state returns to Idle. CAD is re-issued on every pass until DIO1. | Busy-loop of CAD restarts. TX starts when a CAD_DONE happens to be seen. |
-| Medium | `datalink_sx1280.cpp:399-413` | The RX parser trusts `segLen` without checking it against `packetL`, protected only by an 8-bit additive sum (plus LoRa CRC). | Malformed or colliding packets can read past the buffer and publish garbage frames. |
 | Medium | `ublox_gnss.cpp:23-31`, `:37` | `positionCov` and `velocityCov` hold 1σ accuracies (m, m/s), not variances. Validity is only `numSats ≥ 5` with the fix-OK check disabled. | Wrong KF weighting unless the consumer knows it gets σ. A 2D or invalid fix with 5 satellites is accepted as valid. |
 | Medium | `vl53l0x_driver.cpp:834-856` | Range status is not checked. `cov = 0.15·range` is σ-like, not m². | Out-of-range readings (~8.19 m) are published. The KF window 0.4–1.5 m (main.cpp:1932) masks this today. |
 | Medium | `vl53l0x_driver.cpp:72-73`, main.cpp:1732 | The VL53L0X sets its I2C device to 400 kHz on the shared `Wire`, while main sets 100 kHz. | Whether the bus clock changes per transaction depends on the HAL. The BME280, QMC5883 and OLED may run at 400 kHz. |
@@ -431,13 +438,12 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Medium | `ublox_gnss.cpp:199` | `delay(1000)` (plus up to three blocking `begin()` attempts) inside `taskInit`. | Stalls the cooperative scheduler, including IMU processing, for at least 1 s at t ≈ 5 s. |
 | Low | `starship_flaps.hpp:37` | `FLAP_MIN_ANGLE = 15°` clamps the controller's 0° (full extension, used by `Upright`). | Flaps never fully extend. The true-flap topic shows 15°. |
 | Low | main.cpp:1848-1850 | Gyro bias hard-coded at boot overrides the stored calibration. | Stale bias when the IMU or temperature changes. The key 100 bias is silently ignored. |
-| Low | main.cpp:1375-1377 | `groundDistance` (full scale 2 m) and `groundDistanceCov` (full scale 1) overflow int16 when exceeded. Float → int16 out of range is undefined behaviour. | Garbage ground-distance telemetry above 2 m. |
-| Low | main.cpp:232-237 | Position telemetry `hAcc = sqrt(P33² + P44²)/1000`, `vAcc = P55/1000`. Variances are squared and scaled by 1/1000. | The hAcc and vAcc values in `PacketPosition` have no physical unit. |
-| Low | main.cpp:196-200 | `attitudeTelemetryCallback` prints a quaternion self-test line to Serial at 5 Hz, unconditionally (not under `DEBUG_TELEMETRY_SERIAL`). | Serial spam. |
-| Low | main.cpp:1424-1427, `:1559` | The connection counter (port 100) is published only by `DisplayTask`. | No connection counter if the OLED is absent. |
-| Low | `starship_tvc.hpp:118-122` | The doc says `T` is an "angle in radians", but it is the reconstructed roll torque. `VehicleState.tvcTorque` scales it as "50 N". | Misinterpretation of telemetry. |
 | Low | `starship_hardware.h:25-26`, `starship_tvc.hpp:92-94` | `TVC_SERVO_LIMIT` is unparenthesised. `TVC_ANGLE_FACTOR` is duplicated by the hard default `tvcFactor = 15`. | Changing the define does not change the TVC mixing. Macro expansion hazard. |
 | Low | `ublox_gnss.cpp:150-170` | Baud fallback messages are wrong ("15200", always "9600"). A failed 115200 reconfig returns without `setInitialised(false)`. | Misleading logs. The task may run unconfigured. |
-| Low | `datalink_sx1280.cpp:309`, `:351-360` | A zero-length queued frame is never dequeued. The "clear buffer" branch is unreachable because the checksum byte makes `bufferSize ≥ 1`. | A 1-byte packet is sent forever and the TX queue is stuck. |
 | Low | `telecommand.hpp:152`, `:156`, `:159` | Header comments disagree with the code: CalibStart duration, SystemReset leaving sim mode, MissionBegin "seconds in the future". | Operator and ground-software confusion. |
-| Info | `board_v_1_0.h` | BME280 SPI CS, QMC INT, RGB LED and battery ADC are defined but unused. There is no battery monitoring. | No low-voltage protection. |
+| High | `starship_hardware.h` `RX_MODULE_SERIALPORT` | The Teensy UART to the ExVectrLink RX module (Serial4, pins 16 RX / 17 TX) is chosen in software only; the physical wiring is not documented anywhere. | Must be confirmed on the bench before connecting the RX module (bench checklist in [../development-workflow.md](../development-workflow.md#network-migration-t9a-bench-checklist)). If the module is on other pins, change the define. |
+| High | main.cpp `checkForFailures`, section 5 | **TEMPORARY until T9b:** `radioConnectionLoss` = no valid frame from node 0 for 2 s on USB or UART. Over the radio path the modules drop node 0 heartbeats by design, so a ground station reached only by radio keeps the vehicle out of Failure only if it sends node 0 data (telecommand, `REQUEST`) at least every 2 s. The ground station has no telecommand encoder yet. | Over the radio alone the vehicle enters Failure after initialisation unless the ground station sends data. Bench use over USB behaves as before. T9b replaces it with the `RC_STATE` control-source timeout. |
+| Medium | section 10 | **TEMPORARY until T9b:** the legacy telecommand on port 0x7F is accepted from any frame claiming source 0 on either link, with only the three magic values as protection (as before on port 1000). It is not in the ExVectrPackets schema. | Same exposure as before; any device on USB or behind the RX module can command the vehicle. |
+| Low | section 9 | `ACTUATORS` has no field for the TVC roll torque `T`. | Roll torque is no longer telemetered (it was `VehicleState.tvcTorque`, mis-scaled). Needs a schema field. |
+| Low | `ExVectrNetwork` (library) | The legacy SX1280 sources of the library are compiled (unused, dropped at link time). | Library warnings in the build log. |
+| Info | `board_v_1_0.h` | BME280 SPI CS, RGB LED, battery ADC and the old SX1280 pins are defined but unused (QMC INT pin 16 is now RX4). There is no battery monitoring. | No low-voltage protection. |

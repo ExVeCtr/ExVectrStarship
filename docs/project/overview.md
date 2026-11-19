@@ -21,7 +21,7 @@ An autonomous model of SpaceX's Starship (≈1.1 kg). It serves as the flagship 
 | Propulsion | 2 contra-rotating motors (CW pin 8, CCW pin 7); differential speed gives roll torque | `starship_tvc.*` |
 | TVC | 4 vane servos (±45° servo travel), mechanical ratio 15 → ±3° thrust deflection | `TVC_SERVO_LIMIT`, `TVC_ANGLE_FACTOR` |
 | Aero surfaces | 4 flaps (upper L/R, lower L/R), one servo each | `starship_flaps.*` |
-| Flight computer | Teensy 4.0; MPU9250 IMU (SPI, interrupt-driven), BME280 baro (I2C), QMC5883 mag (I2C), VL53L0X ToF range (I2C), u-blox NEO-M8Q GNSS (Serial5), SX1280 2.4 GHz radio (SPI), SSD1306 OLED, EEPROM | `board_v_1_0.h` |
+| Flight computer | Teensy 4.0; MPU9250 IMU (SPI, interrupt-driven), BME280 baro (I2C), QMC5883 mag (I2C), VL53L0X ToF range (I2C), u-blox NEO-M8Q GNSS (Serial5), ExVectrNetwork links: USB serial (bench ground station) and a 460800 UART (Serial4) to the ExVectrLink RX module (no on-board radio since T9a), SSD1306 OLED, EEPROM | `board_v_1_0.h` |
 | TVC lever arm (sim) | 0.35 m below CoM | `main.cpp` `setTVCInputTopic(..., {0,0,-0.35})` |
 | Inertia (sim) | diag(0.044, 0.044, 0.004) kg·m² | `BodySimulator` constructor in `main.cpp` |
 
@@ -75,7 +75,7 @@ SensorCalib (mag calibration telecommand) ── disarms, blocks Ready
 
 | Check | Threshold | Effect |
 |---|---|---|
-| Ground station (node 0) heartbeat lost | NetworkNode timeout 2 s | Failure, `radioConnectionLoss` |
+| Ground station (node 0) lost: no valid frame (heartbeat or data) from node 0 on USB or UART | 2 s (`VehicleComms::isGroundStationPresent`, same 2 s as the old NetworkNode) | Failure, `radioConnectionLoss`. **Until T9b:** over the radio path only node 0 data frames reach the vehicle (the modules drop its heartbeats), see [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms) |
 | GNSS, gyro, baro, attitude-EKF or position-KF data age | > 0.5 s | Failure, `sensorFailure` |
 | Magnetometer data age | > 2.5 s | Mag marked failed; if in a running mission, **switch to RTH** (only graceful degradation) |
 | Horizontal distance from origin, on ground (Init/Startup) | > 2 m | Failure, `positionOutOfBounds` |
@@ -102,7 +102,7 @@ SensorCalib (mag calibration telecommand) ── disarms, blocks Ready
 
 ## Operating the vehicle
 
-Telecommands arrive on port 1000. Full list and byte layout: [hardware-and-drivers.md](hardware-and-drivers.md).
+Telecommands arrive on port 0x7F (TEMPORARY adapter of the old port-1000 `Telecommand`, from node 0 on USB or radio, until T9b replaces it with the RC-state command path). Full list and byte layout: [hardware-and-drivers.md](hardware-and-drivers.md#10-telecommands-srctelecommandhpp-temporary-adapter-on-port-0x7f).
 
 Typical sequence:
 1. Power on → Startup. Wait for **Ready** (all sensors initialised, ground link up).
@@ -126,5 +126,5 @@ Use it on the bench for every Development verification (see [../development-work
 ## Telemetry and display
 
 - Downlink rates and ports: [codebase-structure.md](../codebase-structure.md#data-flow-topic-graph).
-- With `DEBUG_TELEMETRY_SERIAL` defined, attitude, position, setpoints, flaps and TVC are printed over USB serial at up to 50 Hz.
+- USB carries the full telemetry set (pose 100 Hz, actuators incl. flap angles 50 Hz, status/mission 20 Hz, GNSS, debug packets) and the console as `LOG_TEXT`; the UART to the RX module carries the radio set (status 5 Hz, `AIR_POSE` 10 Hz, `HANDSET_TELEM` 2 Hz). USB serial is binary: use the ground station, not a serial monitor.
 - The 128×32 OLED shows velocity/position per axis, satellite count, position accuracy, tilt, heading and link status.

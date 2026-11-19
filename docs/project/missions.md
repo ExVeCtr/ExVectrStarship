@@ -16,7 +16,7 @@ Every mission derives from `MissionAbstract`, and every concrete mission also de
 |---|---|
 | `positionSetpointTopic_` (`Topic<Vector<float,6>>`) | Setpoint `[Vx,Vy,Vz,Px,Py,Pz]` in the reference frame. `switchMissionTo()` subscribes `controlPositionStandard` to the active mission's topic (`main.cpp:536`). |
 | `missionTime_` (`Time_Source`) | Mission clock. `beginMission(startTime)` sets it to `startTime`, so a negative start time gives a countdown. |
-| `missionState_` (`MissionState`, see `telemetry.hpp:122`) | Mode, mission time and setpoint copy. The comms task sends it as telemetry. |
+| `missionState_` (`MissionState`, see `telemetry.hpp`) | Mode, mission time and setpoint copy. The telemetry task maps it into `VEHICLE_STATUS` and `MISSION` (`src/comms/telemetry_mapping.cpp`). |
 | `nextMission_` / `nextMission()` | Chaining: the mission to switch to when this one ends. `nullptr` means fall back to the default (RTH). |
 | `actuatorsEnabled_` | The safety task reads it every tick to gate the TVC, motors and flaps (`main.cpp:1195-1202`). |
 | `disableKinematicSafety_` | When true, the safety task skips the position and tilt out-of-bounds checks for this mission (`main.cpp:1108`). |
@@ -196,7 +196,7 @@ Trigger (a) detects ground contact, when the vehicle stops following the setpoin
 | Bellyflop or Freefall | always | `Descent` |
 | other | always | `Idle` |
 
-At boot `mission_` is RTH in `Idle` with `missionEnd_ = true`, so the phase reads `Completed`. `CommsSystemStateTask` writes the phase into the outgoing `MissionState` (`:1385-1389`).
+At boot `mission_` is RTH in `Idle` with `missionEnd_ = true`, so the phase reads `Completed`. The telemetry task (`TelemetryProvider` / `VehicleComms`, `src/comms/`) sends the current phase in `VEHICLE_STATUS` and `MISSION`.
 
 ### 6.2 Mode-edge actions and switching (`handleVehicleMissionControl`, `:617-726`)
 

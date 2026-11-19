@@ -34,6 +34,7 @@ Branch `Development` targets Teensy 4.0. `PinPWM::setPinFrequency` calls the Tee
 - `taskInit()` (:58-73):
   - Calls `Serial.begin(115200)`.
   - Subscribes four `StaticCallback_Subscriber<const char*>`s to the Core message, debug, warning and error topics. They print to `Serial` with the prefixes `""`, `"Debug: "`, `"!WARNING: "` and `"!!!ERROR: "`.
+  - **Unless `EXVECTR_ARDUINO_NO_SERIAL_CONSOLE` is defined** (build flag, commit d481e6c on `feature/network-migration`, not yet on `Development`): then nothing is subscribed, `Serial` gets no console text, and the application routes the print topics itself. The flight software defines it, because USB `Serial` carries ExVectrNetwork stream frames (console text goes out as `LOG_TEXT`, see [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
   - Sets the task's release to `END_OF_TIME`, so the scheduler never runs it.
 - Output is synchronous `Serial.print` inside the publisher's context (USB serial on Teensy).
 
@@ -160,6 +161,7 @@ void loop() { Core::getSystemScheduler().tick(); }
   - Configures the MPU at 250 µs.
   - `mpuIntHandler.setCallback(...)` at :1756.
 - `Core::initialise()` is called at `main.cpp:1982`.
+- `platformio.ini` defines `EXVECTR_ARDUINO_NO_SERIAL_CONSOLE`: the platform only calls `Serial.begin`. `src/comms/vehicle_comms.cpp` subscribes to the four print topics instead.
 - PWM frequency is set by ExVectrActuator (`pwm_output.cpp:27,40,53`; `hbridge.cpp:29-30,95`), which relies on commit 4f31846.
 - Several drivers call `setParam(SPEED, 400000)` on their `BusI2CDevice` (e.g. `src/vl53l0x/vl53l0x_driver.cpp:72-73`; ExVectrSensor `bme280.cpp:114,123`). Because this calls `Wire.setClock`, the whole `Wire` bus runs at 400 kHz from then on, overriding `Wire.setClock(100000)`.
 

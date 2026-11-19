@@ -10,7 +10,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [codebase-structure.md](codebase-structure.md) | Repo layout, what belongs where (lib vs `src/`), runtime model, frames/units, topic graph, radio ports, build |
 | [project/overview.md](project/overview.md) | The vehicle: flight profile, GNC cascade, mode machine, failure detection, actuator gating, operating procedure, simulation mode |
 | [project/missions.md](project/missions.md) | Mission framework and each mission's phases, triggers and parameters |
-| [project/hardware-and-drivers.md](project/hardware-and-drivers.md) | Pinout, body frame and actuator layout, TVC/flap mixing, radio, GNSS, rangefinder, telemetry/telecommand byte layouts |
+| [project/hardware-and-drivers.md](project/hardware-and-drivers.md) | Pinout, body frame and actuator layout, TVC/flap mixing, network links (USB, UART to the RX module), GNSS, rangefinder, telemetry/telecommand mapping |
 | [flight-log.md](flight-log.md) | Every flight: tag, goals, outcome, anomalies |
 
 ## ExVectr framework libraries
@@ -25,11 +25,11 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [ExVectrControl](libs/ExVectrControl.md) | Position, attitude (TVC) and flap controllers |
 | [ExVectrSensor](libs/ExVectrSensor.md) | Sensor interfaces and drivers (MPU9250, BME280, QMC5883) |
 | [ExVectrActuator](libs/ExVectrActuator.md) | PWM output protocols, servo and H-bridge abstractions |
-| [ExVectrNetwork](libs/ExVectrNetwork.md) | Datalink, network node, transport, topic bridging |
-| [ExVectrPackets](libs/ExVectrPackets.md) | Fixed-point telemetry packet formats |
+| [ExVectrNetwork](libs/ExVectrNetwork.md) | Stream datalink (COBS + CRC-16), network node, transport (ports, sequence filter), packet ports |
+| [ExVectrPackets](libs/ExVectrPackets.md) | Schema-generated packets (telemetry, control), shared with ExVectrLink and the ground station |
 | [ExVectrData](libs/ExVectrData.md) | Memory backends and key/value memory manager |
 
-## Pinned library versions (feature/exvectrcore-update, 2026-11-19)
+## Pinned library versions (feature/exvectrcore-update + feature/network-migration, 2026-11-19)
 
 | Library | Pin | Base | Note |
 |---|---|---|---|
@@ -38,8 +38,10 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | ExVectrDSP | fc99b99 | 3e1f070 | NowNs port only. `origin/Development` 402831f (position KF rewrite) is **not** taken |
 | ExVectrControl | 8d6efab | 084bea1 | NowNs port only |
 | ExVectrActuator | 4d3c87a | db98892 | NowNs port only |
-| ExVectrNetwork | 7072cfe | cabddce | Old stack, NowNs port only. The new stack (33241a8) is a later task |
-| ExVectrPackets, ExVectrMath, ExVectrHAL, ExVectrArduinoPlatform, ExVectrData | unchanged | | No change needed |
+| ExVectrNetwork | de708ca | `origin/Development` | **feature/network-migration:** the new stack (stream links, Node, PortMux, PacketPort). The old stack and its NowNs port 7072cfe are gone |
+| ExVectrPackets | 4ca8fb1 | `origin/Development` | **feature/network-migration:** generated packets, schema hash 0x3AFA3CCE |
+| ExVectrArduinoPlatform | d481e6c | 4f31846 (`origin/Development`) | **feature/network-migration:** `EXVECTR_ARDUINO_NO_SERIAL_CONSOLE` build flag |
+| ExVectrMath, ExVectrHAL, ExVectrData | unchanged | | No change needed |
 
 The port commits are local feature-branch commits until the main session pushes them. See [development-workflow.md](development-workflow.md#dependency-updates-and-bench-re-verification) for the bench re-verification checklist that belongs to this update.
 

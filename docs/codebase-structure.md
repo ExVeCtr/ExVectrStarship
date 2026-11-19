@@ -15,21 +15,22 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── mission/              Mission framework + missions (waypoint, bellyflop, freefall, RTH)
 │   ├── starship_tvc.*        TVC mixer/actuator layer (4 vane servos + 2 contra-rotating motors)
 │   ├── starship_flaps.*      Flap actuator layer (4 flap servos) + ControlAttitudeFlaps settings types
-│   ├── datalink_sx1280.*     SX1280 2.4 GHz radio as an ExVectrNetwork datalink
+│   ├── comms/                ExVectrNetwork links (USB + UART to the RX module), telemetry task, packet mapping
 │   ├── ublox_gnss.*          u-blox NEO-M8Q GNSS driver → SNSR::GNSS topic
 │   ├── vl53l0x/              VL53L0X ToF rangefinder driver → SNSR::RangeFinder topic
-│   ├── telemetry.hpp         Packed downlink structs (VehicleState, MissionState, enums)
-│   ├── telecommand.hpp       Packed uplink struct + command list
+│   ├── telemetry.hpp         Vehicle/mission state enums and structs (wire formats: ExVectrPackets, comms/)
+│   ├── telecommand.hpp       Telecommand struct + command list (TEMPORARY wire adapter until T9b)
 │   ├── subsystems.hpp        Subsystem enum used by telecommands
 │   ├── memory_keys.hpp       Persistent-memory keys (calibration, transforms)
 │   ├── board_v_1_0.h         Flight-computer board pinout
 │   ├── starship_hardware.h   Vehicle pinout + physical limits (mass, thrust, TVC angles)
 │   ├── gnssdriver/           Vendored SparkFun u-blox library (gitignored)
-│   └── sx12xxAL/             Vendored SX12xx library (gitignored)
+│   └── sx12xxAL/             Vendored SX12xx library (gitignored, unused, excluded from the build)
 ├── lib/
 │   ├── ExVectr*/             The ExVectr framework, one git submodule per library
 │   └── Adafruit_*/           Display libraries (SSD1306 OLED), committed as plain folders
-├── include/, test/           PlatformIO defaults, currently unused
+├── test/                     Host tests of src/comms (pio test -e native)
+├── include/                  PlatformIO default, unused
 └── utils/                    Helper scripts
 ```
 
@@ -55,7 +56,7 @@ Rules of thumb:
 - Dependencies point downward only: `Core ← HAL ← Platform`, `Math`, then `DSP/Control/Sensor/Actuator/Network/Data` on top. A known violation exists: `ExVectrDSP/body_simulator` includes ExVectrControl headers ([libs/ExVectrDSP.md](libs/ExVectrDSP.md)). Don't add more.
 - **Drivers start in `src/` and move to a lib once stable.** The u-blox and VL53L0X drivers are at this stage.
 - Physical constants and pins go in `starship_hardware.h` / `board_*.h`, not inline.
-- `main.cpp` is currently a ~2000-line monolith that holds the system tasks (`VehicleSafetyAndControlTask`, `FlapModeObserverTask`, `CommsSystemStateTask`, `DisplayTask`, `MagnetometerCalibrationTask`). When touching one substantially, move it into its own `src/<name>.hpp/.cpp`; leave `main.cpp` with only object construction and wiring.
+- `main.cpp` is currently a ~2000-line monolith that holds the system tasks (`VehicleSafetyAndControlTask`, `FlapModeObserverTask`, `DisplayTask`, `MagnetometerCalibrationTask`) and the `TelemetryProvider`. The network and telemetry task lives in `src/comms/`. When touching one substantially, move it into its own `src/<name>.hpp/.cpp`; leave `main.cpp` with only object construction and wiring.
 
 ## Runtime model
 
@@ -63,7 +64,7 @@ Rules of thumb:
 - **Tasks** derive from `Core::Task_Periodic` (interval in ns), register themselves with `Core::getSystemScheduler().addTask(*this)` in their constructor, and implement `taskInit()` (once) and `taskThread()` (each period). Most objects are global statics, constructed before `setup()`.
 - **Topics** (`Core::Topic<T>`) are synchronous: `publish()` calls every subscriber's `receive()` immediately, in the publisher's context. Keep callbacks short. Never publish from an ISR unless every subscriber is ISR-safe (the MPU9250 interrupt path is the existing exception; see [libs/ExVectrCore.md](libs/ExVectrCore.md)).
 - **Time** is `int64_t` nanoseconds (`Core::NowNs()`, `Core::SECONDS`, `Core::MILLISECONDS` …). Data travels as `Core::Timestamped<T>`; sensor data as `Timestamped<DSP::ValueCov<float,N>>`.
-- **Priorities in use:** MPU9250 driver 110, attitude EKF and position KF 105, everything else default 100.
+- **Priorities in use:** MPU9250 driver 110, attitude EKF and position KF 105, the telemetry/network task `VehicleComms` 50 (100 Hz), the platform task 10, everything else default 100.
 
 ### Conventions (summary; authoritative details in [libs/ExVectrMath.md](libs/ExVectrMath.md))
 
@@ -97,23 +98,35 @@ FlapModeObserverTask ──bellyflop setting──► ControlAttitudeFlaps ─�
 
 The three `Topic_Switch`es let simulation mode replace the estimators with the body simulator without rewiring anything downstream.
 
-Radio: `NetworkNode(address 1)` over `Datalink_SX1280`, with `TransportTopic` bridges on these ports:
+### Radio and USB network
 
-| Port | Topic | Direction |
-|---|---|---|
-| 10 | `PacketAttitude` (5 Hz) | down |
-| 11 | `PacketPosition` (10 Hz) | down |
-| 12 | `PacketGPS` (1 Hz) | down |
-| 50 | `VehicleState` (5 Hz) | down |
-| 51 | `MissionState` (5 Hz) | down |
-| 100 | connection counter | down |
-| 1000 | `Telecommand` | up |
+ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](libs/ExVectrNetwork.md)): the vehicle is **node 1**, an end node, on two stream links (COBS + CRC-16): **USB Serial** (bench ground station, node 0) and **Serial4 at 460800** to the ExVectrLink RX module (node 3), which routes over the air to the TX module (node 2) and the ground station. There is no on-board radio. Code: `src/comms/`, details in [project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms) sections 5, 9, 10.
 
-The ground station is node 0. Losing its heartbeat sets `radioConnectionLoss`.
+| Port | Packet | Direction | USB | UART (radio set) |
+|---|---|---|---|---|
+| – | heartbeat (node 1) | down | 1 Hz | 1 Hz |
+| 0x02 | `LOG_TEXT` (console) | down | as printed | – |
+| 0x03 | `HANDSET_TELEM` (dst 0xFF) | down | 2 Hz | 2 Hz |
+| 0x20 | `VEHICLE_STATUS` | down | 20 Hz | 5 Hz |
+| 0x21 | `AIR_POSE` | down | – | 10 Hz |
+| 0x7F | legacy `Telecommand`, **TEMPORARY until T9b**, from node 0 only | up | yes | yes |
+| 0x80 | `POSE` | down | 100 Hz | – |
+| 0x81 | `ACTUATORS` | down | 50 Hz | – |
+| 0x82 | `MISSION` | down | 20 Hz | – |
+| 0x83 | `GNSS` | down | 5 Hz | – |
+| 0x90 | `IMU_RAW` | down | 100 Hz | – |
+| 0x91 | `ESTIMATOR` | down | 20 Hz | – |
+| 0x92 | `TASK_TIMING` | down | 5 Hz | – |
+
+Packet layouts: ExVectrPackets schema (hash 0x3AFA3CCE), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+
+Losing the ground station (no valid frame from node 0 on either link for 2 s) sets `radioConnectionLoss`, as before. Until T9b this includes the radio path, where only node 0 data frames (not its heartbeats) reach the vehicle.
 
 ## Build
 
-- `pio run` builds, `pio run -t upload` flashes (`upload_port` in `platformio.ini` is a Windows COM port; override it locally with `--upload-port`), `pio device monitor -b 115200` shows serial output.
+- `pio run` builds, `pio run -t upload` flashes (`upload_port` in `platformio.ini` is a Windows COM port; override it locally with `--upload-port`).
 - PlatformIO binary on this machine: `~/.platformio/penv/bin/pio`.
-- Debug serial output is controlled by `DEBUG_TELEMETRY_SERIAL` and the other `#define`s at the top of `main.cpp`, and by `LOG_MSG`/`VRBS_MSG` switches in `ExVectrCore/print.hpp`.
-- Resource baseline (Nov 2026, unchanged by the ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, code 243240 B, padding 18904 B, 205696 B free for local variables; RAM2 variables 12416 B, 511872 B free for malloc/new.
+- **USB Serial carries only ExVectrNetwork stream frames**: `pio device monitor` shows binary. Console text (`LOG_MSG`, Core print) arrives as `LOG_TEXT` packets in the ground station. Never `Serial.print` in `src/`. `LOG_MSG`/`VRBS_MSG` switches are in `ExVectrCore/print.hpp`.
+- `platformio.ini`: `-Ilib/ExVectrPackets/gen` (generated packet headers), `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (platform console off), `build_src_filter` excludes `src/sx12xxAL`. `default_envs = teensy40`, so `pio run` builds only the firmware.
+- Host tests: `~/.platformio/penv/bin/pio test -e native` (Unity) builds `src/comms/telemetry_mapping.cpp`, `src/comms/vehicle_network.cpp` and the ExVectrNetwork stack natively (`test/test_telemetry_mapping`, `test/test_vehicle_network`).
+- Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B.

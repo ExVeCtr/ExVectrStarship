@@ -177,19 +177,18 @@ Producer side: `altitudeTopic.publish(Core::Timestamped<float>(alt, Core::NowNs(
 
 ## How this project uses it
 - Tasks: every subsystem derives from `Core::Task_Periodic` and calls `getSystemScheduler().addTask(*this)` in its constructor. Examples:
-  - `src/starship_tvc.hpp:22`, `src/starship_flaps.hpp:33`, `src/ublox_gnss.hpp:21`, `src/datalink_sx1280.hpp:27`.
-  - In `src/main.cpp`: `MagnetometerCalibrationTask` :337, `VehicleSafetyAndControlTask` :456, `FlapModeObserverTask` :1258, `CommsSystemStateTask` :1337, `DisplayTask` :1394.
+  - `src/starship_tvc.hpp:22`, `src/starship_flaps.hpp:33`, `src/ublox_gnss.hpp:21`, `src/comms/vehicle_comms.hpp`.
+  - In `src/main.cpp`: `MagnetometerCalibrationTask` :337, `VehicleSafetyAndControlTask` :456, `FlapModeObserverTask` :1258, `DisplayTask`; `VehicleComms` in `src/comms/vehicle_comms.cpp`.
 - `main.cpp:1982` calls `Core::initialise()` in `setup()`; `main.cpp:1991` has `loop()` call `getSystemScheduler().tick()`.
 - Priorities and intervals are set in `initialiseHardware()` (`main.cpp:1757-1763`): the MPU driver runs at 250 µs with priority 110, imu/posEst tasks at priority 105.
-- `setPaused()` is used for on-demand tasks: `ublox_gnss.cpp:67,115,165`, `datalink_sx1280.cpp:58,68,78`, `main.cpp:357-412`.
+- `setPaused()` is used for on-demand tasks: `ublox_gnss.cpp:67,115,165`, `main.cpp` (`MagnetometerCalibrationTask`).
 - `removeTask(*this)` is called from `DisplayTask::taskInit` (`main.cpp:1426`).
 - Topics:
   - `Core::Topic_Switch<Core::Timestamped<Math::Vector<...>>>` selects sensor and simulator sources (`main.cpp:182-186`).
   - Many `StaticCallback_Subscriber`s (`main.cpp:218-333`), `Buffer_Subscriber<…,10>` (`main.cpp:339`), `Topic_Publisher` (`starship_flaps.hpp:40`), `Simple_Subscriber`s in the TVC, flaps and missions code.
 - `Core::Time_Source missionTime_` holds mission time (`src/mission/mission_abstract.hpp:34`), set via `setTime()` in `mission_freefall.hpp:69` and `mission_rth.hpp:129`.
 - Containers:
-  - `Core::ListBuffer<uint8_t, …>` is the datalink TX queue (`datalink_sx1280.hpp:46`; it uses `placeBack` and `removeFront`).
-  - `Core::ListArray` holds the mission list (`main.cpp:487`) and packet buffers (`datalink_sx1280.cpp:379,398`).
+  - `Core::ListArray` holds the mission list (`main.cpp`, `missionList_`).
   - `gyroBiasBuffer.placeBack(…, true)` at `main.cpp:1708`.
 - `LOG_MSG` / `printM` are used throughout for diagnostics.
 

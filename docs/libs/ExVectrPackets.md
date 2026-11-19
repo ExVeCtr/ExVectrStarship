@@ -1,111 +1,66 @@
 # ExVectrPackets
-> Header-only, fixed-point packed telemetry structs (attitude, position, GPS) plus pack/unpack helpers for sending over ExVectrNetwork. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 8c15c7f`
+> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 4ca8fb1 (Development, schema hash 0x3AFA3CCE)`
+
+The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/telemetry-sets.md`, `docs/versioning.md`, `docs/adding-a-packet.md` and the generated `docs/packet-reference.md` (every field, offset, scaling and unit). This file covers what the flight software uses.
 
 ## Purpose & scope
-Standardised, compact wire structs shared by the vehicle and the ground station. Floats are scaled into saturating `int16_t` fixed point against a per-field limit. The structs are `__attribute__((packed))` POD meant to be sent raw by `Net::TransportTopic<T>`.
-
-Only three packet types exist. There is no versioning, framing, CRC or type ID; those come from the transport port number and the transport CRC. README: "under initial development".
+- **Generated packets** (`schema/common.toml`, `schema/starship.toml` -> `gen/ExVectrPackets/gen/*.hpp`, `python/exvectr_packets/`): explicit little-endian `encode()`/`decode()` field by field, no struct copies. Fixed-point fields round half away from zero, saturate, and encode NaN/Inf as an invalid sentinel that decodes to NaN. Decoded values are always SI.
+- **Legacy** (`include/ExVectrPackets/packet_vehicle.hpp`, `data_packing.hpp`, CRSF/radiolink): no longer used by the flight software since the network migration (T9a). Kept for ExVectrLink FPV.
 
 ## Dependencies (ExVectr libs + external)
-- ExVectrMath: `constants.hpp` (`DEGREES` = π/180 as float), `Vector_F`, `Quat_F`, matrix headers.
-- External: `<limits>` and `stdint.h`.
-- No ExVectrNetwork dependency, although the code lives in namespace `VCTR::Net`.
-- Build:
-  - Header-only; there is no `src/`.
-  - CMakeLists.txt globs `src/*.cpp` into `add_library`, which CMake rejects when there are no sources. PlatformIO doesn't care.
+- Generated headers: none (standard library only: `<stdint.h>`, `<math.h>`, `<string.h>`, `<limits>`). C++17 (`namespace VCTR::Packets`).
+- The generated headers are under `gen/`, not `include/`: the flight software adds `-Ilib/ExVectrPackets/gen` in `platformio.ini`.
 
 ## Key concepts & API
+- Each packet is a struct with SI members and constants `kPort`, `kQos`, `kLatest`, `kAirEligible`, `kAirRateHz`, `kUsbRateHz`, `kMaxSize`, `kMinSize`, flag masks (`kFlags*`). `size_t encode(uint8_t*, size_t) const` (0 on failure), `bool decode(const uint8_t*, size_t)` (accepts longer payloads, append-only evolution).
+- `Packets::kSchemaHash` (`all.hpp`) goes into every heartbeat. The ground station compares it with its own.
+- Packets the vehicle sends:
 
-### Fixed-point helpers (include/ExVectrPackets/data_packing.hpp)
-```cpp
-template<IN, OUT> OUT packFixedPoint(const IN& value, const IN& limit);   // OUT signed, sizeof(OUT) < sizeof(IN)
-template<IN, OUT> OUT unpackFixedPoint(const IN& value, const OUT& limit); // IN signed
-```
-- Packing:
-  - `value > limit` → `OUT::max`; `value < -limit` → `OUT::min`
-  - otherwise `static_cast<OUT>(value * OUT::max / limit)`, which truncates toward zero
-- Unpacking: `value * limit / IN::max`.
-- Resolution = `limit / 32767` for int16.
-- Asymmetric saturation: `INT16_MIN` unpacks to `-1.00003 * limit`.
+| Port | Packet | Set | Rate on the vehicle | Content (SI) |
+|---|---|---|---|---|
+| 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags, failure bits, sensor states |
+| 0x21 | `AirPose` | radio | 10 Hz UART | q, position, velocity (fixed point) |
+| 0x03 | `HandsetTelem` | USB + radio | 2 Hz each | display values for the Pocket (dst 0xFF) |
+| 0x80 | `Pose` | USB | 100 Hz | omega, q, velocity, position (f32) |
+| 0x81 | `Actuators` | USB | 50 Hz | flaps, TVC deflection, thrust, ground distance |
+| 0x82 | `Mission` | USB | 20 Hz | setpoint, mission time (s), index, phase |
+| 0x83 | `Gnss` | USB | 5 Hz | lat/lon (rad, f64), altitude, velocity, accuracies |
+| 0x90 | `ImuRaw` | USB debug | 100 Hz | gyro, accel, mag (T), pressure, temperature (K) |
+| 0x91 | `Estimator` | USB debug | 20 Hz | attitude/velocity/position standard deviations |
+| 0x92 | `TaskTiming` | USB debug | 5 Hz | average run time of the first 8 scheduler tasks |
+| 0x02 | `LogText` | USB | as printed | console text (Core print, `LOG_MSG`) |
 
-### Packet structs (include/ExVectrPackets/packet_vehicle.hpp)
-- Fields are private. Construct with physical values and read back with getters.
-- All are packed and little-endian (raw memory on ARM Cortex-M7).
-
-`PacketAttitude`: 18 bytes. Constructor `(Vector_F angVel = 0, Quat_F q = (1,0,0,0), float tiltAcc = 0, float northAcc = 0)`. Getters: `getAngularVelocity()`, `getQuaternion()`, `getTiltAccuracy()`, `getNorthAccuracy()`.
-
-| Offset | Type | Field | Unit / frame | Limit | Resolution |
-|---|---|---|---|---|---|
-| 0 | int16[3] | angularVelocity x,y,z | rad/s | ±1000°/s (17.45 rad/s) | 5.3e-4 rad/s |
-| 6 | int16[4] | quaternion w,x,y,z | – | ±1.0 | 3.05e-5 |
-| 14 | int16 | tiltAccuracy | rad | ±360° (6.283 rad) | 1.9e-4 rad |
-| 16 | int16 | northAccuracy | rad | ±360° | 1.9e-4 rad |
-
-`PacketPosition`: 16 bytes. Constructor `(Vector_F pos = 0, Vector_F vel = 0, float hAcc = 0, float vAcc = 0)`. Getters: `getPosition()`, `getVelocity()`, `getHAccuracy()`, `getVAccuracy()`.
-
-| Offset | Type | Field | Unit | Limit | Resolution |
-|---|---|---|---|---|---|
-| 0 | int16[3] | position x,y,z | m (local frame of the estimator) | ±1000 m | 0.031 m |
-| 6 | int16[3] | velocity x,y,z | m/s | ±100 m/s | 0.0031 m/s |
-| 12 | int16 | hAccuracy | m | ±10 m | 3.1e-4 m |
-| 14 | int16 | vAccuracy | m | ±10 m | 3.1e-4 m |
-
-`PacketGPS`: 23 bytes. Constructor `(Vector_F vel = 0, double lat = 0, double lon = 0, float alt = 0, uint8_t numSats = 0, float posAcc = 0, float altAcc = 0, float velAcc = 0)`. Note that velocity comes first. Getters: `getLatitude()`, `getLongitude()` (double), `getAltitude()`, `getVelocity()`, `getNumSats()`, `get{Position,Altitude,Velocity}Accuracy()`.
-
-| Offset | Type | Field | Unit (as documented) | Limit | Resolution |
-|---|---|---|---|---|---|
-| 0 | int32 | latitude | deg × 1e7 (`lat * 1e7`, truncated, no range check) | ±214.7 | 1e-7 |
-| 4 | int32 | longitude | deg × 1e7 | ±214.7 | 1e-7 |
-| 8 | int16 | altitude | m | ±1000 m | 0.031 m |
-| 10 | int16[3] | velocity | m/s | ±100 m/s | 0.0031 m/s |
-| 16 | uint8 | numSats | – | 255 | 1 |
-| 17 | int16 | positionAccuracy | m | ±10 m | 3.1e-4 m |
-| 19 | int16 | altitudeAccuracy | m | ±10 m | 3.1e-4 m |
-| 21 | int16 | velocityAccuracy | m/s | ±10 m/s | 3.1e-4 m/s |
+How the vehicle fills each field: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#9-telemetry-generated-packets-srccommstelemetry_mappingcpp).
 
 ## Usage
-As in `src/main.cpp:202-205, 239-242, 268-273`:
 ```cpp
-Net::PacketAttitude att({w(0), w(1), w(2)}, {q(0), q(1), q(2), q(3)});   // rad/s, quaternion w,x,y,z
-attitudeDataTopic.publish(att);                                       // TransportTopic port 10 sends it
-
-Net::PacketPosition pos({px, py, pz}, {vx, vy, vz}, hAcc, vAcc);
-// receiver side
-Math::Vector_F p = pos.getPosition();
+#include "ExVectrPackets/gen/all.hpp"
+Packets::Pose p;  p.t_us = ...; p.q[0] = qw; ...
+uint8_t buf[Packets::Pose::kMaxSize];
+size_t n = p.encode(buf, sizeof buf);          // little-endian, SI -> wire
+node.send(0, Packets::Pose::kPort, buf, n, static_cast<network::wire::Qos>(Packets::Pose::kQos), Packets::Pose::kLatest);
 ```
 
 ## Conventions
-- One struct per transport port. The receiving `TransportTopic` checks only `sizeof(T)`, so two packet types of equal size on the same port would be confused.
-- Keep every packet `__attribute__((packed))`, little-endian and ≤ 128 bytes (single transport segment).
-- Choose limits for the vehicle envelope. Values outside the limit saturate silently; nothing flags the overflow.
-- Namespace `VCTR::Net`. Include `ExVectrPackets/packet_vehicle.hpp` directly. Avoid the umbrella `ExVectrPackets.hpp` (guard collision, and it is empty anyway).
+- Never edit the generated files. Change the schema, regenerate (`tools/gen_packets.py`), commit the output, re-pin in every project that talks to the vehicle (flight software, ExVectrLink, ground station). Any change is a cross-project change.
+- Append-only: new fields at the end; a breaking change takes a new port.
+- Fields the schema leaves to the flight software (`VehicleStatus.mode`, `failure_bits`, `sensor_state`, `HandsetTelem.mode_text`) are defined in [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#9-telemetry-generated-packets-srccommstelemetry_mappingcpp).
 
 ## How this project uses it
-- `src/main.cpp:134-150`: topics and `TransportTopic`s for `PacketAttitude` (port 10), `PacketPosition` (port 11) and `PacketGPS` (port 12), all broadcast (`UINT16_MAX`).
-- Attitude (`attitudeTelemetryCallback`, main.cpp:189-206, 5 Hz): built from the attitude switch topic `Vector<float,7>`, with rates in `data(0..2)` and quaternion in `data(3..6)`. Accuracies are left at 0.
-- Position (`positionTelemetryCallback`, main.cpp:225-243, 10 Hz): position from `data(3..5)`, velocity from `data(0..2)`. `hAcc`/`vAcc` are computed from `posEstTask.getCovariance()` divided by 1000. That app-side scaling is not a standard deviation in metres; verify it.
-- GPS (`gnssTelemetryCallback`, main.cpp:262-273, 1 Hz): passes `GNSSData.position(0/1)`, which are **radians** (`SNSR::GNSSData` convention, src/ublox_gnss.cpp:19), into the `lat`/`lon` parameters documented as degrees. On the wire the field holds rad × 1e7 (1e-7 rad ≈ 0.64 m resolution). The ground station must decode it as radians, or the app should convert first.
-- In the same call, the accuracies are fed with covariance diagonal entries (variances, m²) rather than accuracies (m), and altitude is height above the ellipsoid, which saturates above 1000 m.
+- `src/comms/telemetry_mapping.cpp` builds every packet from a `TelemetrySnapshot` (pure functions, host-tested in `test/test_telemetry_mapping`).
+- `src/comms/vehicle_network.cpp` schedules them using the generated `kUsbRateHz` / `kAirRateHz` (100 Hz tick; `static_assert`s check that each rate divides it).
+- The fixed-point rules of the schema fix the old telemetry unit bugs: no int16 overflow (ground distance above 2 m, positions above the old limits), no NaN undefined behaviour, GNSS lat/lon declared and sent in radians, accuracies as standard deviations.
 
 ## Known issues & limitations
-Paths are relative to `lib/ExVectrPackets/` unless noted.
 
 | Severity | Location | Issue | Impact |
 |---|---|---|---|
-| Med | include/ExVectrPackets.hpp:1-2 | The include guard is `EXVECTRNETWORK_H_`, the same as `lib/ExVectrNetwork/include/ExVectrNetwork.hpp:1-2`. | Including both umbrella headers silently drops the second one (the ExVectrNetwork umbrella pulls in datalink/node/transport). |
-| Low | include/ExVectrPackets/data_packing.hpp:17-22 | NaN or Inf input: NaN fails both comparisons and reaches `static_cast<int16_t>(NaN)`, which is undefined behaviour in C++. ARM VCVT happens to saturate NaN to 0. | An estimator NaN is transmitted as 0 (looks valid) instead of being flagged. |
-| Low | include/ExVectrPackets/data_packing.hpp:22 | Truncates instead of rounding. | Bias of up to 1 LSB toward zero. |
-| Low | include/ExVectrPackets/data_packing.hpp:20, 30 | Negative saturation is `INT16_MIN`, which unpacks slightly beyond `-limit`. | Cosmetic asymmetry. |
-| Low | include/ExVectrPackets/packet_vehicle.hpp:133-134 | `lat * 1e7` / `lon * 1e7` truncate with no range check. | Out-of-range input overflows int32 (UB); not reachable for valid degrees or radians. |
-| Low | include/ExVectrPackets/packet_vehicle.hpp:118 | GPS altitude limit is ±1000 m. | Saturates for absolute (ellipsoid/MSL) altitudes at elevated sites; as used, main.cpp passes ellipsoid altitude. |
-| Low | include/ExVectrPackets/packet_vehicle.hpp (all) | No packet type ID or version field. | A layout change on one side gives silent misinterpretation if `sizeof` is unchanged. |
-| Low | (project) src/main.cpp:268-271 | Passes radians and variances where the packet documents degrees and accuracies (see above). | Ground-station decoding must match the actual units. |
-| Low | CMakeLists.txt:4-5 | `add_library` with an empty glob. | CMake/host build of this library fails. |
+| Low | schema `ACTUATORS` | No field for the TVC roll torque `T` (the old `VehicleState.tvcTorque`). | Roll torque is not telemetered. Needs a schema change (append a field). |
+| Low | schema `TASK_TIMING` | `max` is sent as NaN: the ExVectrCore scheduler only keeps an average run time. | Only averages are available. |
+| Low | schema `GNSS.fix_type` | The u-blox driver does not expose the fix type. The vehicle sends 3 when the position is valid (>= 5 satellites), else 0. | Not a real u-blox fix type. |
+| Info | legacy `include/ExVectrPackets.hpp` | Include guard `EXVECTRNETWORK_H_` collides with the old ExVectrNetwork umbrella header. | Irrelevant to the flight software now (neither umbrella is included). |
 
 ## Extending
-New packet type:
-1. Add a `struct PacketX { private: <int fields>; public: PacketX(<physical values> = defaults); <getters>; } __attribute__((packed));` in a header under `include/ExVectrPackets/`.
-2. Use `packFixedPoint<float, int16_t>(v, LIMIT)` / `unpackFixedPoint<int16_t, float>(raw, LIMIT)`. Use int32 scaled integers when int16 resolution isn't enough (as for lat/lon). Define each `LIMIT` once (constexpr) so packing and unpacking can't diverge.
-3. Give every constructor parameter a default, so `TransportTopic::receiveData` can default-construct `T`.
-4. Keep `sizeof ≤ 128`. Document unit, frame and limit per field.
-5. Assign a new transport port in `src/main.cpp` and on the ground station.
+1. Add or change the packet in `schema/starship.toml` (or `common.toml`), regenerate, run the library tests, commit, push.
+2. Coordinate the ground-station and ExVectrLink pins (same schema hash everywhere, or the heartbeat raises the incompatibility flag).
+3. Re-pin `lib/ExVectrPackets`, add the mapping in `src/comms/telemetry_mapping.cpp`, a test in `test/test_telemetry_mapping`, and schedule it in `VehicleNetwork::sendTelemetry`.
