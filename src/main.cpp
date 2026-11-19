@@ -185,9 +185,9 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 2>>> groundTopicSwitch;
 void attitudeTelemetryCallback(
     const Core::Timestamped<Math::Vector<float, 7>> &data) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.2 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.2 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   float angle = 90 * DEGREES;
   auto quat = Math::Quat<float>(Math::Vector<float, 3>{0, 0, 1}, angle);
@@ -203,9 +203,9 @@ void attitudeTelemetryCallback(
 void attitudeDebugCallback(
     const Core::Timestamped<Math::Vector<float, 7>> &data) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   // Print the attitude data to the serial port
   Serial.printf("Attitude Debug [%.3f, %.3f, %.3f, %.3f]\n", data.data(3),
@@ -221,9 +221,9 @@ Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>>
 void positionTelemetryCallback(
     const Core::Timestamped<Math::Vector<float, 6>> &data) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.1 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.1 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   float hAcc =
       sqrt(posEstTask.getCovariance()(3, 3) * posEstTask.getCovariance()(3, 3) +
@@ -240,9 +240,9 @@ void positionTelemetryCallback(
 void positionDebugCallback(
     const Core::Timestamped<Math::Vector<float, 6>> &data) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   // Print the position data to the serial port
   Serial.printf("Position Debug [%.3f, %.3f, %.3f]\n", data.data(3),
@@ -257,9 +257,9 @@ Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 6>>>
 
 void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData> &data) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 1 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 1 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   Net::PacketGPS packet(
       data.data.velocity, data.data.position(0), data.data.position(1),
@@ -273,9 +273,9 @@ Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>>
 
 void flapDebugCallback(const CTRL::ControlAttitudeFlapSetting &flapSetting) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   Serial.printf("Flap Debug [%.2f, %.2f, %.2f, %.2f]\n",
                 flapSetting.flapTLAngle_Rad, flapSetting.flapTRAngle_Rad,
@@ -288,9 +288,9 @@ Core::StaticCallback_Subscriber<CTRL::ControlAttitudeFlapSetting>
 
 void tvcDebugCallback(const Math::Vector<float, 4> &tvcSetting) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
 
   Serial.printf("TVC Debug [%.3f, %.3f, %.3f, %.3f]\n", tvcSetting(0),
                 tvcSetting(1), tvcSetting(2), tvcSetting(3));
@@ -302,9 +302,9 @@ Core::StaticCallback_Subscriber<Math::Vector<float, 4>>
 
 void attitudeSetpointCallback(const Math::Vector<float, 7> &attitudeSetpoint) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
   Serial.printf("Attitude Setpoint [%.3f, %.3f, %.3f, %.3f]\n",
                 attitudeSetpoint(3), attitudeSetpoint(4), attitudeSetpoint(5),
                 attitudeSetpoint(6));
@@ -317,9 +317,9 @@ Core::StaticCallback_Subscriber<Math::Vector<float, 7>>
 
 void positionSetpointCallback(const MissionState &positionSetpoint) {
   static int64_t lastSend = 0;
-  if (Core::NOW() - lastSend < 0.02 * Core::SECONDS)
+  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
     return;
-  lastSend = Core::NOW();
+  lastSend = Core::NowNs();
   Serial.printf("Position Setpoint [%.3f, %.3f, %.3f]\n",
                 positionSetpoint.positionSetpoint[3],
                 positionSetpoint.positionSetpoint[4],
@@ -1034,7 +1034,7 @@ public:
 
     // Check sensor for data timeout which indicates a failure
 
-    if (Core::NOW() - gnssSubr.getItem().timestamp > DATA_TIMEOUT) {
+    if (Core::NowNs() - gnssSubr.getItem().timestamp > DATA_TIMEOUT) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.sensorFailure = true;
       sensoryState_.gnss = TelemetrySensor::TelemetrySensor_Failure;
@@ -1043,7 +1043,7 @@ public:
       sensoryState_.gnss = TelemetrySensor::TelemetrySensor_Ready;
     }
 
-    if (Core::NOW() - gyroSubr.getItem().timestamp > DATA_TIMEOUT) {
+    if (Core::NowNs() - gyroSubr.getItem().timestamp > DATA_TIMEOUT) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.sensorFailure = true;
       sensoryState_.imu = TelemetrySensor::TelemetrySensor_Failure;
@@ -1052,7 +1052,7 @@ public:
       sensoryState_.imu = TelemetrySensor::TelemetrySensor_Ready;
     }
 
-    if (Core::NOW() - magSubr.getItem().timestamp > DATA_TIMEOUT * 5 &&
+    if (Core::NowNs() - magSubr.getItem().timestamp > DATA_TIMEOUT * 5 &&
         sensoryState_.mag != TelemetrySensor::TelemetrySensor_Failure) {
       // vehicleMode_ = VehicleMode::VehicleMode_Failure;
       // failureState_.sensorFailure = true;
@@ -1068,7 +1068,7 @@ public:
       sensoryState_.mag = TelemetrySensor::TelemetrySensor_Ready;
     }
 
-    if (Core::NOW() - baroSubr.getItem().timestamp > DATA_TIMEOUT) {
+    if (Core::NowNs() - baroSubr.getItem().timestamp > DATA_TIMEOUT) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.sensorFailure = true;
       sensoryState_.baro = TelemetrySensor::TelemetrySensor_Failure;
@@ -1077,7 +1077,7 @@ public:
       sensoryState_.baro = TelemetrySensor::TelemetrySensor_Ready;
     }
 
-    if (Core::NOW() - posEstSubr.getItem().timestamp > DATA_TIMEOUT) {
+    if (Core::NowNs() - posEstSubr.getItem().timestamp > DATA_TIMEOUT) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.sensorFailure = true;
       sensoryState_.positionKF = TelemetrySensor::TelemetrySensor_Failure;
@@ -1088,7 +1088,7 @@ public:
       sensoryState_.positionKF = TelemetrySensor::TelemetrySensor_Ready;
     }
 
-    if (Core::NOW() - attEstSubr.getItem().timestamp > DATA_TIMEOUT) {
+    if (Core::NowNs() - attEstSubr.getItem().timestamp > DATA_TIMEOUT) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.sensorFailure = true;
       sensoryState_.attitudeKF = TelemetrySensor::TelemetrySensor_Failure;
@@ -1450,7 +1450,7 @@ public:
             if (mag[i][0] > magMax[i][0]) magMax[i][0] = mag[i][0];
         }
 
-        Core::printM("Time: %f, Mag: ", Core::NOWSeconds());
+        Core::printM("Time: %f, Mag: ", Core::NowS());
         mag.printTo(Core::printM);
         Core::printM("\n");
 
@@ -1491,7 +1491,7 @@ public:
 
     // return;
     /*Core::Timestamped<SNSR::GNSSData> dummyGNSSData;
-    dummyGNSSData.timestamp = Core::NOW();
+    dummyGNSSData.timestamp = Core::NowNs();
     dummyGNSSData.data.position = gnssRef;
     dummyGNSSData.data.positionCov = Math::Vector_F({3, 3, 3});
     dummyGNSSData.data.velocity = Math::Vector_F({0, 0, 0});
@@ -1585,7 +1585,7 @@ public:
       // display_.setCursor(0, 9);
       // display_.printf("Lat: %.10f, \nLon: %.10f\nAlt:%.2f, T:%.2f",
       // gnssData.data.latitude*180/3.14, gnssData.data.longitude*180/3.14,
-      // gnssData.data.altitude, Core::NOWSeconds()/60);
+      // gnssData.data.altitude, Core::NowS()/60);
 
       display_.display();
 
@@ -1601,7 +1601,7 @@ public:
       // attData.data(3), attData.data(4), attData.data(5), attData.data(6));
     }
 
-    if (Core::NOW() > 5 * Core::SECONDS) {
+    if (Core::NowNs() > 5 * Core::SECONDS) {
     }
 
     //(magTransform * (magSub.getItem().data.val -

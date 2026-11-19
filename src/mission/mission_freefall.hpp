@@ -125,7 +125,7 @@ public:
     // positionIs_(5), stoppingDistance); // Log the mission start
 
     missionState_.missionMode = missionState_.missionMode;
-    missionState_.missionTime = missionTime_.NOW();
+    missionState_.missionTime = missionTime_.Now();
     missionState_.positionSetpoint[0] = 0;
     missionState_.positionSetpoint[1] = 0;
     missionState_.positionSetpoint[2] = 0;
@@ -145,7 +145,7 @@ public:
 
     disableKinematicSafety_ = true; // Disable the kinematic safety measures
 
-    // missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time
+    // missionTimeTopic.publish(missionTime_.Now()); // Publish the mission time
     // to the control system
   }
 

@@ -83,7 +83,7 @@ namespace VCTR
         void Datalink_SX1280::taskThread()
         {
 
-            auto threadTime = Core::NOW();
+            auto threadTime = Core::NowNs();
 
             if (digitalRead(DIO1_PIN_) == HIGH)
             {

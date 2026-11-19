@@ -75,7 +75,7 @@ void StarshipFlaps::taskInit() {
 }
 
 void StarshipFlaps::beginActuatorTest(int64_t testOffset) {
-  actuatorTestStartTime_ = Core::NOW() + testOffset;
+  actuatorTestStartTime_ = Core::NowNs() + testOffset;
   actuatorTestState_ = ActuatorTestingState::WaitBegin;
   // enableActuators_ = true;
   LOG_MSG("Flap test begin\n");
@@ -98,7 +98,7 @@ void StarshipFlaps::taskThread() {
 
     bool finished = true;
 
-    if (Core::NOW() - actuatorTestStartTime_ > 0) {
+    if (Core::NowNs() - actuatorTestStartTime_ > 0) {
       actuatorTestState_ = ActuatorTestingState::Testing;
       enable = true;
     }
@@ -108,16 +108,16 @@ void StarshipFlaps::taskThread() {
     }
 
     auto actCalcFunc = [this](float phaseOffset) -> float {
-      return (sin(phaseOffset + double(Core::NOW() - actuatorTestStartTime_) /
+      return (sin(phaseOffset + double(Core::NowNs() - actuatorTestStartTime_) /
                                     Core::SECONDS / FLAP_TEST_DURATION * 2 *
                                     3.1415) +
               1) *
              3.14 / 2;
     };
 
-    if (Core::NOW() - actuatorTestStartTime_ <
+    if (Core::NowNs() - actuatorTestStartTime_ <
             FLAP_TEST_DURATION * Core::SECONDS &&
-        Core::NOW() - actuatorTestStartTime_ > 0) {
+        Core::NowNs() - actuatorTestStartTime_ > 0) {
       flapSettings.flapBLAngle_Rad = actCalcFunc(0);
       flapSettings.flapTRAngle_Rad = actCalcFunc(3.14 / 4);
       flapSettings.flapTLAngle_Rad = actCalcFunc(3.14 / 2);
@@ -164,7 +164,7 @@ void StarshipFlaps::taskThread() {
     servoBRPin_.setValue(
         1 - (flapSettings.flapBRAngle_Rad + offset + offsetBR) / 3.1415 * 2);
 
-    auto newUpdateTime = Core::NOW();
+    auto newUpdateTime = Core::NowNs();
     tlFlapSim_.setTargetAngle(flapSettings.flapTLAngle_Rad);
     trFlapSim_.setTargetAngle(flapSettings.flapTRAngle_Rad);
     blFlapSim_.setTargetAngle(flapSettings.flapBLAngle_Rad);
@@ -186,7 +186,7 @@ void StarshipFlaps::taskThread() {
         .enableFlaps = enableActuators_});
 
   } else {
-    lastUpdateTime_ = Core::NOW();
+    lastUpdateTime_ = Core::NowNs();
   }
 }
 

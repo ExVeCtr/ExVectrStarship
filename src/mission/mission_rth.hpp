@@ -180,7 +180,7 @@ public:
     }
 
     missionState_.missionMode = missionState_.missionMode;
-    missionState_.missionTime = missionTime_.NOW();
+    missionState_.missionTime = missionTime_.Now();
     missionState_.positionSetpoint[0] = positionSetpoint_(0);
     missionState_.positionSetpoint[1] = positionSetpoint_(1);
     missionState_.positionSetpoint[2] = positionSetpoint_(2);
@@ -194,7 +194,7 @@ public:
     // flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to
     // the control system
 
-    // missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time
+    // missionTimeTopic.publish(missionTime_.Now()); // Publish the mission time
     // to the control system
   }
 
@@ -235,16 +235,16 @@ private:
     // posSubr_.getItem().data(5)); // Log the mission start
 
     hoverModeLastUpdate_ =
-        Core::NOW(); // Set the time when the hover mode was last updated
+        Core::NowNs(); // Set the time when the hover mode was last updated
 
     runningState_ = RunningState::RunningState_Stabilize; // Set the running
                                                           // state to stabilise
   }
 
   void missionHover() {
-    float dTime = float(Core::NOW() - hoverModeLastUpdate_) / Core::SECONDS;
+    float dTime = float(Core::NowNs() - hoverModeLastUpdate_) / Core::SECONDS;
     hoverModeLastUpdate_ =
-        Core::NOW(); // Set the time when the hover mode was last updated
+        Core::NowNs(); // Set the time when the hover mode was last updated
 
     actuatorsEnabled_ = true;
     missionEnd_ = false; // Set the mission end to false
@@ -339,7 +339,7 @@ private:
         runningState_ =
             RunningState::RunningState_Descent; // Go to descent mode
         descentModeTimestamp_ =
-            Core::NOW(); // Set the time when the descent mode was started
+            Core::NowNs(); // Set the time when the descent mode was started
         positionSetpoint_(5) =
             positionIs_(5); // Set the setpoint position in the reference
                             // frame to the current position
@@ -362,9 +362,9 @@ private:
   }
 
   void missionDescent() {
-    float dTime = float(Core::NOW() - descentModeTimestamp_) / Core::SECONDS;
+    float dTime = float(Core::NowNs() - descentModeTimestamp_) / Core::SECONDS;
     descentModeTimestamp_ =
-        Core::NOW(); // Set the time when the descent mode was last updated
+        Core::NowNs(); // Set the time when the descent mode was last updated
 
     actuatorsEnabled_ = true;
     missionEnd_ = false; // Set the mission end to falses
@@ -403,10 +403,10 @@ private:
                                      // threshold distance. This triggers the
                                      // start of the timer.
       landingThresMetTime_ =
-          Core::NOW(); // Set the time when the landing threshold was met
+          Core::NowNs(); // Set the time when the landing threshold was met
     }
 
-    if (Core::NOW() - landingThresMetTime_ >
+    if (Core::NowNs() - landingThresMetTime_ >
         landingThresholdTime_) { // If the vehicle is below the landing
                                  // threshold distance for a certain time, we
                                  // consider it as landed.
@@ -415,7 +415,7 @@ private:
     }
 
     if (groundDistance < 0.04 && groundDistance > -0.02 && groundCov < 7 &&
-        Core::NOW() - groundLastUpdate <
+        Core::NowNs() - groundLastUpdate <
             100 * Core::MILLISECONDS) // If the ground distance is less than 4
                                       // cm and is confident, we consider it as
                                       // landed.

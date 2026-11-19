@@ -7,7 +7,7 @@ using namespace VCTR;
 void SNSR::UbloxSerialGNSS::_getData()
 {
 
-    auto time = Core::NOW();
+    auto time = Core::NowNs();
     numSats_ = gnss_.getSIV();
 
     float positionDeviation = (float)gnss_.getHorizontalAccEst() / 1000.0f;
@@ -97,17 +97,17 @@ bool SNSR::UbloxSerialGNSS::readGNSS()
     { // Read data but tell library to not waste time waiting.
 
         _getData();
-        lastMeasurement_ = Core::NOW();
+        lastMeasurement_ = Core::NowNs();
 
         retVal = true;
     }
-    else if (Core::NOW() - lastMeasurement_ >= 500 * Core::MILLISECONDS)
+    else if (Core::NowNs() - lastMeasurement_ >= 500 * Core::MILLISECONDS)
     {
 
         // gnss_.factoryDefault(100);
         // init();
         // gnss_.flushPVT();
-        lastMeasurement_ = Core::NOW();
+        lastMeasurement_ = Core::NowNs();
 
         LOG_MSG("Long time past sice last measurment. Flushed PVT\n");
     }

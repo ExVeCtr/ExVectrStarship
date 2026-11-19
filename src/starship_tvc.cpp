@@ -48,7 +48,7 @@ void StarshipTVC::taskInit() {
 }
 
 void StarshipTVC::beginActuatorTest(int64_t testOffset) {
-  actuatorTestStartTime_ = Core::NOW() + testOffset;
+  actuatorTestStartTime_ = Core::NowNs() + testOffset;
   actuatorTestState_ = ActuatorTestingState::WaitBegin;
   // enableActuators_ = true;
   LOG_MSG("TVC test begin\n");
@@ -59,7 +59,7 @@ bool StarshipTVC::testingActuators() {
 }
 
 void StarshipTVC::taskThread() {
-  auto threadStartTime = Core::NOW();
+  auto threadStartTime = Core::NowNs();
   double dTime = (threadStartTime - lastThreadTime_) / double(Core::SECONDS);
   auto tvcSetting = ctrlSubr_.getItem();
   auto tvcTwistForce = tvcSetting(3); // Torque in Z axis (roll torque)
@@ -140,33 +140,33 @@ void StarshipTVC::taskThread() {
 
     enableActuators = true;
 
-    if (Core::NOW() - actuatorTestStartTime_ > 0) {
+    if (Core::NowNs() - actuatorTestStartTime_ > 0) {
       actuatorTestState_ = ActuatorTestingState::Testing;
     }
 
-    if (Core::NOW() - actuatorTestStartTime_ <
+    if (Core::NowNs() - actuatorTestStartTime_ <
         TVC_TEST_SPIN_TIME * Core::SECONDS) {
       // LOG_MSG("Actuator test spin\n");
 
       float angleSin =
-          sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS /
+          sin(double(Core::NowNs() - actuatorTestStartTime_) / Core::SECONDS /
               TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) *
           servoAngleLimit_Rad_;
       float angleCos =
-          cos(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS /
+          cos(double(Core::NowNs() - actuatorTestStartTime_) / Core::SECONDS /
               TVC_TEST_SPIN_TIME * 2 * M_PI * TVC_TEST_SPIN_COUNT) *
           servoAngleLimit_Rad_;
       xAngle = angleSin;
       yAngle = angleCos;
 
-    } else if (Core::NOW() - actuatorTestStartTime_ <
+    } else if (Core::NowNs() - actuatorTestStartTime_ <
                (TVC_TEST_TWIST_TIME + TVC_TEST_SPIN_TIME) * Core::SECONDS) {
       // LOG_MSG("Actuator test twist\n");
 
       xAngle = 0;
       yAngle = 0;
       tvcTwistForce =
-          sin(double(Core::NOW() - actuatorTestStartTime_) / Core::SECONDS /
+          sin(double(Core::NowNs() - actuatorTestStartTime_) / Core::SECONDS /
               TVC_TEST_TWIST_TIME * 2 * M_PI * TVC_TEST_TWIST_COUNT);
 
     } else {
@@ -265,9 +265,9 @@ void StarshipTVC::taskThread() {
     // LOG_MSG("TVC: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1),
     // tvcSetting(2), tvcSetting(3));
 
-    if (Core::NOW() - motorEnableTime_ > 2000 * Core::MILLISECONDS ||
+    if (Core::NowNs() - motorEnableTime_ > 2000 * Core::MILLISECONDS ||
         !firstMotorEnable_) {
-      // LOG_MSG("Motor enable time: %lld\n", Core::NOW() - motorEnableTime_);
+      // LOG_MSG("Motor enable time: %lld\n", Core::NowNs() - motorEnableTime_);
       firstMotorEnable_ = false;
       float motorIdle = 0.04;
       motorCW_.setValue(motorCWOut + motorIdle);
@@ -282,7 +282,7 @@ void StarshipTVC::taskThread() {
 
   } else {
     motorEnableTime_ =
-        Core::NOW(); // Reset the motor enable time to now, so that the motors
+        Core::NowNs(); // Reset the motor enable time to now, so that the motors
                      // are not enabled again until the next control loop.
   }
 

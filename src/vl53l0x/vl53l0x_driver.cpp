@@ -834,7 +834,7 @@ namespace VCTR::SNSR
     float VL53L0X::readRangeContinuous()
     {
 
-        auto timestamp = Core::NOW();
+        auto timestamp = Core::NowNs();
         if (!measurementReady())
         {
             return 0; // no new measurement available
@@ -902,10 +902,10 @@ namespace VCTR::SNSR
 
         writeReg(0x94, 0x6b);
         writeReg(0x83, 0x00);
-        auto start = Core::NOW();
+        auto start = Core::NowNs();
         while (readReg(0x83) == 0x00)
         {
-            if (Core::NOW() - start > 500 * Core::MILLISECONDS)
+            if (Core::NowNs() - start > 500 * Core::MILLISECONDS)
             {
                 return false;
             }
@@ -1035,10 +1035,10 @@ namespace VCTR::SNSR
     {
         writeReg(SYSRANGE_START, 0x01 | vhv_init_byte); // VL53L0X_REG_SYSRANGE_MODE_START_STOP
 
-        auto start = Core::NOW();
+        auto start = Core::NowNs();
         while ((readReg(RESULT_INTERRUPT_STATUS) & 0x07) == 0)
         {
-            if (Core::NOW() - start > 500 * Core::MILLISECONDS)
+            if (Core::NowNs() - start > 500 * Core::MILLISECONDS)
             {
                 return false;
             }
@@ -1101,7 +1101,7 @@ namespace VCTR::SNSR
         setTimeout(500);
         startContinuous();
         initialised_ = true;
-        lastSensorData_ = Core::NOW();
+        lastSensorData_ = Core::NowNs();
         LOG_MSG("sensor start successful!\n");
     }
 
@@ -1126,7 +1126,7 @@ namespace VCTR::SNSR
         {
             readRangeContinuous();
         }
-        if (Core::NOW() - lastSensorData_ > 1000 * Core::MILLISECONDS)
+        if (Core::NowNs() - lastSensorData_ > 1000 * Core::MILLISECONDS)
         {
             LOG_MSG("no data available for more than 1000ms! Something has failed! Restarting sensor!\n");
             setInitialised(false);

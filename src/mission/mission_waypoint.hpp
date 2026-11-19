@@ -153,7 +153,7 @@ public:
     missionState_.missionMode =
         MissionMode::MissionMode_Idle; // Set the mission mode to idle
     lastUpdateTimestamp_ =
-        Core::NOW(); // Set the last update timestamp to the current time
+        Core::NowNs(); // Set the last update timestamp to the current time
   }
 
   const MissionState &getMissionState() const {
@@ -169,8 +169,8 @@ public:
     currentWaypointIndex_ = 0;       // Reset the waypoint index
     currentVelocity_ = 0;            // Reset the current velocity to 0
     waypointStartTime_ =
-        Core::NOW(); // Set the time when the waypoint was started
-    lastUpdateTimestamp_ = Core::NOW();    // Reset the last update timestamp
+        Core::NowNs(); // Set the time when the waypoint was started
+    lastUpdateTimestamp_ = Core::NowNs();    // Reset the last update timestamp
     LOG_MSG("Started mission waypoint\n"); // Log the mission start
   };
 
@@ -215,7 +215,7 @@ public:
     }
 
     missionState_.missionMode = missionState_.missionMode;
-    missionState_.missionTime = missionTime_.NOW();
+    missionState_.missionTime = missionTime_.Now();
     missionState_.positionSetpoint[0] = positionSetpoint_(0);
     missionState_.positionSetpoint[1] = positionSetpoint_(1);
     missionState_.positionSetpoint[2] = positionSetpoint_(2);
@@ -229,7 +229,7 @@ public:
     // flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to
     // the control system
 
-    // missionTimeTopic.publish(missionTime_.NOW()); // Publish the mission time
+    // missionTimeTopic.publish(missionTime_.Now()); // Publish the mission time
     // to the control system
   }
 
@@ -246,7 +246,7 @@ private:
     actuatorsEnabled_ = false; // Disable actuators
     missionEnd_ = false;       // Set the mission end to false
 
-    if (missionTime_.NOW() >
+    if (missionTime_.Now() >
         -10 * Core::SECONDS) { // If the mission time is greater than -5
                                // seconds, we consider it as initialised
       missionState_.missionMode =
@@ -274,9 +274,9 @@ private:
     positionSetpoint_(5) = posSubr_.getItem().data(5);
 
     lastUpdateTimestamp_ =
-        Core::NOW(); // Set the time when the hover mode was last updated
+        Core::NowNs(); // Set the time when the hover mode was last updated
     waypointStartTime_ =
-        Core::NOW(); // Set the time when the waypoint was started
+        Core::NowNs(); // Set the time when the waypoint was started
 
     currentWaypointIndex_ = 0; // Reset the waypoint index
     if (waypoints_.size() == 0) {
@@ -289,7 +289,7 @@ private:
                                                                        // start
     }
 
-    if (missionTime_.NOW() > 0)
+    if (missionTime_.Now() > 0)
       missionState_.missionMode =
           MissionMode::MissionMode_Running; // Go to hover mode
 
@@ -298,9 +298,9 @@ private:
 
   void missionHover() {
 
-    float dTime = float(Core::NOW() - lastUpdateTimestamp_) / Core::SECONDS;
+    float dTime = float(Core::NowNs() - lastUpdateTimestamp_) / Core::SECONDS;
     lastUpdateTimestamp_ =
-        Core::NOW(); // Set the time when the hover mode was last updated
+        Core::NowNs(); // Set the time when the hover mode was last updated
 
     actuatorsEnabled_ = true;
     // missionEnd_ = false; // Set the mission end to false
@@ -327,7 +327,7 @@ private:
 
       waypointReached_ = true; // Set the waypoint reached to true
 
-      if (Core::NOW() - waypointThresholdTime_ >
+      if (Core::NowNs() - waypointThresholdTime_ >
           waypoint
               .loiterTime) { // If the vehicle is within the threshold distance
                              // for a certain time, we consider it as reached
@@ -363,8 +363,8 @@ private:
                   double(waypoint.loiterTime) / Core::SECONDS);
           LOG_MSG("Waypoint time limit: %.2f\n",
                   double(waypoint.timeLimit) / Core::SECONDS);
-          waypointThresholdTime_ = Core::NOW();
-          waypointStartTime_ = Core::NOW();
+          waypointThresholdTime_ = Core::NowNs();
+          waypointStartTime_ = Core::NowNs();
           waypointReached_ = false;
         } else {
           LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
@@ -374,10 +374,10 @@ private:
     } else {
 
       waypointThresholdTime_ =
-          Core::NOW(); // Set the time when the waypoint was reached
+          Core::NowNs(); // Set the time when the waypoint was reached
 
       if (!waypointReached_ &&
-          Core::NOW() - waypointStartTime_ >
+          Core::NowNs() - waypointStartTime_ >
               waypoint.timeLimit) { // If the vehicle is within the threshold
                                     // distance for a certain time, we consider
                                     // it as not reachable
@@ -405,9 +405,9 @@ private:
           LOG_MSG("Waypoint not reachable. Next point: %d\n",
                   currentWaypointIndex_); // Log the waypoint reached
           waypointThresholdTime_ =
-              Core::NOW(); // Set the time when the waypoint was reached
+              Core::NowNs(); // Set the time when the waypoint was reached
           waypointStartTime_ =
-              Core::NOW(); // Set the time when the waypoint was started
+              Core::NowNs(); // Set the time when the waypoint was started
           waypointReached_ = false; // Set the waypoint reached to false
         } else {
           LOG_MSG(

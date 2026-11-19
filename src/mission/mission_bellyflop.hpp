@@ -86,7 +86,7 @@ public:
     setPaused(false); // Unpause the task to start the mission
     controlTvc_.unsubscribeAttitudeSetpoint();
     transitionStartTime_ =
-        Core::NOW(); // Set the time when the transition started
+        Core::NowNs(); // Set the time when the transition started
   };
 
   void resetMission() override {
@@ -119,7 +119,7 @@ public:
     auto angleTrigger = angle < angleThreshold_Rad_;
     auto angVelTrigger = abs(velIs(1)) > angVelThreshold_RadPs_;
     auto timeTrigger =
-        Core::NOW() - transitionStartTime_ > transitionTimeLimit_;
+        Core::NowNs() - transitionStartTime_ > transitionTimeLimit_;
     if (angleTrigger) {
       LOG_MSG("Bellyflop Transition finished. Trigger was angle\n");
       stopTrigger = true;
@@ -138,7 +138,7 @@ public:
           "Transition finished. State: %.2f deg, angular velocity: %.2f deg/s, "
           "Time since start: %.2f s\n",
           angle / DEGREES, velIs(1) / DEGREES,
-          double(Core::NOW() - transitionStartTime_) /
+          double(Core::NowNs() - transitionStartTime_) /
               Core::SECONDS); // Log the transition finished
       setPaused(true);        // Pause the task to stop these calculations
     }
