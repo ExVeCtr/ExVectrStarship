@@ -1,8 +1,7 @@
 #ifndef TELEMETRY_HPP
 #define TELEMETRY_HPP
 
-#include "ExVectrMath/matrix_base.hpp"
-#include "ExVectrMath/matrix_vector.hpp"
+#include <stdint.h>
 
 #include "subsystems.hpp"
 
@@ -93,31 +92,8 @@ namespace VCTR
     };
 
     /**
-     * * @brief All vehicle state data compressed into a single struct.
-     */
-    struct VehicleState
-    {
-
-        VehicleMode mode;          // The current mode of the vehicle.
-        SensoryState sensoryState; // The current state of the sensors.
-        FailureState failureState; // The current state of the failures.
-
-        bool simulationModeEnabled; // If the simulation mode is enabled or not. This is used for testing and debugging. In this mode the system will not use any sensors and will just run the control loop with simulated data.
-
-        bool armed; // If the vehicle is armed or not. This is used to disable dangerous systems (motors) and test the system without the risk of damaging it.
-
-        int16_t tvcThrustX; // assuming 50N max thrust.
-        int16_t tvcThrustY; // assuming 50N max thrust.
-        int16_t tvcThrustZ; // assuming 50N max thrust.
-        int16_t tvcTorque;  // assuming 50N max torque.
-
-        int16_t groundDistance;    // The estimated ground distance in meters. Max value is 2 meters
-        int16_t groundDistanceCov; // The covariance of the ground distance estimation in meters^2. Max value is 1 meter^2
-
-    } __attribute__((packed));
-
-    /**
-     * * @brief All data related to the state of the mission
+     * * @brief All data related to the state of the mission. Internal (missions report it); the wire
+     * formats are the generated ExVectrPackets packets (src/comms/telemetry_mapping.hpp).
      */
     struct MissionState
     {

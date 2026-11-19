@@ -2,8 +2,7 @@
 #define TELECOMMAND_HPP
 
 
-#include "ExVectrMath/matrix_base.hpp"
-#include "ExVectrMath/matrix_vector.hpp"
+#include <stdint.h>
 
 #include "subsystems.hpp"
 

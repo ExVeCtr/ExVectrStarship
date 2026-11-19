@@ -1,0 +1,245 @@
+#include "telemetry_mapping.hpp"
+
+#include <math.h>
+#include <string.h>
+
+namespace VCTR {
+namespace Comms {
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+float nanf_() { return NAN; }
+
+void copy3(const float *in, float *out) {
+  out[0] = in[0];
+  out[1] = in[1];
+  out[2] = in[2];
+}
+
+} // namespace
+
+uint32_t packFailureBits(const FailureState &f) {
+  uint32_t b = 0;
+  if (f.sensorFailure) b |= 1u << 0;
+  if (f.attitudeFailure) b |= 1u << 1;
+  if (f.positionFailure) b |= 1u << 2;
+  if (f.positionOutOfBounds) b |= 1u << 3;
+  if (f.attitudeOutOfBounds) b |= 1u << 4;
+  if (f.radioConnectionLoss) b |= 1u << 5;
+  return b;
+}
+
+uint16_t packSensorState(const SensoryState &s) {
+  auto v = [](TelemetrySensor t) { return static_cast<uint16_t>(static_cast<uint8_t>(t) & 0x03u); };
+  return static_cast<uint16_t>(v(s.gnss) | (v(s.imu) << 2) | (v(s.baro) << 4) | (v(s.mag) << 6) |
+                               (v(s.attitudeKF) << 8) | (v(s.positionKF) << 10));
+}
+
+uint32_t timeUs(int64_t t_ns) { return static_cast<uint32_t>(static_cast<uint64_t>(t_ns / 1000)); }
+
+void quatToEulerZYX(const float q[4], float &roll, float &pitch, float &yaw) {
+  const float w = q[0], x = q[1], y = q[2], z = q[3];
+  roll = atan2f(2.0f * (w * x + y * z), 1.0f - 2.0f * (x * x + y * y));
+  float sp = 2.0f * (w * y - z * x);
+  if (sp > 1.0f) sp = 1.0f;
+  if (sp < -1.0f) sp = -1.0f;
+  pitch = asinf(sp);
+  yaw = atan2f(2.0f * (w * z + x * y), 1.0f - 2.0f * (y * y + z * z));
+}
+
+float courseOverGround(float vNorth, float vWest) {
+  float c = atan2f(-vWest, vNorth); // east = -west
+  if (c < 0.0f) c += 2.0f * kPi;
+  if (c >= 2.0f * kPi) c = 0.0f;
+  return c;
+}
+
+void tvcDeflection(const float thrust[3], float out[2]) {
+  out[0] = atan2f(thrust[0], thrust[2]);
+  out[1] = atan2f(thrust[1], thrust[2]);
+}
+
+void modeText(VehicleMode mode, MissionPhase phase, bool armed, bool simulation, char out[8]) {
+  const char *t = "?";
+  switch (mode) {
+  case VehicleMode::VehicleMode_Startup:
+  case VehicleMode::VehicleMode_SensorInit:
+    t = "INIT";
+    break;
+  case VehicleMode::VehicleMode_SensorCalib:
+    t = "CALIB";
+    break;
+  case VehicleMode::VehicleMode_Ready:
+    t = armed ? "ARMD" : "RDY";
+    break;
+  case VehicleMode::VehicleMode_Failure:
+    t = "FAIL";
+    break;
+  case VehicleMode::VehicleMode_Running:
+    switch (phase) {
+    case MissionPhase_Hover: t = "HOVR"; break;
+    case MissionPhase_Ascent: t = "ASCN"; break;
+    case MissionPhase_Descent: t = "DESC"; break;
+    case MissionPhase_Deceleration: t = "DECL"; break;
+    case MissionPhase_RTH: t = "RTH"; break;
+    case MissionPhase_Landing: t = "LAND"; break;
+    case MissionPhase_Completed: t = "DONE"; break;
+    default: t = "RUN"; break;
+    }
+    break;
+  }
+  memset(out, 0, 8);
+  size_t n = strlen(t);
+  if (n > 5) n = 5;
+  memcpy(out, t, n);
+  if (simulation) {
+    out[n] = ' ';
+    out[n + 1] = 'S';
+  }
+}
+
+Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
+  Packets::VehicleStatus p;
+  p.t_us = timeUs(s.t_ns);
+  p.t_ns = s.t_ns;
+  p.mode = static_cast<uint8_t>(s.mode);
+  p.mission_mode = static_cast<uint8_t>(s.missionMode);
+  p.mission_phase = static_cast<uint8_t>(s.missionPhase);
+  p.ctrl_source = Packets::ControlSource::kNone; // T9b: RC control sources do not exist yet
+  uint8_t f = 0;
+  if (s.armed) f |= Packets::VehicleStatus::kFlagsArmed;
+  if (s.simulation) f |= Packets::VehicleStatus::kFlagsSimulation;
+  if (s.motorsEnabled) f |= Packets::VehicleStatus::kFlagsMotorsEnabled;
+  if (s.gsPresent) f |= Packets::VehicleStatus::kFlagsGsPresent;
+  if (s.incompatible) f |= Packets::VehicleStatus::kFlagsIncompatible;
+  if (s.mode == VehicleMode::VehicleMode_Failure) f |= Packets::VehicleStatus::kFlagsFailsafe;
+  p.flags = f;
+  p.failure_bits = packFailureBits(s.failures);
+  p.sensor_state = packSensorState(s.sensors);
+  p.last_req_id = 0;     // T9b: no REQUEST handling yet
+  p.last_req_status = 0;
+  p.rc_age = nanf_();    // T9b: no RC_STATE yet
+  return p;
+}
+
+Packets::AirPose makeAirPose(const TelemetrySnapshot &s) {
+  Packets::AirPose p;
+  p.t_us = timeUs(s.t_ns);
+  for (int i = 0; i < 4; i++) p.q[i] = s.att[3 + i];
+  copy3(&s.pos[3], p.pos);
+  copy3(&s.pos[0], p.vel);
+  return p;
+}
+
+Packets::Pose makePose(const TelemetrySnapshot &s) {
+  Packets::Pose p;
+  p.t_us = timeUs(s.t_ns);
+  copy3(&s.att[0], p.omega);
+  for (int i = 0; i < 4; i++) p.q[i] = s.att[3 + i];
+  copy3(&s.pos[0], p.vel);
+  copy3(&s.pos[3], p.pos);
+  return p;
+}
+
+Packets::Actuators makeActuators(const TelemetrySnapshot &s) {
+  Packets::Actuators p;
+  p.t_us = timeUs(s.t_ns);
+  for (int i = 0; i < 4; i++) p.flaps[i] = s.flaps[i];
+  tvcDeflection(s.tvcThrust, p.tvc);
+  p.thrust = sqrtf(s.tvcThrust[0] * s.tvcThrust[0] + s.tvcThrust[1] * s.tvcThrust[1] +
+                   s.tvcThrust[2] * s.tvcThrust[2]);
+  p.ground_distance = s.groundDistance;
+  return p;
+}
+
+Packets::Mission makeMission(const TelemetrySnapshot &s) {
+  Packets::Mission p;
+  p.t_us = timeUs(s.t_ns);
+  copy3(&s.setpoint[3], p.setpoint_pos);
+  copy3(&s.setpoint[0], p.setpoint_vel);
+  p.mission_time = static_cast<float>(static_cast<double>(s.missionTime_ns) * 1e-9);
+  p.index = s.missionIndex;
+  p.phase = static_cast<uint8_t>(s.missionPhase);
+  return p;
+}
+
+Packets::Gnss makeGnss(const TelemetrySnapshot &s) {
+  Packets::Gnss p;
+  p.t_us = timeUs(s.t_ns);
+  p.latitude = s.latitude;
+  p.longitude = s.longitude;
+  p.altitude = s.altitude;
+  copy3(s.gnssVel, p.vel);
+  p.satellites = s.satellites;
+  p.fix_type = s.gnssValid ? 3 : 0; // the driver exposes no u-blox fix type: 3 = valid (>= 5 satellites)
+  p.h_acc = s.hAcc;
+  p.v_acc = s.vAcc;
+  p.s_acc = s.sAcc;
+  return p;
+}
+
+Packets::HandsetTelem makeHandsetTelem(const TelemetrySnapshot &s) {
+  Packets::HandsetTelem p;
+  uint8_t f = 0;
+  if (s.armed) f |= Packets::HandsetTelem::kFlagsArmed;
+  if (s.mode == VehicleMode::VehicleMode_Failure) f |= Packets::HandsetTelem::kFlagsFailure;
+  if (s.simulation) f |= Packets::HandsetTelem::kFlagsSimulation;
+  if (s.gnssValid) f |= Packets::HandsetTelem::kFlagsGnssFix;
+  p.flags = f;
+  modeText(s.mode, s.missionPhase, s.armed, s.simulation, p.mode_text);
+  p.latitude = s.latitude;
+  p.longitude = s.longitude;
+  p.ground_speed = sqrtf(s.pos[0] * s.pos[0] + s.pos[1] * s.pos[1]);
+  p.heading = courseOverGround(s.pos[0], s.pos[1]);
+  p.altitude = s.pos[5];
+  p.satellites = s.satellites;
+  p.vertical_speed = s.pos[2];
+  quatToEulerZYX(&s.att[3], p.roll, p.pitch, p.yaw);
+  p.battery = nanf_(); // no battery monitoring: encodes as 0 = unknown
+  return p;
+}
+
+Packets::ImuRaw makeImuRaw(const TelemetrySnapshot &s) {
+  Packets::ImuRaw p;
+  p.t_us = timeUs(s.t_ns);
+  copy3(s.gyro, p.gyro);
+  copy3(s.accel, p.accel);
+  copy3(s.mag, p.mag);
+  p.pressure = s.pressure;
+  p.temperature = s.temperature;
+  return p;
+}
+
+Packets::Estimator makeEstimator(const TelemetrySnapshot &s) {
+  Packets::Estimator p;
+  p.t_us = timeUs(s.t_ns);
+  copy3(s.attStd, p.att_std);
+  copy3(s.velStd, p.vel_std);
+  copy3(s.posStd, p.pos_std);
+  return p;
+}
+
+// ---- TEMPORARY legacy telecommand adapter ----
+
+size_t LegacyTelecommandPacket::encode(uint8_t *out, size_t cap) const {
+  if (out == nullptr || cap < kMaxSize) return 0;
+  Packets::codec::put_u8(out + 0, static_cast<uint8_t>(tc.type));
+  Packets::codec::put_u8(out + 1, static_cast<uint8_t>(tc.subsystem));
+  Packets::codec::put_i16(out + 2, tc.paramInt);
+  Packets::codec::put_f32(out + 4, tc.paramFloat);
+  return kMaxSize;
+}
+
+bool LegacyTelecommandPacket::decode(const uint8_t *in, size_t len) {
+  if (in == nullptr || len != kMaxSize) return false;
+  tc.type = static_cast<TelecommandType>(Packets::codec::get_u8(in + 0));
+  tc.subsystem = static_cast<Subsystem>(Packets::codec::get_u8(in + 1));
+  tc.paramInt = Packets::codec::get_i16(in + 2);
+  tc.paramFloat = Packets::codec::get_f32(in + 4);
+  return true;
+}
+
+} // namespace Comms
+} // namespace VCTR

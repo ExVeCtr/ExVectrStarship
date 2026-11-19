@@ -126,6 +126,9 @@ public:
 
   void enableMotors(bool enable) { enableMotors_ = enable; }
 
+  /// Motor enable as set by the vehicle logic (telemetry only; motors also need enabled actuators).
+  bool isMotorsEnabled() const { return enableMotors_; }
+
   void taskCheck() override;
 
   void taskInit() override;

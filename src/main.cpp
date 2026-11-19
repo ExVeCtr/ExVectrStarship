@@ -26,13 +26,11 @@
 #include "ExVectrData/memory_internal.hpp"
 #include "ExVectrData/memory_manager.hpp"
 #include "ExVectrMath/specialised_types.hpp"
-#include "ExVectrNetwork/network_node.hpp"
-#include "ExVectrNetwork/transport_topic.hpp"
-#include "ExVectrPackets/packet_vehicle.hpp"
 #include "ExVectrSensor/Sensors/bme280.hpp"
 #include "ExVectrSensor/Sensors/mpu9250.hpp"
 #include "ExVectrSensor/Sensors/qmc5883.hpp"
 #include "board_v_1_0.h"
+#include "comms/vehicle_comms.hpp"
 #include "memory_keys.hpp"
 #include "starship_flaps.hpp"
 #include "starship_hardware.h"
@@ -43,21 +41,18 @@
 #include "ublox_gnss.hpp"
 #include "vl53l0x/vl53l0x_driver.hpp"
 
-// #include "SX128XLT.h"
 #include "Adafruit_SSD1306.h"
-#include "datalink_sx1280.hpp"
 #include "mission/mission_abstract.hpp"
 #include "mission/mission_bellyflop.hpp"
 #include "mission/mission_freefall.hpp"
 #include "mission/mission_rth.hpp"
 #include "mission/mission_waypoint.hpp"
 
-// #include "sx1280_driver/datalink_sx1280.hpp"
-
 // #define DO_FLAP_TEST_STARTUP
 
 #define EXTEND_FLAPS_ASCENT false
-#define DEBUG_TELEMETRY_SERIAL
+// USB Serial carries only ExVectrNetwork stream frames (src/comms/vehicle_comms.hpp): never print to Serial
+// directly. Console text (Core print, LOG_MSG) leaves as LOG_TEXT packets on USB.
 
 using namespace VCTR;
 
@@ -119,42 +114,9 @@ DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
 // gyroTransformTopic, internalMemory, 100); DSP::Calibrator_Manager<float>
 // magCalibratorManager(magCalibrator, magTransformTopic, internalMemory, 102);
 
-// Networking
-
-Net::Datalink_SX1280 datalinkSX1280(SX1280_NSS_PIN, SX1280_NRESET_PIN,
-                                    SX1280_RFBUSY_PIN, SX1280_DIO1_PIN,
-                                    SX1280_TXEN_PIN, SX1280_RXEN_PIN);
-Net::NetworkNode networkNode(1, datalinkSX1280, 2 * Core::SECONDS);
-// Net::NetworkMonitor networkMonitor(networkNode);
-
-Core::Topic<Net::PacketAttitude> attitudeDataTopic;
-Core::Topic<Net::PacketPosition> positionDataTopic;
-Core::Topic<uint8_t> connections;
-
-Core::Topic<VehicleState> vehicleStateTopic;
-Core::Topic<MissionState> missionStateTopic;
-
+// Networking: VehicleComms (src/comms/), defined below the vehicle tasks it reads from.
 Core::Topic<Telecommand> telecommandTopic;
-
-Core::Topic<Net::PacketGPS> gpsDataTopic;
-
-Net::TransportTopic<Net::PacketAttitude>
-    attitudeDataTransport(10, UINT16_MAX, networkNode, attitudeDataTopic);
-Net::TransportTopic<Net::PacketPosition>
-    positionDataTransport(11, UINT16_MAX, networkNode, positionDataTopic);
-Net::TransportTopic<Net::PacketGPS> gpsDataTransport(12, UINT16_MAX,
-                                                     networkNode, gpsDataTopic);
-
-Net::TransportTopic<VehicleState>
-    vehicleStateTransport(50, UINT16_MAX, networkNode, vehicleStateTopic);
-Net::TransportTopic<MissionState>
-    missionStateTransport(51, UINT16_MAX, networkNode, missionStateTopic);
-
-Net::TransportTopic<Telecommand>
-    telecommandTransport(1000, UINT16_MAX, networkNode, telecommandTopic);
-
-Net::TransportTopic<uint8_t> connectionsTransport(100, UINT16_MAX, networkNode,
-                                                  connections);
+extern Comms::VehicleComms vehicleComms;
 
 // Control
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
@@ -180,155 +142,6 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 7>>>
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>>
     positionTopicSwitch;
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 2>>> groundTopicSwitch;
-
-// Functions
-void attitudeTelemetryCallback(
-    const Core::Timestamped<Math::Vector<float, 7>> &data) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.2 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  float angle = 90 * DEGREES;
-  auto quat = Math::Quat<float>(Math::Vector<float, 3>{0, 0, 1}, angle);
-  auto vec = quat.rotate(Math::Vector<float, 3>{1, 0, 0});
-  Serial.printf("Vec: [%.3f, %.3f, %.3f] Should be [0, 1, 0]\n", vec(0), vec(1),
-                vec(2)); // Supposed to output [0,1,0]!!!!
-
-  Net::PacketAttitude packet(
-      {data.data(0), data.data(1), data.data(2)},
-      {data.data(3), data.data(4), data.data(5), data.data(6)});
-  attitudeDataTopic.publish(packet);
-}
-void attitudeDebugCallback(
-    const Core::Timestamped<Math::Vector<float, 7>> &data) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  // Print the attitude data to the serial port
-  Serial.printf("Attitude Debug [%.3f, %.3f, %.3f, %.3f]\n", data.data(3),
-                data.data(4), data.data(5), data.data(6));
-}
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>>
-    attitudeTeleSubr(attitudeTopicSwitch.getTopic(), attitudeTelemetryCallback);
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 7>>>
-    attitudeDebugSubr(attitudeTopicSwitch.getTopic(), attitudeDebugCallback);
-#endif
-
-void positionTelemetryCallback(
-    const Core::Timestamped<Math::Vector<float, 6>> &data) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.1 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  float hAcc =
-      sqrt(posEstTask.getCovariance()(3, 3) * posEstTask.getCovariance()(3, 3) +
-           posEstTask.getCovariance()(4, 4) *
-               posEstTask.getCovariance()(4, 4)) /
-      1000;
-  float vAcc = posEstTask.getCovariance()(5, 5) / 1000;
-
-  Net::PacketPosition packet({data.data(3), data.data(4), data.data(5)},
-                             {data.data(0), data.data(1), data.data(2)}, hAcc,
-                             vAcc);
-  positionDataTopic.publish(packet);
-}
-void positionDebugCallback(
-    const Core::Timestamped<Math::Vector<float, 6>> &data) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  // Print the position data to the serial port
-  Serial.printf("Position Debug [%.3f, %.3f, %.3f]\n", data.data(3),
-                data.data(4), data.data(5));
-}
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 6>>>
-    positionTeleSubr(positionTopicSwitch.getTopic(), positionTelemetryCallback);
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<Core::Timestamped<Math::Vector<float, 6>>>
-    positionDebugSubr(positionTopicSwitch.getTopic(), positionDebugCallback);
-#endif
-
-void gnssTelemetryCallback(const Core::Timestamped<SNSR::GNSSData> &data) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 1 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  Net::PacketGPS packet(
-      data.data.velocity, data.data.position(0), data.data.position(1),
-      data.data.position(2), data.data.numSats, data.data.positionCov(0, 0),
-      data.data.positionCov(2, 2), data.data.velocityCov(0, 0));
-
-  gpsDataTopic.publish(packet);
-}
-Core::StaticCallback_Subscriber<Core::Timestamped<SNSR::GNSSData>>
-    gnssTeleSubr(gnss.getGNSSTopic(), gnssTelemetryCallback);
-
-void flapDebugCallback(const CTRL::ControlAttitudeFlapSetting &flapSetting) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  Serial.printf("Flap Debug [%.2f, %.2f, %.2f, %.2f]\n",
-                flapSetting.flapTLAngle_Rad, flapSetting.flapTRAngle_Rad,
-                flapSetting.flapBLAngle_Rad, flapSetting.flapBRAngle_Rad);
-}
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<CTRL::ControlAttitudeFlapSetting>
-    flapDebugSubr(trueFlapSettingTopic, flapDebugCallback);
-#endif
-
-void tvcDebugCallback(const Math::Vector<float, 4> &tvcSetting) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-
-  Serial.printf("TVC Debug [%.3f, %.3f, %.3f, %.3f]\n", tvcSetting(0),
-                tvcSetting(1), tvcSetting(2), tvcSetting(3));
-}
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<Math::Vector<float, 4>>
-    tvcDebugSubr(starshipTVC.getTVCActualThrustTopic(), tvcDebugCallback);
-#endif
-
-void attitudeSetpointCallback(const Math::Vector<float, 7> &attitudeSetpoint) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-  Serial.printf("Attitude Setpoint [%.3f, %.3f, %.3f, %.3f]\n",
-                attitudeSetpoint(3), attitudeSetpoint(4), attitudeSetpoint(5),
-                attitudeSetpoint(6));
-}
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<Math::Vector<float, 7>>
-    attitudeSetpointDebugSubr(controlMappingAccToAtt.getAttitudeTopic(),
-                              attitudeSetpointCallback);
-#endif
-
-void positionSetpointCallback(const MissionState &positionSetpoint) {
-  static int64_t lastSend = 0;
-  if (Core::NowNs() - lastSend < 0.02 * Core::SECONDS)
-    return;
-  lastSend = Core::NowNs();
-  Serial.printf("Position Setpoint [%.3f, %.3f, %.3f]\n",
-                positionSetpoint.positionSetpoint[3],
-                positionSetpoint.positionSetpoint[4],
-                positionSetpoint.positionSetpoint[5]);
-}
-#ifdef DEBUG_TELEMETRY_SERIAL
-Core::StaticCallback_Subscriber<MissionState>
-    positionSetpointDebugSubr(missionStateTopic, positionSetpointCallback);
-#endif
 
 class MagnetometerCalibrationTask : public Core::Task_Periodic {
 private:
@@ -1026,8 +839,10 @@ public:
   }
 
   void checkForFailures() {
-    // Check radio for a connection loss with the ground station
-    if (!networkNode.isNodeReachable(0)) {
+    // Check radio for a connection loss with the ground station: no valid
+    // frame from node 0 on USB or UART for 2 s (same observable as the old
+    // NetworkNode::isNodeReachable(0) with its 2 s timeout).
+    if (!vehicleComms.isGroundStationPresent()) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.radioConnectionLoss = true;
     }
@@ -1330,62 +1145,123 @@ public:
 };
 FlapModeObserverTask flapModeObserverTask;
 
-class CommsSystemStateTask : public Core::Task_Periodic {
+/**
+ * Samples the vehicle state for the telemetry task (VehicleComms, src/comms/). Runs in the telemetry task's
+ * context only: it reads latest-value subscribers and getters, and never changes vehicle state.
+ */
+class TelemetryProvider : public Comms::TelemetryProviderI {
 private:
-  Core::Simple_Subscriber<Math::Vector<float, 4>>
-      tvcActualThrustSubr; // Subscriber for the actual TVC thrust vector
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 2>>>
+      groundSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr_;
+  Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> flapSubr_;
+  Core::Simple_Subscriber<Math::Vector<float, 4>> tvcSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> gyroSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> accSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> magSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 1>>> baroSubr_;
+  Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 1>>>
+      thermoSubr_;
 
 public:
-  CommsSystemStateTask()
-      : Task_Periodic("Comms System State", 0.2 * Core::SECONDS) {
-    Core::getSystemScheduler().addTask(*this);
-    // setPriority(500);
+  void begin() override {
+    attSubr_.subscribe(attitudeTopicSwitch.getTopic());
+    posSubr_.subscribe(positionTopicSwitch.getTopic());
+    groundSubr_.subscribe(groundTopicSwitch.getTopic());
+    gnssSubr_.subscribe(gnss.getGNSSTopic());
+    flapSubr_.subscribe(trueFlapSettingTopic);
+    tvcSubr_.subscribe(starshipTVC.getTVCActualThrustTopic());
+    gyroSubr_.subscribe(mpuDriver.getGyroTopic());
+    accSubr_.subscribe(mpuDriver.getAccelTopic());
+    thermoSubr_.subscribe(mpuDriver.getThermoTopic());
+    magSubr_.subscribe(qmc.getMagTopic());
+    baroSubr_.subscribe(bme.getBaroTopic());
   }
 
-  void taskInit() override {
-    tvcActualThrustSubr.subscribe(starshipTVC.getTVCActualThrustTopic());
-  }
+  void fillSnapshot(Comms::TelemetrySnapshot &s) override {
+    auto &vt = vehicleSafetyAndControlTask;
+    s.mode = vt.getVehicleMode();
+    s.sensors = vt.getSensoryState();
+    s.failures = vt.getFailureState();
+    s.armed = vt.isVehicleArmed();
+    s.simulation = vt.simulationModeEnabled();
+    s.motorsEnabled =
+        starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled();
 
-  void taskThread() override {
-    auto vehicleMode = vehicleSafetyAndControlTask.getVehicleMode();
-    auto sensoryState = vehicleSafetyAndControlTask.getSensoryState();
-    auto failureState = vehicleSafetyAndControlTask.getFailureState();
+    const MissionState &ms = vt.getCurrentMission()->getMissionState();
+    s.missionMode = ms.missionMode;
+    s.missionPhase = vt.getCurrentMissionPhase();
+    s.missionIndex = ms.missionIndex;
+    for (int i = 0; i < 6; i++)
+      s.setpoint[i] = ms.positionSetpoint[i];
+    s.missionTime_ns = ms.missionTime;
 
-    auto simulationMode = vehicleSafetyAndControlTask.simulationModeEnabled();
+    const auto &att = attSubr_.getItem().data;
+    for (int i = 0; i < 7; i++)
+      s.att[i] = att(i);
+    const auto &pos = posSubr_.getItem().data;
+    for (int i = 0; i < 6; i++)
+      s.pos[i] = pos(i);
 
-    VehicleState vehicleState;
-    vehicleState.mode = vehicleMode;
-    vehicleState.sensoryState = sensoryState;
-    vehicleState.failureState = failureState;
-    vehicleState.simulationModeEnabled = simulationMode;
-    vehicleState.armed = vehicleSafetyAndControlTask.isVehicleArmed();
-    vehicleState.tvcThrustX =
-        tvcActualThrustSubr.getItem()(0) / 50.0f * INT16_MAX;
-    vehicleState.tvcThrustY =
-        tvcActualThrustSubr.getItem()(1) / 50.0f * INT16_MAX;
-    vehicleState.tvcThrustZ =
-        tvcActualThrustSubr.getItem()(2) / 50.0f * INT16_MAX;
-    vehicleState.tvcTorque =
-        tvcActualThrustSubr.getItem()(3) / 50.0f * INT16_MAX;
-    vehicleState.groundDistance =
-        posEstTask.getGroundDistanceEst()(1) / 2 * INT16_MAX;
-    vehicleState.groundDistanceCov =
-        posEstTask.getGroundDistanceCov()(1, 1) * INT16_MAX;
-    vehicleStateTopic.publish(vehicleState);
+    const auto &ground = groundSubr_.getItem();
+    s.groundDistance = ground.timestamp != 0 ? ground.data(1) : NAN;
 
-#ifdef DEBUG_TELEMETRY_SERIAL
-    Serial.printf("GroundDistance Debug [%.2f]\n",
-                  posEstTask.getGroundDistanceEst()(1));
-#endif
+    const auto &flaps = flapSubr_.getItem();
+    s.flaps[0] = flaps.flapTLAngle_Rad;
+    s.flaps[1] = flaps.flapTRAngle_Rad;
+    s.flaps[2] = flaps.flapBLAngle_Rad;
+    s.flaps[3] = flaps.flapBRAngle_Rad;
+    const auto &tvc = tvcSubr_.getItem();
+    for (int i = 0; i < 4; i++)
+      s.tvcThrust[i] = tvc(i);
 
-    auto missionState =
-        vehicleSafetyAndControlTask.getCurrentMission()->getMissionState();
-    missionState.missionPhase =
-        vehicleSafetyAndControlTask.getCurrentMissionPhase();
-    missionStateTopic.publish(missionState);
+    const auto &g = gnssSubr_.getItem().data;
+    s.latitude = g.position(0);
+    s.longitude = g.position(1);
+    s.altitude = g.position(2);
+    for (int i = 0; i < 3; i++)
+      s.gnssVel[i] = g.velocity(i);
+    s.satellites = g.numSats;
+    s.gnssValid = g.positionValid;
+    s.hAcc = g.positionCov(0);
+    s.vAcc = g.positionCov(2);
+    s.sAcc = g.velocityCov(0);
+
+    const auto &gyro = gyroSubr_.getItem().data.val;
+    const auto &acc = accSubr_.getItem().data.val;
+    const auto &mag = magSubr_.getItem().data.val;
+    for (int i = 0; i < 3; i++) {
+      s.gyro[i] = gyro(i);
+      s.accel[i] = acc(i);
+      s.mag[i] = mag(i) * 1e-4f; // QMC5883 publishes gauss
+    }
+    s.pressure = baroSubr_.getItem().data.val(0);
+    s.temperature = thermoSubr_.getItem().data.val(0) + 273.15f; // degC -> K
+
+    // Estimator standard deviations (the real estimators, also in simulation).
+    const auto &pa = imuTask.getCovariance();
+    for (int i = 0; i < 3; i++) {
+      // small-angle: rotation angle ~ 2 * quaternion vector part
+      float v = pa(4 + i, 4 + i);
+      s.attStd[i] = v > 0 ? 2.0f * sqrtf(v) : 0.0f;
+    }
+    const auto &pp = posEstTask.getCovariance();
+    for (int i = 0; i < 3; i++) {
+      float vv = pp(i, i), vp = pp(3 + i, 3 + i);
+      s.velStd[i] = vv > 0 ? sqrtf(vv) : 0.0f;
+      s.posStd[i] = vp > 0 ? sqrtf(vp) : 0.0f;
+    }
   }
 };
-CommsSystemStateTask commsSystemStateTask;
+TelemetryProvider telemetryProvider;
+
+// Network stack, links and telemetry task. Its buffers (about 6 KB) live in
+// RAM2 (DMAMEM). It is constructed like every other global (constructors run
+// for DMAMEM objects too).
+DMAMEM Comms::VehicleComms vehicleComms(Serial, RX_MODULE_SERIALPORT,
+                                        telemetryProvider, telecommandTopic);
 
 class DisplayTask : public Core::Task_Periodic {
 public:
@@ -1546,13 +1422,11 @@ public:
     }*/
 
     if (accSub.isDataNew() || true) {
-      bool connected = networkNode.isNodeReachable(0);
+      bool connected = vehicleComms.isGroundStationPresent();
       if (!lastConnectionState && connected) {
         connectionCounter++;
       }
       lastConnectionState = connected;
-
-      connections.publish(connectionCounter);
 
       auto accData = accSub.getItem();
       auto attData = attSub.getItem();
@@ -1734,12 +1608,6 @@ void initialiseHardware() {
   // bmePin.setPinValue(1);
 
   mpuIntPin.init(HAL::GPIO_IOMODE_t::IOMODE_INPUT);
-
-  pinMode(SX1280_RXEN_PIN, OUTPUT);
-  digitalWrite(SX1280_RXEN_PIN, HIGH);
-
-  pinMode(SX1280_TXEN_PIN, OUTPUT);
-  digitalWrite(SX1280_TXEN_PIN, LOW);
 
   // mpuDriver.enablePinInterrupt(mpuIntPin);
   // mpuDriver.ConfigDlpf(mpuDriver.DLPF_BANDWIDTH_250HZ_4kHz);
