@@ -113,6 +113,119 @@ void test_vehicle_status() {
   s.uartPeerSeen = true;
   p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_HEX8(0x40, p.flags & Packets::VehicleStatus::kFlagsUartPeerSeen);
+  TEST_ASSERT_FALSE(p.flags & Packets::VehicleStatus::kFlagsZeroing);
+  s.zeroing = true;
+  p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_HEX8(0x80, p.flags & Packets::VehicleStatus::kFlagsZeroing);
+  TEST_ASSERT_EQUAL_HEX8(0x80, Packets::VehicleStatus::kFlagsZeroing);
+}
+
+static TelemetrySnapshot actuatorSnap(int64_t t_ns, float base) {
+  TelemetrySnapshot s;
+  s.t_ns = t_ns;
+  // thrust 10 N deflected: Fx = 10 sin(a), Fz = 10 cos(a)
+  const float a = 0.05f + base;
+  s.tvcThrust[0] = 10.0f * sinf(a);
+  s.tvcThrust[1] = 0.0f;
+  s.tvcThrust[2] = 10.0f * cosf(a);
+  s.tvcThrust[3] = 0.012f + base;
+  for (int i = 0; i < 4; i++) s.flaps[i] = 0.3f + 0.1f * i + base;
+  return s;
+}
+
+void test_air_actuators_two_samples() {
+  ActuatorHistory h;
+  // empty history: everything NaN
+  auto e = roundTrip(makeAirActuators(h));
+  TEST_ASSERT_TRUE(isnan(e.prev_age));
+  TEST_ASSERT_TRUE(isnan(e.tvc[0]) && isnan(e.flaps[7]) && isnan(e.thrust[0]));
+
+  // one sample: previous is NaN
+  h.push(makeActuatorSample(actuatorSnap(1000000000LL, 0.0f)));
+  auto one = roundTrip(makeAirActuators(h));
+  TEST_ASSERT_EQUAL_UINT32(1000000u, one.t_us);
+  TEST_ASSERT_TRUE(isnan(one.prev_age));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.05f, one.tvc[0]);
+  TEST_ASSERT_TRUE(isnan(one.tvc[2]) && isnan(one.tvc[3]) && isnan(one.roll_torque[1]) && isnan(one.thrust[1]));
+  for (int i = 4; i < 8; i++) TEST_ASSERT_TRUE(isnan(one.flaps[i]));
+
+  // ring: after more pushes the packet holds exactly the newest and the one 20 ms before it
+  h.push(makeActuatorSample(actuatorSnap(1020000000LL, 0.01f)));
+  h.push(makeActuatorSample(actuatorSnap(1040000000LL, 0.02f)));
+  h.push(makeActuatorSample(actuatorSnap(1060000000LL, 0.03f)));
+  h.push(makeActuatorSample(actuatorSnap(1080500000LL, 0.04f))); // 20.5 ms later (wraps the 4-entry ring)
+  TEST_ASSERT_EQUAL_UINT(ActuatorHistory::kSize, h.count());
+  auto p = roundTrip(makeAirActuators(h));
+  TEST_ASSERT_EQUAL_UINT32(1080500u, p.t_us);
+  TEST_ASSERT_FLOAT_WITHIN(1.5e-6f, 0.0205f, p.prev_age);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.09f, p.tvc[0]); // newest x
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, p.tvc[1]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.08f, p.tvc[2]); // previous x
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.052f, p.roll_torque[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.042f, p.roll_torque[1]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 10.0f, p.thrust[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 10.0f, p.thrust[1]);
+  for (int i = 0; i < 4; i++) {
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.3f + 0.1f * i + 0.04f, p.flaps[i]);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.3f + 0.1f * i + 0.03f, p.flaps[4 + i]);
+  }
+  // same definitions as ACTUATORS (tvc deflection and thrust magnitude)
+  auto u = makeActuators(actuatorSnap(1080500000LL, 0.04f));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, u.tvc[0], p.tvc[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, u.thrust, p.thrust[0]);
+}
+
+void test_air_actuators_saturation_and_nan() {
+  ActuatorHistory h;
+  TelemetrySnapshot s;
+  s.t_ns = 5;
+  s.tvcThrust[0] = 0;
+  s.tvcThrust[1] = 0;
+  s.tvcThrust[2] = 100.0f;       // thrust beyond 65.534 N saturates
+  s.tvcThrust[3] = 1.0f;         // roll torque beyond 0.32767 N*m saturates
+  s.flaps[0] = 4.0f;             // beyond +-3.2767 rad saturates
+  s.flaps[1] = -4.0f;
+  s.flaps[2] = NAN;              // NaN stays NaN (sentinel)
+  s.flaps[3] = 1.5708f;
+  h.push(makeActuatorSample(s));
+  s.t_ns = 20000005;
+  h.push(makeActuatorSample(s));
+  auto p = roundTrip(makeAirActuators(h));
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.02f, p.prev_age);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 65.534f, p.thrust[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.32767f, p.roll_torque[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 3.2767f, p.flaps[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, -3.2767f, p.flaps[1]);
+  TEST_ASSERT_TRUE(isnan(p.flaps[2]));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.5708f, p.flaps[3]);
+  TEST_ASSERT_TRUE(isnan(p.flaps[6]));
+  // zero thrust: deflection 0, not NaN
+  TelemetrySnapshot z;
+  ActuatorHistory hz;
+  hz.push(makeActuatorSample(z));
+  auto pz = roundTrip(makeAirActuators(hz));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, pz.tvc[0]);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, pz.thrust[0]);
+}
+
+void test_air_mission() {
+  TelemetrySnapshot s = sample();
+  s.waypointIndex = 2;
+  auto p = roundTrip(makeAirMission(s));
+  TEST_ASSERT_EQUAL_UINT32(timeUs(s.t_ns), p.t_us);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, -7.5f, p.mission_time);
+  TEST_ASSERT_EQUAL_UINT8(3, p.mission_mode); // Running
+  TEST_ASSERT_EQUAL_UINT8(1, p.phase);        // Hover
+  TEST_ASSERT_EQUAL_UINT8(1, p.index);
+  TEST_ASSERT_EQUAL_UINT8(2, p.waypoint);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, p.setpoint_pos[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 120.0f, p.setpoint_pos[2]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-2f, 0.5f, p.setpoint_vel[2]);
+  s.waypointIndex = 0xFF;
+  s.setpoint[0] = 400.0f; // velocity beyond +-327.67 m/s saturates
+  p = roundTrip(makeAirMission(s));
+  TEST_ASSERT_EQUAL_UINT8(255, p.waypoint);
+  TEST_ASSERT_FLOAT_WITHIN(1e-2f, 327.67f, p.setpoint_vel[0]);
 }
 
 void test_pose_full_precision() {
@@ -378,7 +491,11 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT(28, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
-  TEST_ASSERT_EQUAL_HEX32(0x4FE838D2u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(30, Packets::AirMission::kMaxSize);
+  TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
+  TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
+  TEST_ASSERT_EQUAL_HEX32(0x761D5378u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -401,6 +518,9 @@ int main() {
   RUN_TEST(test_calibration);
   RUN_TEST(test_attitude_std_world);
   RUN_TEST(test_legacy_telecommand_layout);
+  RUN_TEST(test_air_actuators_two_samples);
+  RUN_TEST(test_air_actuators_saturation_and_nan);
+  RUN_TEST(test_air_mission);
   RUN_TEST(test_packet_sizes_fit_budget);
   return UNITY_END();
 }

@@ -73,6 +73,9 @@ public:
   static bool taskTimingDue(uint32_t tick);
   /// CALIBRATION period on USB: 0.5 Hz (the schema's integer rate fields cannot express it, kUsbRateHz is 0).
   static constexpr uint32_t kCalibrationPeriodTicks = 2 * kTickHz;
+  /// AIR_ACTUATORS: one actuator sample every 2 ticks (50 Hz, 20 ms), two samples per packet at 25 Hz.
+  static constexpr uint32_t kActuatorSampleTicks = 2;
+  static constexpr uint32_t kAirActuatorsPhase = 6; ///< send tick phase (a sampling tick, so the newest is fresh)
   /// True on the ticks where CALIBRATION is due on USB (every kCalibrationPeriodTicks, phase 17).
   static bool calibrationDue(uint32_t tick);
   /// True if a packet at `hz` is due on `tick` with phase `phase` (spreads the packets over the ticks).
@@ -124,6 +127,7 @@ private:
   network::PortMux<2> mux_;
   network::PacketPort<LegacyTelecommandPacket> telecommandPort_; ///< TEMPORARY (T9b)
   uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
+  ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks
 };
 
 } // namespace Comms

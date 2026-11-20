@@ -20,6 +20,10 @@ static_assert(kHz % Packets::TaskTiming::kUsbRateHz == 0, "USB rate must divide 
 static_assert(kHz % Packets::VehicleStatus::kAirRateHz == 0, "air rate must divide the tick rate");
 static_assert(kHz % Packets::AirPose::kAirRateHz == 0, "air rate must divide the tick rate");
 static_assert(kHz % Packets::HandsetTelem::kAirRateHz == 0, "air rate must divide the tick rate");
+static_assert(kHz % Packets::AirActuators::kAirRateHz == 0, "air rate must divide the tick rate");
+static_assert(kHz % Packets::AirMission::kAirRateHz == 0, "air rate must divide the tick rate");
+static_assert((VehicleNetwork::kAirActuatorsPhase % VehicleNetwork::kActuatorSampleTicks) == 0,
+              "AIR_ACTUATORS must be sent on a sampling tick");
 static_assert(LegacyTelecommandPacket::kPort < 0x80, "the legacy telecommand must pass the radio-path filters");
 
 } // namespace
@@ -89,8 +93,11 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (calibrationDue(t)) sendOn(usbNode_, gs, makeCalibration(s)); // USB only (port 0x93), 0.5 Hz
 
   // Radio set on the UART (RX module -> air -> TX module -> ground station), air rates.
+  if (t % kActuatorSampleTicks == 0) actuatorHistory_.push(makeActuatorSample(s));
   if (due(t, Packets::VehicleStatus::kAirRateHz, 0)) sendOn(uartNode_, gs, makeVehicleStatus(s));
   if (due(t, Packets::AirPose::kAirRateHz, 5)) sendOn(uartNode_, gs, makeAirPose(s));
+  if (due(t, Packets::AirActuators::kAirRateHz, kAirActuatorsPhase)) sendOn(uartNode_, gs, makeAirActuators(actuatorHistory_));
+  if (due(t, Packets::AirMission::kAirRateHz, 9)) sendOn(uartNode_, gs, makeAirMission(s));
   if (due(t, Packets::HandsetTelem::kAirRateHz, 7)) sendOn(uartNode_, bc, makeHandsetTelem(s));
 }
 

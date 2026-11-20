@@ -1314,6 +1314,10 @@ public:
     for (int i = 0; i < 6; i++)
       s.setpoint[i] = ms.positionSetpoint[i];
     s.missionTime_ns = ms.missionTime;
+    s.waypointIndex = vt.getCurrentMission() == &missionWaypointTask
+                          ? static_cast<uint8_t>(missionWaypointTask.currentWaypointIndex())
+                          : uint8_t(0xFF);
+    s.zeroing = vt.estimatorZeroingActive();
 
     const auto &att = attSubr_.getItem().data;
     for (int i = 0; i < 7; i++)

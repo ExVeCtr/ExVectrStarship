@@ -53,6 +53,7 @@ struct TelemetrySnapshot {
   bool gsPresent = false;     ///< ground station node 0 present (the radioConnectionLoss observable)
   bool incompatible = false;  ///< a present node reported another network version or schema hash
   bool uartPeerSeen = false;  ///< valid frame from the ship node (3) on the UART within 3 s (information only)
+  bool zeroing = false;       ///< estimator zeroing window active (boot zero or ZeroEstimators)
 
   // Estimates (attitude/position topic switches: estimators, or the body simulator in simulation mode)
   float att[7] = {0, 0, 0, 1, 0, 0, 0}; ///< [wx, wy, wz, qw, qx, qy, qz]
@@ -61,6 +62,7 @@ struct TelemetrySnapshot {
   // Mission
   float setpoint[6] = {0, 0, 0, 0, 0, 0}; ///< [Vx, Vy, Vz, Px, Py, Pz]
   int64_t missionTime_ns = 0;
+  uint8_t waypointIndex = 0xFF; ///< current waypoint of the waypoint mission, 0xFF = another mission is active
 
   // Actuators
   float flaps[4] = {0, 0, 0, 0};     ///< true flap angles [TL, TR, BL, BR], rad
@@ -138,6 +140,50 @@ Packets::Estimator makeEstimator(const TelemetrySnapshot &s);
 /// raw_frame SENSOR; offsets and matrices copied, the mag offset converted gauss -> T (x 1e-4); the matrices are
 /// unit-free, so the ground station gets cal = M * (raw - offset) in SI from the IMU_RAW values.
 Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
+
+// ---- AIR_ACTUATORS: two samples per packet ----
+
+/// One actuator sample for AIR_ACTUATORS (same source and definitions as ACTUATORS).
+struct ActuatorSample {
+  int64_t t_ns = 0;
+  float tvc[2] = {0, 0};  ///< thrust deflection [x, y], rad (tvcDeflection of the TVC actual thrust)
+  float rollTorque = 0;   ///< TVC actual thrust topic component T (twist / roll actuation), N*m
+  float thrust = 0;       ///< |[Fx, Fy, Fz]|, N
+  float flaps[4] = {0, 0, 0, 0}; ///< [TL, TR, BL, BR], rad
+};
+
+/// The actuator sample of a snapshot.
+ActuatorSample makeActuatorSample(const TelemetrySnapshot &s);
+
+/**
+ * Ring of the last kSize actuator samples (VehicleNetwork pushes one every kSampleTicks ticks, 50 Hz), so the
+ * previous sample in AIR_ACTUATORS is exactly the one taken one sample period before the newest.
+ */
+class ActuatorHistory {
+public:
+  static constexpr size_t kSize = 4;
+  void push(const ActuatorSample &a) {
+    head_ = (head_ + 1) % kSize;
+    ring_[head_] = a;
+    if (count_ < kSize) count_++;
+  }
+  size_t count() const { return count_; }
+  /// age 0 = newest, 1 = the one before. Requires age < count().
+  const ActuatorSample &get(size_t age) const { return ring_[(head_ + kSize - age) % kSize]; }
+  void clear() { count_ = 0; }
+
+private:
+  ActuatorSample ring_[kSize];
+  size_t head_ = kSize - 1;
+  size_t count_ = 0;
+};
+
+/// AIR_ACTUATORS from the newest and the previous sample; values of a missing sample (and prev_age) are NaN.
+/// Requires h.count() >= 1 (otherwise every value is NaN and t_us = 0).
+Packets::AirActuators makeAirActuators(const ActuatorHistory &h);
+
+/// AIR_MISSION, the air version of MISSION.
+Packets::AirMission makeAirMission(const TelemetrySnapshot &s);
 
 // ---- TEMPORARY legacy telecommand adapter (removed in T9b) ----
 

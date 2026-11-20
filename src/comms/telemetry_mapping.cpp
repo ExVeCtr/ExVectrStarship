@@ -129,6 +129,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   if (s.incompatible) f |= Packets::VehicleStatus::kFlagsIncompatible;
   if (s.uartPeerSeen) f |= Packets::VehicleStatus::kFlagsUartPeerSeen;
   if (s.mode == VehicleMode::VehicleMode_Failure) f |= Packets::VehicleStatus::kFlagsFailsafe;
+  if (s.zeroing) f |= Packets::VehicleStatus::kFlagsZeroing;
   p.flags = f;
   p.failure_bits = packFailureBits(s.failures);
   p.sensor_state = packSensorState(s.sensors);
@@ -165,6 +166,47 @@ Packets::Actuators makeActuators(const TelemetrySnapshot &s) {
   p.thrust = sqrtf(s.tvcThrust[0] * s.tvcThrust[0] + s.tvcThrust[1] * s.tvcThrust[1] +
                    s.tvcThrust[2] * s.tvcThrust[2]);
   p.ground_distance = s.groundDistance;
+  return p;
+}
+
+ActuatorSample makeActuatorSample(const TelemetrySnapshot &s) {
+  ActuatorSample a;
+  a.t_ns = s.t_ns;
+  tvcDeflection(s.tvcThrust, a.tvc);
+  a.rollTorque = s.tvcThrust[3];
+  a.thrust = sqrtf(s.tvcThrust[0] * s.tvcThrust[0] + s.tvcThrust[1] * s.tvcThrust[1] +
+                   s.tvcThrust[2] * s.tvcThrust[2]);
+  for (int i = 0; i < 4; i++) a.flaps[i] = s.flaps[i];
+  return a;
+}
+
+Packets::AirActuators makeAirActuators(const ActuatorHistory &h) {
+  Packets::AirActuators p;
+  p.t_us = h.count() > 0 ? timeUs(h.get(0).t_ns) : 0;
+  p.prev_age = h.count() > 1 ? static_cast<float>(static_cast<double>(h.get(0).t_ns - h.get(1).t_ns) * 1e-9)
+                             : nanf_();
+  for (size_t k = 0; k < 2; k++) {
+    const bool have = k < h.count();
+    const ActuatorSample *a = have ? &h.get(k) : nullptr;
+    p.tvc[2 * k + 0] = have ? a->tvc[0] : nanf_();
+    p.tvc[2 * k + 1] = have ? a->tvc[1] : nanf_();
+    p.roll_torque[k] = have ? a->rollTorque : nanf_();
+    p.thrust[k] = have ? a->thrust : nanf_();
+    for (int i = 0; i < 4; i++) p.flaps[4 * k + i] = have ? a->flaps[i] : nanf_();
+  }
+  return p;
+}
+
+Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
+  Packets::AirMission p;
+  p.t_us = timeUs(s.t_ns);
+  p.mission_time = static_cast<float>(static_cast<double>(s.missionTime_ns) * 1e-9);
+  p.mission_mode = static_cast<uint8_t>(s.missionMode);
+  p.phase = static_cast<uint8_t>(s.missionPhase);
+  p.index = s.missionIndex;
+  p.waypoint = s.waypointIndex;
+  copy3(&s.setpoint[3], p.setpoint_pos);
+  copy3(&s.setpoint[0], p.setpoint_vel);
   return p;
 }
 
