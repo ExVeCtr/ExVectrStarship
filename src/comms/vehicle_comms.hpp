@@ -111,8 +111,10 @@ public:
   VehicleComms(usb_serial_class &usb, HardwareSerialIMXRT &uart, TelemetryProviderI &provider,
                Core::Topic<Telecommand> &telecommandTopic);
 
-  /// Ground station (node 0) heard on USB or UART within 2 s: the radioConnectionLoss observable.
+  /// Ground station (node 0) heard on USB or UART within 2 s. Information only (gs_present).
   bool isGroundStationPresent() const { return net_.isGroundStationPresent(); }
+  /// Radio link alive (VehicleNetwork::isRadioLinkAlive): the radioConnectionLoss observable.
+  bool isRadioLinkAlive() const { return net_.isRadioLinkAlive(); }
 
   void taskInit() override;
   void taskThread() override;

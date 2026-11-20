@@ -49,8 +49,15 @@ public:
   static constexpr uint8_t kVehicleNode = 1;
   static constexpr uint8_t kGroundStationNode = 0;
   static constexpr uint32_t kTickHz = 100; ///< sendTelemetry() call rate: the fastest USB rate
-  /// Ground-station presence timeout: the 2 s of the old NetworkNode(1, datalink, 2 s) (radioConnectionLoss).
+  /// Ground-station presence timeout: the 2 s of the old NetworkNode(1, datalink, 2 s). Information only since
+  /// 2026-11-20 (VEHICLE_STATUS gs_present); radioConnectionLoss uses isRadioLinkAlive().
   static constexpr int64_t kGsTimeoutNs = 2000000000LL;
+  static constexpr uint8_t kRouterNode = 2; ///< the ExVectrLink TX module (Router, Pocket side of the air link)
+  /// Radio link timeout (radioConnectionLoss): no radio packet (see isRadioLinkAlive) for longer than this.
+  static constexpr int64_t kRadioTimeoutNs = 2000000000LL;
+  /// Boot grace of the radio link check: before the first radio packet the link counts as alive for this long
+  /// after construction (boot), so the RX module and the air link can come up.
+  static constexpr int64_t kRadioStartupGraceNs = 10000000000LL;
   static constexpr uint8_t kShipNode = 3; ///< the ExVectrLink RX module (ship radio node) on the UART
   /// UART_PEER_SEEN window: any valid frame from node 3 on the UART within this time (information only).
   static constexpr int64_t kUartPeerTimeoutNs = 3000000000LL;
@@ -87,8 +94,18 @@ public:
     return sendOn(usbNode_, dst, packet);
   }
 
-  /// Any valid frame from node 0 (ground station) on USB or UART within kGsTimeoutNs.
+  /// Any valid frame from node 0 (ground station) on USB or UART within kGsTimeoutNs. Information only
+  /// (VEHICLE_STATUS gs_present, display); it no longer drives radioConnectionLoss.
   bool isGroundStationPresent() const;
+  /// Radio link rule (user decision 2026-11-20, drives radioConnectionLoss): a "radio packet" is a valid DATA frame
+  /// that arrives on the UART with source node 0 (ground station, relayed by the Router) or node 2 (Router /
+  /// Pocket: RC_STATE, LINK_STATS ...), i.e. from the far side of the air link. Heartbeats of any node, frames
+  /// from node 3 (the ship node itself) and everything on USB never count. Alive while the last radio packet is at
+  /// most kRadioTimeoutNs old; before the first radio packet since boot, alive only during the boot grace
+  /// (kRadioStartupGraceNs after construction).
+  bool isRadioLinkAlive() const;
+  /// A radio packet (see isRadioLinkAlive) has arrived since boot.
+  bool radioPacketSeen() const { return radioTap_.seen; }
   /// A valid frame from the ship node (node 3) arrived on the UART (not USB) within kUartPeerTimeoutNs. Read from
   /// the UART node's node table (last frame time per source), so no raw byte polling. Information only: the
   /// NetworkStatus the ground station gets over USB reflects the USB node, so a dead UART is invisible there;
@@ -126,6 +143,16 @@ private:
   network::Node uartNode_;
   network::PortMux<2> mux_;
   network::PacketPort<LegacyTelecommandPacket> telecommandPort_; ///< TEMPORARY (T9b)
+
+  /// Sits between the UART link and the UART node: records radio packets (isRadioLinkAlive), forwards every frame.
+  struct RadioTap : network::FrameSinkI {
+    network::FrameSinkI *next = nullptr;
+    bool seen = false;
+    int64_t lastNs = 0;
+    void onFrame(const network::FrameView &f, uint8_t linkIndex) override;
+  };
+  RadioTap radioTap_;
+  int64_t startNs_ = 0;
   uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
   ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks
 };

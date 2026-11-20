@@ -2,8 +2,10 @@
 //
 // Peers are real ExVectrNetwork nodes over in-memory byte pipes: a ground station (node 0) on USB, and on the UART
 // nodes standing in for what the RX module forwards (node 0 data, node 3 heartbeats). Covers:
-//  - ground-station presence (the radioConnectionLoss observable): 2 s timeout, any valid frame from node 0 on
+//  - ground-station presence (gs_present, information only): 2 s timeout, any valid frame from node 0 on
 //    either link, nothing else counts;
+//  - the radio link rule (radioConnectionLoss): DATA frames from node 0 or 2 on the UART only, 2 s timeout,
+//    10 s boot grace before the first radio packet; heartbeats, node 3 and USB never count;
 //  - the TEMPORARY legacy telecommand adapter: from node 0 only, unchanged struct, delivered once when it arrives
 //    on both links;
 //  - telemetry sets: USB set at the USB rates on USB, radio set at the air rates on the UART, no USB-only port on
@@ -154,7 +156,7 @@ void tearDown() {
   rig = nullptr;
 }
 
-// ---------------------------------------------------------------- presence (radioConnectionLoss observable)
+// ---------------------------------------------------------------- ground-station presence (gs_present, information only)
 
 void test_gs_absent_at_boot() {
   rig->pollAll();
@@ -194,6 +196,82 @@ void test_other_nodes_never_give_gs_presence() {
   TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(3));
   TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(2));
   TEST_ASSERT_FALSE(rig->net.isGroundStationPresent());
+}
+
+// ---------------------------------------------------------------- radio link (radioConnectionLoss observable)
+
+static void sendData(Peer &p, uint8_t port = 0x10) {
+  const uint8_t b[4] = {1, 2, 3, 4};
+  TEST_ASSERT_TRUE(p.node.send(VehicleNetwork::kVehicleNode, port, b, sizeof b, wire::Qos::Link, true));
+  p.poll();
+  rig->net.pollLinks();
+}
+
+void test_radio_boot_grace_without_any_radio_packet() {
+  rig->pollAll();
+  TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive()); // boot grace
+  rig->clk.advanceMs(10000);                      // exactly 10 s after construction: still in the grace
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  rig->clk.t += 1;
+  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive()); // no radio packet within the grace: lost
+}
+
+void test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx); // Router / Pocket RC_STATE
+  rig->clk.advanceMs(20000);                                               // grace long over
+  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  sendData(tx);
+  TEST_ASSERT_TRUE(rig->net.radioPacketSeen());
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  rig->clk.advanceMs(2000); // exactly 2 s: alive
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  rig->clk.t += 1; // just over: lost
+  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  rig->clk.advanceMs(5000); // restart after a gap
+  sendData(tx);
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+}
+
+void test_radio_node0_data_on_uart_keeps_alive() {
+  rig->clk.advanceMs(20000);
+  TEST_ASSERT_TRUE(rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0)); // relayed by the Router
+  rig->pollAll();
+  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+}
+
+void test_radio_after_first_packet_grace_no_longer_applies() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendData(tx); // first packet at t = 0 s after boot
+  rig->clk.advanceMs(2001);
+  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive()); // within the 10 s boot window, but the 2 s rule applies
+}
+
+void test_radio_heartbeats_node3_and_usb_never_count() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  Peer rx(&rig->uartDown, &rig->uartUp, rig->clk, 3, wire::Role::LinkRx);
+  Peer txOnUsb(&rig->usbDown, &rig->usbUp, rig->clk, 2, wire::Role::LinkTx);
+  rig->clk.advanceMs(20000);
+  for (int i = 0; i < 5; i++) {
+    tx.node.sendHeartbeat();     // node 2 heartbeat on the UART
+    rx.node.sendHeartbeat();     // node 3 heartbeat on the UART
+    tx.poll();
+    rx.poll();
+    rig->gsUart.node.sendHeartbeat(); // node 0 heartbeat on the UART
+    rig->gsUsb.node.sendHeartbeat();  // ground station on USB
+    rig->pollAll();
+    sendData(rx);                      // node 3's own data (LINK_STATS): proves the UART only
+    sendData(rig->gsUsb);              // node 0 data on USB
+    const uint8_t b[2] = {1, 2};
+    txOnUsb.node.send(VehicleNetwork::kVehicleNode, 0x10, b, 2, wire::Qos::Link, true); // node 2 data on USB
+    txOnUsb.poll();
+    rig->net.pollLinks();
+  }
+  TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(2));
+  TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(3));
+  TEST_ASSERT_TRUE(rig->net.isGroundStationPresent()); // gs_present (information) still works
+  TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
+  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
 }
 
 // ---------------------------------------------------------------- UART_PEER_SEEN (information only)
@@ -460,6 +538,11 @@ int main() {
   RUN_TEST(test_gs_heartbeat_on_usb_gives_presence_for_2s);
   RUN_TEST(test_gs_data_on_uart_gives_presence);
   RUN_TEST(test_other_nodes_never_give_gs_presence);
+  RUN_TEST(test_radio_boot_grace_without_any_radio_packet);
+  RUN_TEST(test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout);
+  RUN_TEST(test_radio_node0_data_on_uart_keeps_alive);
+  RUN_TEST(test_radio_after_first_packet_grace_no_longer_applies);
+  RUN_TEST(test_radio_heartbeats_node3_and_usb_never_count);
   RUN_TEST(test_uart_peer_seen_from_node3_on_uart_for_3s);
   RUN_TEST(test_uart_peer_seen_ignores_usb_and_other_nodes);
   RUN_TEST(test_uart_peer_seen_from_node3_data_frame);

@@ -50,7 +50,11 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
       uartNode_(nodeConfig(), time),
       telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false) {
   usbNode_.addLink(usbLink_);
-  uartNode_.addLink(uartLink_, uartFilter());
+  const int uartIndex = uartNode_.addLink(uartLink_, uartFilter());
+  // Interpose the radio tap: UART link -> radioTap_ -> UART node (same link index).
+  radioTap_.next = &uartNode_;
+  uartLink_.setSink(radioTap_, static_cast<uint8_t>(uartIndex));
+  startNs_ = time_.nowNs();
   // One transport for both links: a frame arriving on both is delivered once.
   usbNode_.setDataSink(mux_);
   uartNode_.setDataSink(mux_);
@@ -103,6 +107,24 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
 
 bool VehicleNetwork::isGroundStationPresent() const {
   return usbNode_.isPresent(kGroundStationNode) || uartNode_.isPresent(kGroundStationNode);
+}
+
+void VehicleNetwork::RadioTap::onFrame(const network::FrameView &f, uint8_t linkIndex) {
+  network::wire::NetHeader h;
+  if (network::wire::decodeNetHeader(f.data, f.len, h) &&
+      h.type == static_cast<uint8_t>(network::wire::FrameType::Data) &&
+      f.len >= network::wire::kNetHeaderLen + network::wire::kDataHeaderLen &&
+      (h.src == kGroundStationNode || h.src == kRouterNode)) {
+    seen = true;
+    lastNs = f.rxTimeNs;
+  }
+  if (next) next->onFrame(f, linkIndex);
+}
+
+bool VehicleNetwork::isRadioLinkAlive() const {
+  const int64_t now = time_.nowNs();
+  if (radioTap_.seen) return now - radioTap_.lastNs <= kRadioTimeoutNs;
+  return now - startNs_ <= kRadioStartupGraceNs;
 }
 
 bool VehicleNetwork::isUartPeerSeen() const {

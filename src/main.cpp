@@ -946,18 +946,18 @@ public:
 
     LOG_MSG("All systems initialised\n");
 
+    // Stay in Startup: vehicleIsReady() moves to Ready only with a valid estimator zero since boot (the
+    // automatic boot zero starts now if there is none).
     allSystemsInitialised_ = true; // Set all systems initialised to true
-    vehicleMode_ =
-        VehicleMode::VehicleMode_Ready; // Set the vehicle mode to safe
 
     return true;
   }
 
   void checkForFailures() {
-    // Check radio for a connection loss with the ground station: no valid
-    // frame from node 0 on USB or UART for 2 s (same observable as the old
-    // NetworkNode::isNodeReachable(0) with its 2 s timeout).
-    if (!vehicleComms.isGroundStationPresent()) {
+    // Radio connection loss (user decision 2026-11-20): no radio packet (a DATA frame from node 0 or node 2 on
+    // the UART; heartbeats, node 3 and USB never count) for 2 s, or none at all within the 10 s boot grace
+    // (VehicleNetwork::isRadioLinkAlive). The ground station on USB does not influence it.
+    if (!vehicleComms.isRadioLinkAlive()) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.radioConnectionLoss = true;
     }
@@ -1553,7 +1553,7 @@ public:
     }*/
 
     if (accSub.isDataNew() || true) {
-      bool connected = vehicleComms.isGroundStationPresent();
+      bool connected = vehicleComms.isRadioLinkAlive(); // radio link (radioConnectionLoss observable)
       if (!lastConnectionState && connected) {
         connectionCounter++;
       }
