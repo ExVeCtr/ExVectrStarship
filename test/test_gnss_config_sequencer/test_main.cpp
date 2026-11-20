@@ -1,7 +1,7 @@
 // Host tests of src/gnss_config_sequencer.cpp: pio test -e native
 // The u-blox configuration sequence of UbloxSerialGNSS: step order (GPS + Galileo in one CFG-GNSS write, then the
-// read-back of CFG-GNSS, MON-GNSS and CFG-RATE), the 1 s wait after the constellation change as a timed state (no
-// blocking), baud fallback, retries, skip-and-continue, Failed states, and the pure UBX payload helpers.
+// read-back of CFG-GNSS, MON-GNSS and CFG-RATE), the 1 s wait between the constellation write and the save as a
+// timed state (no blocking), baud fallback, retries, skip-and-continue, Failed states, and the pure UBX payload helpers.
 #include <unity.h>
 
 #include "gnss_config_sequencer.hpp"
@@ -67,12 +67,13 @@ static void test_happy_path_order_and_gps_wait() {
   for (int i = 0; i < kN; i++)
     TEST_ASSERT_EQUAL(kConfigOrder[i], d.log[3 + i]);
 
-  // Save follows the constellation write at once; the read-back comes at least 1 s after the save (GNSS restart).
-  const int save = 3 + 6, readBack = 3 + 7;
-  TEST_ASSERT_TRUE(d.at[save] - d.at[save - 1] <= (d.stepMs + 2) * MS);
-  const int64_t gap = d.at[readBack] - (d.at[save] + d.stepMs * MS);
+  // The save comes at least 1 s after the constellation write (GNSS restart, review 2026-11-20: never during the
+  // restart); the read-back follows the save at once.
+  const int write = 3 + 5, save = 3 + 6, readBack = 3 + 7;
+  const int64_t gap = d.at[save] - (d.at[write] + d.stepMs * MS);
   TEST_ASSERT_TRUE(gap >= 1000 * MS);
   TEST_ASSERT_TRUE(gap <= 1002 * MS);
+  TEST_ASSERT_TRUE(d.at[readBack] - d.at[save] <= (d.stepMs + 2) * MS);
 
   // No call ever waits: the sequencer only hands out one action per task run.
   for (int i = 1; i < d.n; i++)
@@ -89,14 +90,15 @@ static void test_waiting_returns_none_and_is_idempotent() {
   s.report(false, 1); // ignored
   TEST_ASSERT_EQUAL(A::Reopen, s.next(2));
   s.report(true, 2);
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 6; i++) {
     TEST_ASSERT_EQUAL(kConfigOrder[i], s.next(3));
     s.report(true, 3);
   }
-  // In the 1 s wait after the save: nothing to do.
+  // In the 1 s wait after the constellation write (before the save): nothing to do.
   TEST_ASSERT_EQUAL(A::None, s.next(3));
   TEST_ASSERT_EQUAL(A::None, s.next(3 + 999 * MS));
-  for (int i = 7; i < kN; i++) {
+  TEST_ASSERT_EQUAL(A::SaveConfig, s.next(3 + 1001 * MS));
+  for (int i = 6; i < kN; i++) {
     TEST_ASSERT_EQUAL(kConfigOrder[i], s.next(3 + 1001 * MS));
     s.report(true, 3 + 1001 * MS);
   }
@@ -180,6 +182,39 @@ static void test_readback_failure_is_skipped_not_fatal() {
   TEST_ASSERT_TRUE(d.seq.done());
   TEST_ASSERT_EQUAL_UINT8(1, d.seq.skippedSteps());
   TEST_ASSERT_EQUAL(A::ReadNavRate, d.log[d.n - 1]);
+}
+
+static bool failGnssWriteAlways(A a, int, uint32_t) { return a == A::SetGnssGpsGalileo; }
+
+static void test_save_waits_even_after_skipped_write() {
+  // A skipped constellation write still gets the wait before the save (the receiver may have restarted anyway).
+  Driver d;
+  d.fail = failGnssWriteAlways;
+  d.run(10000);
+  TEST_ASSERT_TRUE(d.seq.done());
+  TEST_ASSERT_EQUAL_UINT8(1, d.seq.skippedSteps());
+  int save = -1;
+  for (int i = 0; i < d.n; i++)
+    if (d.log[i] == A::SaveConfig)
+      save = i;
+  TEST_ASSERT_TRUE(save > 0);
+  TEST_ASSERT_EQUAL(A::SetGnssGpsGalileo, d.log[save - 1]);
+  TEST_ASSERT_TRUE(d.at[save] - d.at[save - 1] >= 1000 * MS);
+}
+
+static void test_config_warning_repeats_every_10s_only_while_not_ok() {
+  const int64_t S = 1000 * MS;
+  GnssConfigWarning w;
+  TEST_ASSERT_FALSE(w.due(false, false, 0));     // sequence still running: no warning
+  TEST_ASSERT_FALSE(w.due(true, true, 1 * S));   // finished and as intended: no warning
+  TEST_ASSERT_TRUE(w.due(true, false, 2 * S));   // finished, not as intended: at once
+  TEST_ASSERT_FALSE(w.due(true, false, 3 * S));
+  TEST_ASSERT_FALSE(w.due(true, false, 11 * S + 999 * MS));
+  TEST_ASSERT_TRUE(w.due(true, false, 12 * S));  // then every 10 s
+  TEST_ASSERT_FALSE(w.due(true, false, 13 * S));
+  TEST_ASSERT_TRUE(w.due(true, false, 22 * S));
+  TEST_ASSERT_FALSE(w.due(true, true, 23 * S));  // recovered: silent
+  TEST_ASSERT_TRUE(w.due(true, false, 24 * S));  // fails again: at once
 }
 
 // ---- UBX payload helpers ----------------------------------------------------------------------------------------
@@ -295,6 +330,8 @@ int main(int, char **) {
   RUN_TEST(test_step_skipped_after_max_attempts);
   RUN_TEST(test_step_max_wait_below_sensor_timeout);
   RUN_TEST(test_readback_failure_is_skipped_not_fatal);
+  RUN_TEST(test_save_waits_even_after_skipped_write);
+  RUN_TEST(test_config_warning_repeats_every_10s_only_while_not_ok);
   RUN_TEST(test_cfg_gnss_decode_and_apply);
   RUN_TEST(test_cfg_gnss_apply_sets_empty_signal_mask_and_rejects_bad);
   RUN_TEST(test_intended_set);

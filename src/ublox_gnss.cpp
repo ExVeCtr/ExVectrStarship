@@ -223,6 +223,19 @@ bool SNSR::UbloxSerialGNSS::performConfigAction(GnssConfigSequencer::Action acti
         return gnss_.setDynamicModel(DYN_MODEL_AIRBORNE2g, w);
     case A::PollGnssForWrite:
         gnssPolledForWrite_ = ubxPoll(UBX_CLASS_CFG, UBX_CFG_GNSS);
+        if (gnssPolledForWrite_)
+        {
+            // The configuration the receiver had at boot, BEFORE this sequence writes it: shows whether an earlier
+            // save persisted in its non-volatile memory (only after a receiver power cycle; a Teensy-only reboot
+            // leaves the receiver's RAM configuration in place).
+            GnssConstellations atBoot;
+            decodeCfgGnss(ubxPayload_, ubxPayloadLen_, atBoot);
+            LOG_MSG("GNSS config found at boot (before write): GPS %s Galileo %s GLONASS %s BeiDou %s SBAS %s QZSS %s "
+                    "IMES %s; GPS+Galileo as intended: %s\n",
+                    atBoot.gps ? "on" : "off", atBoot.galileo ? "on" : "off", atBoot.glonass ? "on" : "off",
+                    atBoot.beidou ? "on" : "off", atBoot.sbas ? "on" : "off", atBoot.qzss ? "on" : "off",
+                    atBoot.imes ? "on" : "off", SNSR::constellationsAsIntended(atBoot) ? "yes" : "NO");
+        }
         return gnssPolledForWrite_;
     case A::SetGnssGpsGalileo:
         // GPS + Galileo, all others off, in ONE CFG-GNSS message (user decision 2026-11-20). Retries resend the same

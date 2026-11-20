@@ -84,10 +84,12 @@ void GnssConfigSequencer::advance(int64_t nowNs) {
     break;
   case Action::SetGnssGpsGalileo:
     step_ = Action::SaveConfig;
+    // The receiver restarts its GNSS subsystem after a CFG-GNSS change: wait before the save, so the save is not
+    // sent while it restarts (review 2026-11-20; before, the save followed at once and the wait came after it).
+    notBeforeNs_ = nowNs + kGnssSwitchWaitNs;
     break;
   case Action::SaveConfig:
     step_ = Action::ReadGnssConfig;
-    notBeforeNs_ = nowNs + kGnssSwitchWaitNs; // GNSS restart after the CFG-GNSS change, before the read-back
     break;
   case Action::ReadGnssConfig:
     step_ = Action::ReadGnssInUse;
@@ -137,6 +139,19 @@ const char *GnssConfigSequencer::toString(Action a) {
     return "read back CFG-RATE";
   }
   return "?";
+}
+
+bool GnssConfigWarning::due(bool finished, bool ok, int64_t nowNs) {
+  if (!finished || ok) {
+    warned_ = false; // a later failure warns at once again
+    return false;
+  }
+  if (!warned_ || nowNs - lastNs_ >= kPeriodNs) {
+    warned_ = true;
+    lastNs_ = nowNs;
+    return true;
+  }
+  return false;
 }
 
 // ---- UBX payload helpers -----------------------------------------------------------------------------------------

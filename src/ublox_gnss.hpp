@@ -73,6 +73,12 @@ namespace VCTR
             /// Read back after configuration (UBX-CFG-GNSS): GPS and Galileo on, everything else off.
             bool constellationsAsIntended() const { return SNSR::constellationsAsIntended(readGnss_); }
 
+            /// The configuration sequence has ended, done or failed (no module, reopen failed).
+            bool configFinished() const { return config_.done() || config_.failed(); }
+
+            /// The configuration sequence completed with every step successful (no step skipped).
+            bool configComplete() const { return config_.done() && config_.skippedSteps() == 0; }
+
         private:
             void setupSerial(uint32_t baudRate);
 

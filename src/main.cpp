@@ -321,6 +321,7 @@ private:
   bool vehicleArmed_ = false;
   bool allSystemsInitialised_ = false;
   bool simulationMode_ = false;
+  SNSR::GnssConfigWarning gnssConfigWarning_; ///< GNSS configuration warning line (information only)
 
   // Estimator zeroing (docs/project/overview.md, "Estimator zeroing"): the ZeroEstimators / boot-zero window
   // and the "valid zero since boot" rule for Ready. missionZeroing_ is the zeroing requested by the active
@@ -537,6 +538,16 @@ public:
 
   void taskThread() override {
     handleTelecommands();
+
+    // GNSS configuration visibility (review 2026-11-20). Information only: no mode, Ready or Arm decision uses it.
+    // VehicleStatus has no free flag bit, so a warning LOG_TEXT line repeats every 10 s while the configuration is
+    // not as intended (sequence failed, a step skipped, or the read-back is not GPS + Galileo).
+    if (gnssConfigWarning_.due(gnss.configFinished(), gnss.configComplete() && gnss.constellationsAsIntended(),
+                               Core::NowNs())) {
+      VCTR::Core::printW("GNSS configuration not as intended: configured %s, GPS+Galileo %s (information only, "
+                         "repeats every 10 s)\n",
+                         gnss.configComplete() ? "yes" : "NO", gnss.constellationsAsIntended() ? "yes" : "NO");
+    }
 
     if (zeroing_.update(Core::NowNs())) {
       LOG_MSG("Estimator zeroing complete, valid zero recorded\n");

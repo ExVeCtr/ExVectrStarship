@@ -22,10 +22,13 @@
  *     message (applyGpsGalileo on the polled payload). The
  *     old per-constellation toggles ended with "GPS off", which the receiver refused at every boot (the old
  *     "Galileo only" was never in effect).
- *  5. Save the configuration to the receiver's non-volatile memory (right after the write).
- *  6. Wait kGnssSwitchWaitNs (the receiver restarts its GNSS subsystem after a CFG-GNSS change). During every wait
+ *     The driver logs the configuration found at boot (the poll, before the write), so a configuration that
+ *     persisted in the receiver's non-volatile memory is visible.
+ *  5. Wait kGnssSwitchWaitNs (the receiver restarts its GNSS subsystem after a CFG-GNSS change). During every wait
  *     state the driver drains the UART (checkUblox): auto-PVT at 10 Hz otherwise overflows the RX buffer and the
  *     first exchange after the wait fails (bench 2026-11-20: save timed out 3x after the 1 s wait).
+ *  6. Save the configuration to the receiver's non-volatile memory (after the wait, review 2026-11-20: before, the
+ *     save was sent right after the write, while the receiver restarted).
  *  7. Read back: UBX-CFG-GNSS (configured constellations), UBX-MON-GNSS (constellations in use), UBX-CFG-RATE
  *     (navigation rate). The driver logs one line with the result. Done.
  *
@@ -60,7 +63,7 @@ public:
   };
 
   static constexpr int64_t kMsNs = 1000000LL;
-  static constexpr int64_t kGnssSwitchWaitNs = 1000 * kMsNs; ///< after the CFG-GNSS write (GNSS restart)
+  static constexpr int64_t kGnssSwitchWaitNs = 1000 * kMsNs; ///< after the CFG-GNSS write, before the save
   static constexpr int64_t kRetryWaitNs = 100 * kMsNs;       ///< before retrying a failed step
   static constexpr uint8_t kMaxAttempts = 3;                 ///< per configuration step
   static constexpr uint16_t kStepMaxWaitMs = 250;            ///< ACK wait passed to each library call
@@ -96,6 +99,25 @@ private:
   uint8_t attempts_ = 0;
   uint8_t skipped_ = 0;
   int64_t notBeforeNs_ = 0; ///< no action before this time (wait states)
+};
+
+/**
+ * Visibility of a failed or incomplete GNSS configuration (review 2026-11-20). INFORMATION ONLY: nothing on the
+ * vehicle acts on it (Ready and Arm are not affected). VehicleStatus has no free bit for it (the flags byte is full),
+ * so the vehicle repeats a warning LOG_TEXT line while the configuration is not as intended.
+ *
+ * due(finished, ok, now): finished = the sequence has ended (done or failed); ok = it completed without a skipped
+ * step AND the read-back shows GPS + Galileo as intended. True on the first tick that is finished and not ok, then
+ * every kPeriodNs while that persists.
+ */
+class GnssConfigWarning {
+public:
+  static constexpr int64_t kPeriodNs = 10000LL * 1000000LL; ///< 10 s
+  bool due(bool finished, bool ok, int64_t nowNs);
+
+private:
+  bool warned_ = false;
+  int64_t lastNs_ = 0;
 };
 
 // ---- UBX payload helpers (pure, host-tested) -------------------------------------------------------------------
