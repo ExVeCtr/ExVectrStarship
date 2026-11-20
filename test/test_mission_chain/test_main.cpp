@@ -9,8 +9,14 @@
 //
 // Main property (user decision 2026-11-20): a SystemReset in any phase leaves every mission Idle, RTH active, no
 // chain pending, all mission actuators off, and nothing starts again without a new MissionBegin.
+//
+// Also modelled (2026-11-20, feature/bellyflop-abort-gnss): the controller phase table (Safety::ControlPhaseTracker,
+// applied after the chain step like main.cpp) next to the legacy mode-edge enable, the bellyflop init order (legacy:
+// taskInit on the first unpaused tick overwrites Running with Idle), and MissionAbort through Safety::decideAbort.
 #include <unity.h>
 
+#include "safety/control_phase.hpp"
+#include "safety/mission_abort.hpp"
 #include "safety/mission_chain.hpp"
 
 using namespace VCTR::Safety;
@@ -33,6 +39,7 @@ struct FakeMission {
   int begins = 0;
   bool taskInitDone = false; // bellyflop only: paused at construction, its taskInit runs on the first unpaused tick
   bool paused = true;        // bellyflop only: unpaused by begin, paused by reset and when finished
+  bool legacyTaskInit = false; // bellyflop only: model the old taskInit that set mode Idle (fixed 2026-11-20)
 
   explicit FakeMission(Kind k) : kind(k) {}
 
@@ -81,7 +88,8 @@ struct FakeMission {
         return;
       if (!taskInitDone) {
         taskInitDone = true;
-        mode = Mode::Idle;
+        if (legacyTaskInit)
+          mode = Mode::Idle; // old MissionBellyflop::taskInit; the fixed taskInit does not touch the mode
       }
       if (now - runningSince > 1 * S) {
         mode = Mode::Finished;
@@ -146,6 +154,18 @@ struct Vehicle {
   int switches = 0;
   int rthEndedTicks = 0;
 
+  // Controller phase: table (current) or the legacy mode-edge enable (shared lastMode, Running edge enables with
+  // the mission's actuator flag, every other edge disables), for the root-cause comparison.
+  bool legacyEdges = false;
+  ControlPhaseTracker ctl;
+  int lastSwitchSeen = 0;
+  Mode lastMode = Mode::Idle;
+  bool tvcOn = false;
+  int tvcResets = 0;
+  // Estimated state seen by the abort ground check.
+  float altitude = 0;
+  float speed = 0;
+
   Vehicle() {
     wp.next = &bf;
     bf.next = &ff;
@@ -175,6 +195,9 @@ struct Vehicle {
     for (int i = 0; i < 4; i++)
       all(i)->reset();
     active = &rth;
+    ctl.reset();
+    tvcOn = false;
+    lastMode = Mode::Idle;
   }
 
   /// Only what the old SystemReset did to the missions (active->resetMission(), active pointer kept), plus
@@ -184,13 +207,60 @@ struct Vehicle {
     active->reset();
   }
 
-  void missionAbort() {
-    if (active->mode == Mode::Running) {
-      switchTo(&rth);
-    } else {
-      active->reset();
-      chain.reset();
+  static ActiveMission kindOf(const FakeMission *m) {
+    switch (m->kind) {
+    case Kind::Waypoint:
+      return ActiveMission::Waypoint;
+    case Kind::Bellyflop:
+      return ActiveMission::Bellyflop;
+    case Kind::Freefall:
+      return ActiveMission::Freefall;
+    case Kind::Rth:
+      return ActiveMission::Rth;
     }
+    return ActiveMission::Other;
+  }
+
+  static MissionModeIn modeOf(Mode m) { return static_cast<MissionModeIn>(static_cast<uint8_t>(m)); }
+
+  /// The MissionAbort case of main.cpp (vehicle mode Running assumed: a mission was begun).
+  AbortAction missionAbort() {
+    AbortInput in;
+    in.vehicleRunning = true;
+    in.active = kindOf(active);
+    in.mode = modeOf(active->mode);
+    in.altitude_m = altitude;
+    in.speed_mps = speed;
+    const AbortAction a = decideAbort(in);
+    switch (a) {
+    case AbortAction::StartRth:
+      switchTo(&rth);
+      break;
+    case AbortAction::ResetAndStop:
+      chain.reset();
+      active->reset();
+      break;
+    case AbortAction::KeepRth:
+    case AbortAction::Ignore:
+      break;
+    }
+    return a;
+  }
+
+  void applyControl() {
+    if (legacyEdges) {
+      if (active->mode != lastMode) {
+        tvcOn = active->mode == Mode::Running ? active->actuators : false;
+        lastMode = active->mode;
+      }
+      return;
+    }
+    const ControlPhaseStep st =
+        ctl.update(kindOf(active), modeOf(active->mode), active->actuators, switches != lastSwitchSeen);
+    lastSwitchSeen = switches;
+    if (st.resetTvc)
+      tvcResets++;
+    tvcOn = st.phase.tvcEnabled;
   }
 
   void safetyTick() {
@@ -212,6 +282,7 @@ struct Vehicle {
     case ChainStep::None:
       break;
     }
+    applyControl();
   }
 
   /// Runs until `until` (absolute ns): mission tasks at 100 Hz, safety task at 10 Hz.
@@ -438,9 +509,10 @@ static void test_reset_after_rth_landed() {
 }
 
 static void test_bellyflop_first_run_idle_still_chains() {
-  // Regression (bench 2026-11-20): bellyflop reports Idle (missionEnd false) during its first run after boot. The
-  // chain must not treat that as a reset.
+  // Regression (bench 2026-11-20): with the legacy taskInit, bellyflop reported Idle (missionEnd false) during its
+  // first run after boot. The chain must not treat that as a reset.
   Vehicle v;
+  v.bf.legacyTaskInit = true;
   v.runFor(2 * S);
   v.missionBegin(-15 * S);
   int guard = 0;
@@ -482,12 +554,176 @@ static void test_abort_running_goes_to_rth_and_ends() {
   v.missionBegin(-15 * S);
   v.runFor(20 * S); // waypoint Running
   TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
+  v.altitude = 10; // in flight
   v.missionAbort();
   TEST_ASSERT_TRUE(v.active == &v.rth);
   v.runFor(60 * S);
   TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
   TEST_ASSERT_EQUAL(0, v.bf.begins);
   TEST_ASSERT_FALSE(v.chain.pending());
+}
+
+// --- controller phase table, bellyflop init order, abort decision ---------------------------------------------
+
+/// Runs (10 ms steps) until `m` is the active mission; fails after 300 s.
+static void runUntilActive(Vehicle &v, FakeMission *m) {
+  int guard = 0;
+  while (v.active != m && guard++ < 30000)
+    v.runFor(10 * MS);
+  TEST_ASSERT_TRUE(v.active == m);
+}
+
+/// One mission from MissionBegin to the end of freefall; returns the TVC enable seen at every safety tick while
+/// bellyflop or freefall was active (bit string, max 64 ticks) and the bellyflop mode seen at its first tick.
+struct UnpoweredTrace {
+  uint64_t bits = 0;
+  int ticks = 0;
+  Mode bellyflopModeAfter100ms = Mode::Idle;
+};
+
+static UnpoweredTrace flyToRth(Vehicle &v) {
+  UnpoweredTrace t;
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.bf);
+  v.runFor(100 * MS);
+  t.bellyflopModeAfter100ms = v.bf.mode;
+  while (v.active != &v.rth && t.ticks < 64) {
+    v.runFor(100 * MS);
+    if (v.active == &v.bf || v.active == &v.ff) {
+      if (v.tvcOn)
+        t.bits |= (uint64_t(1) << t.ticks);
+      t.ticks++;
+    }
+  }
+  return t;
+}
+
+static void test_root_cause_bellyflop_first_run_differs_legacy() {
+  // Legacy model (taskInit sets Idle on the first unpaused tick, controller enable on mode edges only): the first
+  // bellyflop after boot runs with the TVC set disabled, a later one (after SystemReset) with it enabled.
+  Vehicle v;
+  v.bf.legacyTaskInit = true;
+  v.legacyEdges = true;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.bf);
+  v.runFor(250 * MS);
+  TEST_ASSERT_TRUE(v.bf.mode == Mode::Idle);
+  TEST_ASSERT_FALSE(v.tvcOn); // first run: Idle edge disabled the controllers
+  v.runFor(5 * S);
+  v.systemReset();
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.bf);
+  v.runFor(250 * MS);
+  TEST_ASSERT_TRUE(v.bf.mode == Mode::Running);
+  TEST_ASSERT_TRUE(v.tvcOn); // second run: no edge, controllers stay enabled from the waypoint mission
+}
+
+static void test_bellyflop_first_and_later_runs_identical() {
+  // Fixed taskInit + phase table: the first bellyflop after boot and a later one report Running and see exactly the
+  // same controller phase sequence (TVC set off during bellyflop and freefall).
+  Vehicle v;
+  v.runFor(2 * S);
+  const UnpoweredTrace a = flyToRth(v);
+  v.runFor(5 * S);
+  v.systemReset();
+  v.runFor(2 * S);
+  const UnpoweredTrace b = flyToRth(v);
+  TEST_ASSERT_TRUE(a.bellyflopModeAfter100ms == Mode::Running);
+  TEST_ASSERT_TRUE(b.bellyflopModeAfter100ms == Mode::Running);
+  TEST_ASSERT_TRUE(a.ticks > 5);
+  TEST_ASSERT_EQUAL(a.ticks, b.ticks);
+  TEST_ASSERT_EQUAL_UINT64(a.bits, b.bits);
+  TEST_ASSERT_EQUAL_UINT64(0, a.bits);
+}
+
+static void test_tvc_reset_on_every_enable() {
+  // Full chain: the TVC set is reset when the waypoint mission goes Running and again when RTH starts after
+  // freefall (enabled after being off for the whole bellyflop and freefall).
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.bf);
+  TEST_ASSERT_EQUAL(1, v.tvcResets);
+  runUntilActive(v, &v.rth);
+  v.runFor(200 * MS);
+  TEST_ASSERT_TRUE(v.tvcOn);
+  TEST_ASSERT_EQUAL(2, v.tvcResets);
+  v.runFor(60 * S);
+  TEST_ASSERT_FALSE(v.tvcOn); // RTH finished
+}
+
+static void test_abort_in_flight_starts_rth_from_every_phase() {
+  // Hover, ascent, bellyflop, freefall: MissionAbort starts RTH at once, the TVC set comes on from a clean state,
+  // RTH lands and the chain ends; nothing else is begun.
+  for (int phase = 0; phase < 4; phase++) {
+    Vehicle v;
+    v.runFor(2 * S);
+    v.missionBegin(-15 * S);
+    if (phase == 0) {
+      v.runFor(17 * S); // waypoint Running, hover
+      v.altitude = 1.0f;
+    } else if (phase == 1) {
+      v.runFor(40 * S); // still waypoint Running (ends after 30 s Running = 45 s from begin)
+      v.altitude = 60.0f;
+      v.speed = 7.0f;
+    } else if (phase == 2) {
+      runUntilActive(v, &v.bf);
+      v.runFor(300 * MS);
+      v.altitude = 120.0f;
+    } else {
+      runUntilActive(v, &v.ff);
+      v.runFor(2 * S);
+      v.altitude = 80.0f;
+      v.speed = 15.0f;
+    }
+    const int resetsBefore = v.tvcResets;
+    const int ffBegins = v.ff.begins;
+    TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::StartRth);
+    TEST_ASSERT_TRUE(v.active == &v.rth);
+    TEST_ASSERT_TRUE(v.rth.mode == Mode::Running);
+    v.runFor(100 * MS); // next safety tick
+    TEST_ASSERT_TRUE(v.tvcOn);
+    TEST_ASSERT_EQUAL(resetsBefore + 1, v.tvcResets);
+    v.runFor(60 * S);
+    TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+    TEST_ASSERT_FALSE(v.chain.pending());
+    TEST_ASSERT_EQUAL(ffBegins, v.ff.begins);
+    TEST_ASSERT_EQUAL(1, v.rth.begins);
+  }
+}
+
+static void test_abort_on_ground_after_t0_resets() {
+  // Waypoint Running but the ground check holds (abort right at T0, vehicle not lifted off): reset and stop.
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(15 * S + 300 * MS);
+  TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
+  v.altitude = 0.1f;
+  v.speed = 0.2f;
+  TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::ResetAndStop);
+  const int sw = v.switches;
+  v.runFor(60 * S);
+  TEST_ASSERT_EQUAL(sw, v.switches);
+  TEST_ASSERT_TRUE(v.wp.mode == Mode::Idle);
+  TEST_ASSERT_FALSE(v.anyActuator());
+  TEST_ASSERT_FALSE(v.tvcOn);
+  TEST_ASSERT_EQUAL(0, v.rth.begins);
+}
+
+static void test_abort_during_rth_keeps_rth() {
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.rth);
+  v.runFor(3 * S);
+  v.altitude = 20.0f;
+  const int sw = v.switches;
+  TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::KeepRth);
+  TEST_ASSERT_EQUAL(sw, v.switches);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Running);
 }
 
 int main(int, char **) {
@@ -507,5 +743,11 @@ int main(int, char **) {
   RUN_TEST(test_bellyflop_first_run_idle_still_chains);
   RUN_TEST(test_abort_not_running_stops_chain);
   RUN_TEST(test_abort_running_goes_to_rth_and_ends);
+  RUN_TEST(test_root_cause_bellyflop_first_run_differs_legacy);
+  RUN_TEST(test_bellyflop_first_and_later_runs_identical);
+  RUN_TEST(test_tvc_reset_on_every_enable);
+  RUN_TEST(test_abort_in_flight_starts_rth_from_every_phase);
+  RUN_TEST(test_abort_on_ground_after_t0_resets);
+  RUN_TEST(test_abort_during_rth_keeps_rth);
   return UNITY_END();
 }

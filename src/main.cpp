@@ -36,6 +36,8 @@
 #include "starship_hardware.h"
 #include "starship_tvc.hpp"
 #include "safety/estimator_zeroing.hpp"
+#include "safety/control_phase.hpp"
+#include "safety/mission_abort.hpp"
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
@@ -338,6 +340,14 @@ private:
   // MissionBegin until RTH ends or a reset. A reset mission (mode Idle) never advances the chain.
   Safety::MissionChain missionChain_;
 
+  // Explicit controller phase table (docs/project/missions.md section 6.2, src/safety/control_phase.hpp): applied
+  // once per tick after all mission switches. missionSwitchCount_ counts switchMissionTo() calls so a mission
+  // switch while the TVC set stays enabled (for example waypoint -> RTH on an abort) also resets it.
+  Safety::ControlPhaseTracker controlPhase_;
+  uint32_t missionSwitchCount_ = 0;
+  uint32_t lastSwitchSeen_ = 0;
+  bool bellyflopFlaps_ = false;
+
   MissionPhase missionPhase_ = MissionPhase::MissionPhase_Idle;
 
   // Log rate limit of the auto-disarm messages (logging only, no effect on the
@@ -399,12 +409,71 @@ public:
 
   MissionPhase getCurrentMissionPhase() { return missionPhase_; }
 
+  /// Bellyflop controller set active (flap attitude control in BellyFlopMode Stabilize): bellyflop and freefall.
+  bool bellyflopFlapsActive() const { return bellyflopFlaps_; }
+
   void switchMissionTo(MissionAbstract *mission, int64_t startTime = 0) {
     mission_->resetMission(); // Reset the mission
     mission_ = mission;       // Set the mission to the default mission
     mission_->resetMission(); // Reset the mission
     mission_->beginMission(startTime);
     controlPositionStandard.subscribeSetpoint(mission_->getSetpointTopic());
+    missionSwitchCount_++;
+  }
+
+  Safety::ActiveMission activeMissionKind() const {
+    if (mission_ == &defaultMission_)
+      return Safety::ActiveMission::Rth;
+    if (mission_ == &missionWaypointTask)
+      return Safety::ActiveMission::Waypoint;
+    if (mission_ == &missionBellyflop)
+      return Safety::ActiveMission::Bellyflop;
+    if (mission_ == &missionFreefallTask)
+      return Safety::ActiveMission::Freefall;
+    return Safety::ActiveMission::Other;
+  }
+
+  static Safety::MissionModeIn modeIn(MissionMode m) {
+    switch (m) {
+    case MissionMode::MissionMode_Initialisation:
+      return Safety::MissionModeIn::Initialisation;
+    case MissionMode::MissionMode_Startup:
+      return Safety::MissionModeIn::Startup;
+    case MissionMode::MissionMode_Running:
+      return Safety::MissionModeIn::Running;
+    case MissionMode::MissionMode_Finished:
+      return Safety::MissionModeIn::Finished;
+    default:
+      return Safety::MissionModeIn::Idle;
+    }
+  }
+
+  /**
+   * The one place where the mission controllers are switched (user decision 2026-11-20): the phase table of
+   * Safety::controlPhaseFor, evaluated every tick from the active mission and its mode (level, not edge), so the
+   * first and every later run of a mission get the same controllers. TVC set (position + TVC attitude controller):
+   * on only in the powered phases (waypoint, RTH Running); off in the countdown, bellyflop and freefall, where the
+   * disabled ControlAttitudeTvc publishes the neutral [0, 0, 0.1 N, 0]. It is reset (integral, delta-time,
+   * setpoint hold) on every enable and on a mission switch while enabled. Bellyflop set: flap attitude control
+   * (Stabilize) in bellyflop and freefall, read by FlapModeObserverTask.
+   */
+  void applyControlPhase() {
+    const bool switched = missionSwitchCount_ != lastSwitchSeen_;
+    lastSwitchSeen_ = missionSwitchCount_;
+    const Safety::ControlPhaseStep st = controlPhase_.update(
+        activeMissionKind(), modeIn(mission_->getMissionState().missionMode), mission_->getActuatorsEnabled(),
+        switched);
+    if (st.resetTvc) {
+      controlPositionStandard.resetControlState();
+      controlAttitudeTvc.resetControlState();
+    }
+    controlPositionStandard.enableControl(st.phase.tvcEnabled);
+    controlAttitudeTvc.enableControl(st.phase.tvcEnabled);
+    bellyflopFlaps_ = st.phase.bellyflopFlaps;
+    if (st.changed || st.resetTvc) {
+      LOG_MSG("Control phase: TVC controllers %s%s, bellyflop flap control %s\n", st.phase.tvcEnabled ? "on" : "off",
+              st.resetTvc ? " (reset)" : "", st.phase.bellyflopFlaps ? "on" : "off");
+    }
   }
 
   /**
@@ -428,6 +497,9 @@ public:
     missionZeroing_ = false; // applied by applyEstimatorZeroing()
     controlAttitudeTvc.enableControl(false);
     controlPositionStandard.enableControl(false);
+    controlPhase_.reset();
+    lastSwitchSeen_ = missionSwitchCount_;
+    bellyflopFlaps_ = false;
     starshipFlaps.enableActuators(false);
     lastMissionMode_ = MissionMode::MissionMode_Idle;
   }
@@ -473,6 +545,7 @@ public:
     if (!systemsInitialised()) {
       starshipTVC.enableActuators(false); // Disable actuators
       vehicleShutdownControl(true);       // Disable everything
+      applyControlPhase();
       applyEstimatorZeroing();
       return; // Wait until all systems are initialised
     }
@@ -545,61 +618,36 @@ public:
     missionState.missionIndex = missionSelection_; // Set the mission index to
     // the current mission index
 
+    // Mode-edge actions (zeroing, actuator test, flap enable; the flap enable is overridden every tick by
+    // vehicleShutdownControl). The mission controllers are NOT switched here any more: applyControlPhase() does it
+    // from the phase table every tick (2026-11-20; the edge-based enable made the first bellyflop after boot differ
+    // from later ones and left RTH without controllers after an abort from freefall).
     if (missionState.missionMode != lastMissionMode_) {
       if (missionState.missionMode == MissionMode::MissionMode_Idle) {
         missionZeroing_ = false; // applied by applyEstimatorZeroing()
-        // controlRocket.enableControl(false); // Disable control for the rocket
-        controlAttitudeTvc.enableControl(
-            false); // Disable control for the attitude
-        controlPositionStandard.enableControl(
-            false); // Disable control for the position
-        // starshipTVC.enableMotors(false); // Enable motors
-        starshipFlaps.enableActuators(false); // Disable actuators
+        starshipFlaps.enableActuators(false);
       } else if (missionState.missionMode ==
                  MissionMode::MissionMode_Initialisation) {
         missionZeroing_ = true; // estimator zeroing on (applyEstimatorZeroing())
-        // controlRocket.enableControl(false); // Disable control for the rocket
-        controlAttitudeTvc.enableControl(
-            false); // Disable control for the attitude
-        controlPositionStandard.enableControl(
-            false); // Disable control for the position
-        // starshipTVC.enableMotors(false); // Enable motors
-        starshipFlaps.enableActuators(true); // Disable actuators
+        starshipFlaps.enableActuators(true);
       } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
         missionZeroing_ = false;
-        // controlRocket.enableControl(false); // Disable control for the rocket
-        controlAttitudeTvc.enableControl(
-            false); // Disable control for the attitude
-        controlPositionStandard.enableControl(
-            false);                       // Disable control for the position
         starshipTVC.beginActuatorTest(0); // Start the actuator test
 #ifdef DO_FLAP_TEST_STARTUP
         starshipFlaps.beginActuatorTest(
             4 * Core::SECONDS); // Start the actuator test
 #endif
-        // starshipTVC.enableMotors(true); // Enable motors
-        starshipFlaps.enableActuators(false); // Disable actuators
+        starshipFlaps.enableActuators(false);
       } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
         missionZeroing_ = false;
-        controlAttitudeTvc.enableControl(mission_->getActuatorsEnabled());
-        controlPositionStandard.enableControl(mission_->getActuatorsEnabled());
-        starshipFlaps.enableActuators(true); // Disable actuators
+        starshipFlaps.enableActuators(true);
       } else if (missionState.missionMode ==
                  MissionMode::MissionMode_Finished) {
         missionZeroing_ = false;
-        // controlRocket.enableControl(false); // Disable control for the rocket
-        controlAttitudeTvc.enableControl(
-            false); // Disable control for the attitude
-        controlPositionStandard.enableControl(
-            false); // Disable control for the position
-        // starshipTVC.enableMotors(false); // Enable motors
-        starshipFlaps.enableActuators(false); // Disable actuators
+        starshipFlaps.enableActuators(false);
       }
 
-      lastMissionMode_ =
-          missionState
-              .missionMode; // Set the last mission mode to the current mission mode\
-
+      lastMissionMode_ = missionState.missionMode;
     }
 
     // Chain switching. missionEnd() alone is not enough: every resetMission() sets it, so a reset mission would
@@ -641,6 +689,9 @@ public:
       }
       break;
     }
+
+    // After every switch of this tick (telecommands, failure checks, chain): same table on every run.
+    applyControlPhase();
   }
 
   void handleTelecommands() {
@@ -838,27 +889,45 @@ public:
       }
       break;
 
-    case TelecommandType::Telecommand_MissionAbort:
+    case TelecommandType::Telecommand_MissionAbort: {
+      // User decision 2026-11-20: an abort means "stop and return home" (a failsafe is a latched Failure and is
+      // not handled here). In flight: RTH hot start from any phase. On the ground (countdown, nothing running, RTH
+      // landed, or the ground check: altitude < 0.5 m and speed < 0.5 m/s): reset and stop, nothing restarts.
+      // Decision: Safety::decideAbort (src/safety/mission_abort.hpp), docs/project/missions.md section 6.2.
+      const auto pos = posEstSubr.getItem().data;
+      Safety::AbortInput in;
+      in.vehicleRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
+      in.active = activeMissionKind();
+      in.mode = modeIn(mission_->getMissionState().missionMode);
+      in.altitude_m = pos(5);
+      in.speed_mps = sqrtf(pos(0) * pos(0) + pos(1) * pos(1) + pos(2) * pos(2));
+      const Safety::AbortAction action = Safety::decideAbort(in);
 
-      if (vehicleMode_ == VehicleMode::VehicleMode_Running) {
-        if (mission_->getMissionState().missionMode ==
-            MissionMode::MissionMode_Running) {
-          missionSelection_ = 0;
-          switchMissionTo(&defaultMission_); // Switch to the default mission
-        } else {
-          starshipTVC.enableActuators(false); // Disable actuators
-          vehicleShutdownControl(true);       // Disable everything
-          // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
-          // chain on the next tick (an abort during the countdown started bellyflop, then freefall, then an RTH
-          // hot start). The mission stays the active one, in Idle.
-          missionChain_.reset();
-          mission_->resetMission();
-          clearFailures();
-        }
-
-        LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
+      switch (action) {
+      case Safety::AbortAction::StartRth:
+        // The chain stays pending until RTH ends (RTH-end shutdown and auto-disarm as after a normal RTH). The
+        // TVC set is enabled and reset by applyControlPhase() later in this tick.
+        missionSelection_ = 0;
+        switchMissionTo(&defaultMission_);
+        break;
+      case Safety::AbortAction::ResetAndStop:
+        starshipTVC.enableActuators(false); // Disable actuators
+        starshipTVC.enableMotors(false);
+        vehicleShutdownControl(true); // Disable everything
+        // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
+        // chain on the next tick. The mission stays the active one, in Idle.
+        missionChain_.reset();
+        mission_->resetMission();
+        clearFailures();
+        break;
+      case Safety::AbortAction::KeepRth:
+      case Safety::AbortAction::Ignore:
+        break;
       }
-      break;
+
+      LOG_MSG("Mission abort telecommand: %s (alt %.2f m, speed %.2f m/s)\n", Safety::toString(action),
+              double(in.altitude_m), double(in.speed_mps));
+    } break;
 
     case TelecommandType::Telecommand_ZeroEstimators: {
       // One-shot ground action (safety.md section 2 rule 5): accepted only while initialised, disarmed, motors
@@ -1266,7 +1335,9 @@ public:
     if (vehicleMode == VehicleMode::VehicleMode_Running &&
         mission->getMissionState().missionMode ==
             MissionMode::MissionMode_Running) {
-      if (mission == &missionFreefallTask) {
+      // Bellyflop controller set (flap attitude control) in bellyflop and freefall: the controller phase table
+      // of VehicleSafetyAndControlTask (src/safety/control_phase.hpp). Before 2026-11-20 freefall only.
+      if (vehicleSafetyAndControlTask.bellyflopFlapsActive()) {
         starshipFlopSetting.bellyFlopMode =
             CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
                 BellyFlopMode_Stabilize;

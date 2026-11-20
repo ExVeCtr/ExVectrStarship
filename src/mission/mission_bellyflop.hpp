@@ -68,10 +68,10 @@ public:
 
   bool missionEnd() override { return missionEnd_; }
 
-  void taskInit() override {
-    missionState_.missionMode =
-        MissionMode::MissionMode_Idle; // Set the mission mode to idle
-  }
+  // No taskInit override (2026-11-20). The task is paused from construction, so the scheduler runs taskInit on
+  // its first unpaused tick, i.e. AFTER beginMission. The old taskInit set the mode to Idle there, so the first
+  // bellyflop after boot reported Idle instead of Running and the mode-edge handling switched the controllers
+  // differently from every later run. The constructor (MissionAbstract) already sets the boot mode Idle.
 
   const MissionState &getMissionState() const {
     return missionState_; // Get the mission state
