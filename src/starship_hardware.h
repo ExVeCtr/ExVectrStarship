@@ -22,10 +22,9 @@
 
 #define NEO_M8Q_SERIALPORT Serial5
 
-// UART to the ExVectrLink RX module (ExVectrNetwork stream link, 460800 8N1). Serial4 = pin 16 (RX4) and
-// pin 17 (TX4). Pin 17 was the SX1280 TXEN output and pin 16 the unused QMC5883 interrupt input, so with the
-// old on-board SX1280 still fitted the TX pin drives only the RF-switch input. TO BE CONFIRMED ON THE BENCH:
-// the actual wiring to the RX module (see docs/project/hardware-and-drivers.md section 5).
+// UART to the ExVectrLink RX module (ship radio node, ExVectrNetwork stream link, 460800 8N1). Serial4 = pin 16
+// (RX4, wired to the ship node TX = GPIO1) and pin 17 (TX4, wired to the ship node RX = GPIO3). Bench-confirmed
+// end to end 2026-11-20 (docs/project/hardware-and-drivers.md section 5).
 #define RX_MODULE_SERIALPORT Serial4
 
 #define TVC_SERVO_LIMIT 45*DEG_TO_RAD // Maximum angle of the TVC servos in radians in one direction (Full movement range is double this amount)

@@ -23,14 +23,6 @@
 
 #define QMC5883L_INT_PIN            16
 
-#define SX1280_NSS_PIN              9
-#define SX1280_NRESET_PIN           5
-#define SX1280_RFBUSY_PIN           15
-#define SX1280_DIO1_PIN             14
-#define SX1280_RXEN_PIN             10
-#define SX1280_TXEN_PIN             17
-#define SX1280_SPIBUS               SPI
-
 #define INPUT_VOLTAGE_ADC_PIN       26
 #define INPUT_VOLTAGE_ADC_FACTOR    1.0f
 
