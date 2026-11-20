@@ -90,7 +90,7 @@ SensorCalib (mag calibration telecommand) ── disarms, blocks Ready
 
 - `vehicleIsReady()` false → `vehicleShutdownControl(true)`: TVC, flaps and simulated actuators are disabled. **In flight this means the vehicle falls.** This is the current policy for every latched failure, including radio loss.
 - Otherwise actuators follow `mission->getActuatorsEnabled()`. Flaps are always on in freefall.
-- **Arming** (`Arm`, 0xA5) only sets the motor power limit: 100 % when armed, 10 % when disarmed. It is *not* required for `MissionBegin`. Disarm is forced in Failure, SensorCalib, Startup and SensorInit, and automatically after RTH finishes.
+- **Arming** (`Arm`, 0xA5) only sets the motor power limit: 100 % when armed, 10 % when disarmed. It is *not* required for `MissionBegin`. Disarm is forced in Failure, SensorCalib, Startup and SensorInit, and automatically after RTH finishes. The forced-disarm log line ("Vehicle disarmed due to ...") is logged once when the reason changes and then every 5 s while it holds (`disarmLogDue`, main.cpp:335); the disarm itself still runs every 100 ms tick.
 - Motors are switched on only by `MissionBegin`, and never in simulation mode.
 
 ### Known safety gaps (decide before the next flight)

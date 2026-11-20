@@ -117,8 +117,9 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x90 | `IMU_RAW` | down | 100 Hz | – |
 | 0x91 | `ESTIMATOR` | down | 20 Hz | – |
 | 0x92 | `TASK_TIMING` | down | 5 Hz | – |
+| 0x93 | `CALIBRATION` (applied sensor calibration) | down | 0.5 Hz | – |
 
-Packet layouts: ExVectrPackets schema (hash 0x3AFA3CCE), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+Packet layouts: ExVectrPackets schema (hash 0xCFB7AEED), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
 Losing the ground station (no valid frame from node 0 on either link for 2 s) sets `radioConnectionLoss`, as before. Until T9b this includes the radio path, where only node 0 data frames (not its heartbeats) reach the vehicle.
 
@@ -129,4 +130,4 @@ Losing the ground station (no valid frame from node 0 on either link for 2 s) se
 - **USB Serial carries only ExVectrNetwork stream frames**: `pio device monitor` shows binary. Console text (`LOG_MSG`, Core print) arrives as `LOG_TEXT` packets in the ground station. Never `Serial.print` in `src/`. `LOG_MSG`/`VRBS_MSG` switches are in `ExVectrCore/print.hpp`.
 - `platformio.ini`: `-Ilib/ExVectrPackets/gen` (generated packet headers), `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (platform console off), `build_src_filter` excludes `src/sx12xxAL`. `default_envs = teensy40`, so `pio run` builds only the firmware.
 - Host tests: `~/.platformio/penv/bin/pio test -e native` (Unity) builds `src/comms/telemetry_mapping.cpp`, `src/comms/vehicle_network.cpp` and the ExVectrNetwork stack natively (`test/test_telemetry_mapping`, `test/test_vehicle_network`).
-- Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B.
+- Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B. After the calibration telemetry (2026-11-20): FLASH code 230744 B, RAM1 code 228584 B, padding 792 B, 242528 B free for local variables (unchanged).

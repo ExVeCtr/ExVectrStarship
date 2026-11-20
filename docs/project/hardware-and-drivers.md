@@ -209,13 +209,55 @@ Messages containing NaN are dropped (self-equality test, `.cpp:41`).
 | 201 | `MEMORY_KEY_MAGTRANSFORM` | `Matrix<float,3,3>` | sensor → body |
 | 202 | `MEMORY_KEY_ACCTRANSFORM` | `Matrix<float,3,3>` | sensor → body |
 
-Applied as `TopicCoordTransform::setTransform(calib.cov * transform, calib.val)` (main.cpp:1862-1867). **The gyro bias is overridden in RAM at every boot** with hard-coded `(0.92, 2.0, 0.6) °/s` (main.cpp:1848-1850). It is never written to memory, so the stored key 100 bias is ignored.
+Applied as `TopicCoordTransform::setTransform(calib.cov * transform, calib.val)` through `applySensorCalibration` (main.cpp:117, calls at :1804-1812), which also keeps a copy for the `CALIBRATION` telemetry. **The gyro bias is overridden in RAM at every boot** with hard-coded `(0.92, 2.0, 0.6) °/s` (main.cpp:1789-1792). It is never written to memory, so the stored key 100 bias is ignored. The exact formulas are in section 8a.
+
+## 8a. Sensor calibration pipeline (what `CALIBRATION` reproduces)
+
+Each of the three sensor streams passes one `DSP::TopicCoordTransform` before the estimators (`lib/ExVectrDSP/include/ExVectrDSP/topic_coord_transform.hpp:94-99`):
+
+```
+cal = M * (raw - b)        M = C * T  (3x3),  b = offset (3)
+```
+
+| Sensor | raw (driver output, `IMU_RAW`) | b | C | T | Consumers of `cal` |
+|---|---|---|---|---|---|
+| Gyro | MPU9250 gyro, rad/s | hard-coded `(0.92, 2.0, 0.6)°/s` in rad/s (key 100 `.val` ignored) | key 100 `.cov` | key 200 | attitude EKF |
+| Accel | MPU9250 accel, m/s² | key 102 `.val` | key 102 `.cov` | key 202 | attitude EKF, position KF |
+| Mag | QMC5883, driver gauss | key 101 `.val` | key 101 `.cov` | key 201 | attitude EKF |
+
+- Order: the offset is subtracted in the **raw (sensor) frame**, then `M` scales and rotates into the body frame in one step. There is no temperature term, no other remap and no clamping. Missing EEPROM items are created as `b = 0`, `C = T = I` (identity). `Telecommand_CalibApply` replaces the mag `b` and `C` (uniform scale `1/fitScale`, normalising |B| to 0.05 gauss-units) with `T` = key 201 re-read (main.cpp:606-664); it is RAM only until `Telecommand_Save`.
+- The "sensor frame" is the driver output frame. The MPU9250 driver already remaps the chip axes: driver `(x, y, z)` = chip `(y, x, −z)` for accel and gyro (`lib/ExVectrSensor/src/mpu9250.cpp:886-898`). The QMC5883 driver does not remap.
+- The EKF additionally multiplies the calibrated accel by `accTiltCompensation_` in `updateAcc` only; it is the identity (main.cpp:1922-1924). The EKF subtracts its own gyro bias state from the calibrated gyro (`POSE.omega = gyro cal − gyro_bias_est`).
+- Covariances are not transformed (DSP Known issues).
+
+**`CALIBRATION` (port 0x93, USB only, every 2 s)** carries, per sensor, `*_offset` = `b` and `*_matrix` = `M` row-major (`M[r][c] = matrix[3r + c]`), so the ground station computes from `IMU_RAW`:
+
+```
+gyro_cal  [rad/s] = gyro_matrix  * (IMU_RAW.gyro  - gyro_offset)
+accel_cal [m/s^2] = accel_matrix * (IMU_RAW.accel - accel_offset)
+mag_cal   [T]     = mag_matrix   * (IMU_RAW.mag   - mag_offset)
+omega_est [rad/s] = gyro_cal - gyro_bias_est          (equals POSE.omega up to timing)
+```
+
+The vehicle computes the mag in gauss (`IMU_RAW.mag` = driver gauss × 1e-4, `mag_offset` = key 101 `.val` × 1e-4, `mag_matrix` unchanged), so `mag_cal` is the vehicle's value × 1e-4. The EKF only uses the mag direction, and drops samples with |vehicle value| outside 0.01–0.1, i.e. |`mag_cal`| outside 1e-6–1e-5 T (`lib/ExVectrDSP/src/imu_attitude_ekf.cpp:327`); with the in-flight calibration |`mag_cal`| ≈ 5e-6 T, which is not the physical field strength.
+
+`raw_frame` is `SENSOR` (0). Source bits per sensor (`*_source`): `CALIB_EEPROM` (key 10x read from EEPROM), `TRANSFORM_EEPROM` (key 20x read), `OFFSET_OVERRIDE` (gyro: hard-coded bias), `RAM_ONLY` (set by `CalibApply`, cleared by a successful `Save`), `MEMORY_CLEARED` (memory manager version mismatch at boot, everything is defaults). Both bits clear means identity defaults.
+
+**Bench values (vehicle on the bench 2026-11-20, read with `CALIBRATION`):** all six items loaded from EEPROM (gyro source 0x07, accel 0x03, mag 0x03).
+
+| Sensor | b | M |
+|---|---|---|
+| Gyro | `(0.01606, 0.03491, 0.01047)` rad/s (override) | `diag(−1, 1, −1)` |
+| Accel | `(0.42849, 0.55833, 2.14256)` m/s² | `diag(−0.9984, 1.003, −0.9673)` |
+| Mag | `(1.0491e-6, −1.467e-7, 8.154e-7)` T | `0.16220 · [[0,0,−1],[1,0,0],[0,−1,0]]` |
+
+These are the values of the `if (false)` block in `initialiseMemory` for the accel (offset/scale, `T = diag(−1,1,−1)`) and gyro (`C = diag(−1,1,−1)`), and a `CalibApply` mag fit with the permutation transform in key 201. With them the bench vehicle at rest gives |accel cal| = 10.3 m/s² (raw 8.44): the accel calibration no longer fits the sensor (Known issues).
 
 ---
 
 ## 9. Telemetry: generated packets (`src/comms/telemetry_mapping.cpp`)
 
-The packets are the generated ExVectrPackets classes (schema hash 0x3AFA3CCE, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
+The packets are the generated ExVectrPackets classes (schema hash 0xCFB7AEED, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
 
 **Sets and rates** (100 Hz tick, rates from the generated `kUsbRateHz` / `kAirRateHz`):
 
@@ -229,6 +271,7 @@ The packets are the generated ExVectrPackets classes (schema hash 0x3AFA3CCE, by
 | 0x91 | `ESTIMATOR` | 20 Hz | – | 0 |
 | 0x83 | `GNSS` | 5 Hz | – | 0 |
 | 0x92 | `TASK_TIMING` | 5 Hz | – | 0 |
+| 0x93 | `CALIBRATION` | 0.5 Hz (every 2 s, `VehicleNetwork::kCalibrationPeriodTicks`; the schema rate is 0) | – | 0 |
 | 0x03 | `HANDSET_TELEM` | 2 Hz | 2 Hz | 0xFF |
 | 0x21 | `AIR_POSE` | – | 10 Hz | 0 |
 | 0x02 | `LOG_TEXT` | as printed | – | 0 |
@@ -271,10 +314,11 @@ UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB a
 | | `altitude`, `vertical_speed` | estimated `Pz`, `Vz` (above the reference) |
 | | `roll`, `pitch`, `yaw` | ZYX Euler angles of q (NWU; yaw counterclockwise about +Z, 0 = body X North) |
 | | `battery` | NaN -> 0 = unknown (no battery monitoring) |
-| `IMU_RAW` | `gyro`, `accel` | MPU9250 driver outputs, sensor frame (before calibration and the body transform) |
-| | `mag` | QMC5883 gauss × 1e-4 -> T, sensor frame |
+| `IMU_RAW` | `gyro`, `accel` | MPU9250 driver outputs (`mpuDriver` topics, not the transform outputs), sensor frame, **uncalibrated** (before offset, scale and the body transform; section 8a) |
+| | `mag` | QMC5883 driver output (`qmc` topic), gauss × 1e-4 -> T, sensor frame, **uncalibrated** (no hard/soft iron). The driver scale is 0.73x the physical field (Known issues) |
 | | `pressure`, `temperature` | BME280 Pa; MPU9250 °C + 273.15 -> K |
-| `ESTIMATOR` | `att_std` | `2·sqrt(P_q)` of the attitude EKF quaternion vector part (small angle), rad |
+| `ESTIMATOR` | `att_std` | 1σ small rotations about the **world axes [North, West, Up]**, rad: `sqrt(diag(4 Ωᵀ P Ω))` with `P` the EKF 4x4 quaternion covariance and `Ω(q)` the map of a world-frame rotation to dq (`attitudeStdWorld`, `src/comms/telemetry_mapping.cpp:52`), using the EKF's own q (also in simulation). At q = identity it equals the former `2·sqrt(P_vector)`; away from identity the former diagonal mixed the axes. Only as meaningful as the EKF covariance (Known issues) |
+| `CALIBRATION` | all | section 8a: per sensor `offset`, `matrix` (row-major `C·T`), `source` bits; `raw_frame` = SENSOR; `gyro_bias_est` = EKF state `x(0..2)`. Mag offset gauss × 1e-4 -> T (`makeCalibration`) |
 | | `vel_std`, `pos_std` | `sqrt` of the position-KF covariance diagonal |
 | `TASK_TIMING` | `count`, `avg` | first 8 scheduler tasks in registration order, average run time (EMA), s; `max` NaN |
 
@@ -334,12 +378,12 @@ Purpose: everything a 3D model or ground-station view needs to place the body ax
 
 | Sensor | Transform | Source |
 |---|---|---|
-| MPU9250 accel | Driver remap, chip `(x,y,z)` to body `(y, x, −z)`, in m/s² | `lib/ExVectrSensor/src/mpu9250.cpp:886-891` |
-| MPU9250 gyro | Driver remap, chip `(x,y,z)` to body `(y, x, −z)`, rad/s | `mpu9250.cpp:893-898` |
-| QMC5883 magnetometer | No axis remap in driver. App transform `sensorToBody_` is the **identity** (`src/main.cpp:786`), then calibration `cov * sensorToBody_` (`:799-801`) | |
-| All three, app level | `TopicCoordTransform` with `calib.cov * stored transform` and `calib.val` offset (`src/main.cpp:1862-1866`, `:1921-1923`). The stored transform matrices (`MEMORY_KEY_ACC/GYRO/MAGTRANSFORM`) default to identity but are read from EEPROM, so **the real values are unknown from code**. | |
+| MPU9250 accel | Driver remap, chip `(x,y,z)` to driver/sensor frame `(y, x, −z)`, in m/s² | `lib/ExVectrSensor/src/mpu9250.cpp:886-891` |
+| MPU9250 gyro | Driver remap, chip `(x,y,z)` to driver/sensor frame `(y, x, −z)`, rad/s | `mpu9250.cpp:893-898` |
+| QMC5883 magnetometer | No axis remap in driver | |
+| All three, app level | `cal = C·T · (raw − b)` (section 8a), from EEPROM keys 100-102 (`C`, `b`) and 200-202 (`T`). Read live with `CALIBRATION` | `src/main.cpp:1804-1812`, `:654` |
 
-The `if (false)` test block (`main.cpp:1886-1917`) documents earlier tried values (`diag(−1,1,−1)` for acc and gyro, a permutation for the mag) that are **not active**. The magnetometer needs its own axis mapping that code alone cannot confirm. **UNKNOWN (needs the user):** contents of the EEPROM transform and calibration matrices, and how the IMU board is physically mounted (the driver remap above says the chip is rotated 90 degrees about Z and flipped, but not how that sits in the airframe). An accel tilt compensation hook exists, set to 0° (`main.cpp:1976-1978`).
+**Bench vehicle EEPROM (read with `CALIBRATION`, 2026-11-20):** sensor -> body is `diag(−1, 1, −1)` for gyro and accel (with the accel scale `diag(0.9984, 1.003, 0.9673)`), and `[[0,0,−1],[1,0,0],[0,−1,0]]` (times the scale 0.1622) for the mag, i.e. the values written once by the now-disabled `if (false)` block in `initialiseMemory` plus a later `CalibApply` mag fit. With these, the resting vehicle's calibrated accel points along body +Z and the calibrated mag gives a plausible field direction (north and down, 51° inclination in the vehicle's units), and the EKF quaternion agrees with both. Whether body +Z is the physical nose (vehicle standing upright) is for the user to confirm. **UNKNOWN (needs the user):** how the IMU board is physically mounted in the airframe. An accel tilt compensation hook exists, set to 0° (`main.cpp:1922-1924`).
 
 ### Attitude quaternion
 
@@ -416,7 +460,7 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 1. Physical left/right: which side of the real vehicle is +Y (TL/BL)?
 2. Which way does the real belly face (assumed −X)?
 3. Real flap hinge location, fold direction at 90° (toward back or belly), and dimensions.
-4. IMU and magnetometer mounting, and the EEPROM transform/calibration matrices.
+4. IMU and magnetometer mounting (the EEPROM matrices are now readable via `CALIBRATION`, section 8a).
 5. Vane geometry and physical rotation sign per servo, motor spin direction viewpoint, CoM position and vehicle size.
 6. Whether flap angles should be sent over radio (today USB only, `ACTUATORS`).
 
@@ -437,7 +481,11 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Medium | `PWM_Output` (lib) used by both drivers | `outputEnabled_` is never assigned in `enableOutput()` (`lib/ExVectrActuator/src/pwm_output.cpp:103-114`). Disable writes 0 duty once, but the next `setValue()` drives the pin again. | The drivers only work because they call `setValue` exclusively while enabled. Any future `setValue` on a disabled output re-energises it. |
 | Medium | `ublox_gnss.cpp:199` | `delay(1000)` (plus up to three blocking `begin()` attempts) inside `taskInit`. | Stalls the cooperative scheduler, including IMU processing, for at least 1 s at t ≈ 5 s. |
 | Low | `starship_flaps.hpp:37` | `FLAP_MIN_ANGLE = 15°` clamps the controller's 0° (full extension, used by `Upright`). | Flaps never fully extend. The true-flap topic shows 15°. |
-| Low | main.cpp:1848-1850 | Gyro bias hard-coded at boot overrides the stored calibration. | Stale bias when the IMU or temperature changes. The key 100 bias is silently ignored. |
+| Low | main.cpp:1789-1792 | Gyro bias hard-coded at boot overrides the stored calibration. | Stale bias when the IMU or temperature changes. The key 100 bias is silently ignored. `CALIBRATION` shows it (`OFFSET_OVERRIDE`). |
+| Medium | EEPROM key 102 (bench vehicle) | The stored accel calibration (`b = (0.428, 0.558, 2.143)` m/s², `C·T = diag(−0.9984, 1.003, −0.9673)`) maps the resting raw accel (\|raw\| 8.44 m/s²) to \|cal\| 10.3 m/s², not 9.81. The z offset no longer matches the sensor (it may have shifted, or the values were fitted in another frame). | The tilt estimate can be off by a few degrees (the x/y offset error is not observable at rest in one orientation). Needs a new accel calibration (six-position) before flight; there is no accel calibration command. |
+| Medium | `lib/ExVectrSensor/src/qmc5883.cpp:99-101`, `:170` | The QMC5883 is configured for the 8 G range (3000 LSB/G per datasheet) but converted with 8/32767 G/LSB (4096 LSB/G). | `IMU_RAW.mag` is 0.73x the physical field (0.35 G read for about 0.48 G). Direction and the existing mag calibration are unaffected; do not "fix" it without recalibrating the mag (the stored offset is in these units). |
+| Medium | attitude EKF (`lib/ExVectrDSP`), seen in `ESTIMATOR` | The EKF quaternion covariance does not converge on the bench: `att_std` stays at about 0.3-1 rad tilt and several rad heading. The mag correction is a fixed-gain complementary step that never reduces `P`, and the accel update uses the driver variance × 5000. | `att_std` is not a usable confidence today, although the attitude itself is consistent with the calibrated accel and mag (2026-11-20 bench check: accel to world up within 1.6°, mag heading error 1.5°). Estimator change: needs a decision and simulation verification. |
+| Low | main.cpp `systemsInitialised` | "GNSS data not new" (and the other "... not new" lines) are logged every 100 ms until all sensors deliver. | About 10 `LOG_TEXT` lines/s on the bench without GNSS. Not rate-limited (only the auto-disarm messages are, 2026-11-20). |
 | Low | `starship_hardware.h:25-26`, `starship_tvc.hpp:92-94` | `TVC_SERVO_LIMIT` is unparenthesised. `TVC_ANGLE_FACTOR` is duplicated by the hard default `tvcFactor = 15`. | Changing the define does not change the TVC mixing. Macro expansion hazard. |
 | Low | `ublox_gnss.cpp:150-170` | Baud fallback messages are wrong ("15200", always "9600"). A failed 115200 reconfig returns without `setInitialised(false)`. | Misleading logs. The task may run unconfigured. |
 | Low | `telecommand.hpp:152`, `:156`, `:159` | Header comments disagree with the code: CalibStart duration, SystemReset leaving sim mode, MissionBegin "seconds in the future". | Operator and ground-software confusion. |

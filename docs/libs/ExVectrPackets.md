@@ -1,5 +1,5 @@
 # ExVectrPackets
-> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 4ca8fb1 (Development, schema hash 0x3AFA3CCE)`
+> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 9674f89 (feature/calibration-telemetry, schema hash 0xCFB7AEED)`
 
 The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/telemetry-sets.md`, `docs/versioning.md`, `docs/adding-a-packet.md` and the generated `docs/packet-reference.md` (every field, offset, scaling and unit). This file covers what the flight software uses.
 
@@ -25,9 +25,10 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 | 0x81 | `Actuators` | USB | 50 Hz | flaps, TVC deflection, thrust, ground distance |
 | 0x82 | `Mission` | USB | 20 Hz | setpoint, mission time (s), index, phase |
 | 0x83 | `Gnss` | USB | 5 Hz | lat/lon (rad, f64), altitude, velocity, accuracies |
-| 0x90 | `ImuRaw` | USB debug | 100 Hz | gyro, accel, mag (T), pressure, temperature (K) |
+| 0x90 | `ImuRaw` | USB debug | 100 Hz | uncalibrated sensor-frame gyro, accel, mag (T), pressure, temperature (K) |
 | 0x91 | `Estimator` | USB debug | 20 Hz | attitude/velocity/position standard deviations |
 | 0x92 | `TaskTiming` | USB debug | 5 Hz | average run time of the first 8 scheduler tasks |
+| 0x93 | `Calibration` | USB debug | 0.5 Hz (vehicle constant, schema rate 0) | applied sensor calibration: per sensor offset and 3x3 matrix, source bits, raw frame, EKF gyro bias ([formulas](../project/hardware-and-drivers.md#8a-sensor-calibration-pipeline-what-calibration-reproduces)) |
 | 0x02 | `LogText` | USB | as printed | console text (Core print, `LOG_MSG`) |
 
 How the vehicle fills each field: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#9-telemetry-generated-packets-srccommstelemetry_mappingcpp).
@@ -48,7 +49,7 @@ node.send(0, Packets::Pose::kPort, buf, n, static_cast<network::wire::Qos>(Packe
 
 ## How this project uses it
 - `src/comms/telemetry_mapping.cpp` builds every packet from a `TelemetrySnapshot` (pure functions, host-tested in `test/test_telemetry_mapping`).
-- `src/comms/vehicle_network.cpp` schedules them using the generated `kUsbRateHz` / `kAirRateHz` (100 Hz tick; `static_assert`s check that each rate divides it).
+- `src/comms/vehicle_network.cpp` schedules them using the generated `kUsbRateHz` / `kAirRateHz` (100 Hz tick; `static_assert`s check that each rate divides it). Exception: `CALIBRATION` has no schema rate (the rate fields are integer Hz) and is sent every 200 ticks (`kCalibrationPeriodTicks`).
 - The fixed-point rules of the schema fix the old telemetry unit bugs: no int16 overflow (ground distance above 2 m, positions above the old limits), no NaN undefined behaviour, GNSS lat/lon declared and sent in radians, accuracies as standard deviations.
 
 ## Known issues & limitations

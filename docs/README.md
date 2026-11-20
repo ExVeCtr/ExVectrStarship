@@ -39,7 +39,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | ExVectrControl | 8d6efab | 084bea1 | NowNs port only |
 | ExVectrActuator | 4d3c87a | db98892 | NowNs port only |
 | ExVectrNetwork | de708ca | `origin/Development` | **feature/network-migration:** the new stack (stream links, Node, PortMux, PacketPort). The old stack and its NowNs port 7072cfe are gone |
-| ExVectrPackets | 4ca8fb1 | `origin/Development` | **feature/network-migration:** generated packets, schema hash 0x3AFA3CCE |
+| ExVectrPackets | 9674f89 | a96bd7b (`feature/link-config`, ExVectrLink's copy, unpushed) | **feature/network-migration-fixes:** branch `feature/calibration-telemetry`, adds `CALIBRATION` (0x93), schema hash 0xCFB7AEED. a96bd7b adds `LINK_REBOOT` and `LINK_CONFIG` on top of 4ca8fb1 |
 | ExVectrArduinoPlatform | d481e6c | 4f31846 (`origin/Development`) | **feature/network-migration:** `EXVECTR_ARDUINO_NO_SERIAL_CONSOLE` build flag |
 | ExVectrMath, ExVectrHAL, ExVectrData | unchanged | | No change needed |
 
