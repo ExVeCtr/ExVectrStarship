@@ -344,7 +344,8 @@ static void test_step_rules() {
   TEST_ASSERT_EQUAL(ChainStep::None, c.step(in));
   TEST_ASSERT_TRUE(c.pending());
 
-  // Pending, Idle but not ended (bellyflop's first run after boot) -> nothing, chain stays pending.
+  // Pending, Idle but not ended -> nothing, chain stays pending (defence in depth: the old bellyflop taskInit
+  // produced this state on its first run after boot; since its removal no mission does).
   in.activeEnded = false;
   in.activeIdle = true;
   TEST_ASSERT_EQUAL(ChainStep::None, c.step(in));

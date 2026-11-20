@@ -237,13 +237,14 @@ The mission controllers are switched in **one place**, `applyControlPhase()` (ma
 - The flap controller is not paused in the powered phases: its mode is selected by `FlapModeObserverTask` (§8), and RTH uses `Upright` during stabilisation.
 - A log line `Control phase: TVC controllers on/off [(reset)], bellyflop flap control on/off` is written on every change or reset.
 
-Switching, after the edge handling, is decided by `Safety::MissionChain::step()` (`src/safety/mission_chain.*`, pure, host-tested in `test/test_mission_chain`). A chain is **pending** only from an accepted `MissionBegin` until RTH ends or a reset (`SystemReset`, or `MissionAbort` of a mission that is not Running):
+Switching, after the edge handling, is decided by `Safety::MissionChain::step()` (`src/safety/mission_chain.*`, pure, host-tested in `test/test_mission_chain`). A chain is **pending** only from an accepted `MissionBegin` until RTH ends or a reset (`SystemReset`, or a `MissionAbort` that resets and stops on the ground):
 
 | Condition | Action |
 |---|---|
 | active == RTH and `missionEnd()` (pending or not; also the steady state after boot and after SystemReset) | `enableMotors(false)`, flaps off, `vehicleShutdownControl(true)`; the chain is no longer pending |
 | chain not pending | nothing |
 | pending, `missionEnd()` and mode `Idle` (= the mission was reset) | nothing; the chain is cancelled |
+| pending, mode `Idle` but not `missionEnd()` | nothing; the chain stays pending. Defence in depth only: the old bellyflop `taskInit` override produced this state on its first run after boot; it was removed on 2026-11-20, and no mission reports it today. |
 | pending, `missionEnd()`, not Idle, `nextMission()` ∈ {RTH, nullptr} | `missionSelection_ = 0`, `switchMissionTo(&defaultMission_)` |
 | pending, `missionEnd()`, not Idle, `nextMission()` is another mission | `switchMissionTo(nextMission())` |
 

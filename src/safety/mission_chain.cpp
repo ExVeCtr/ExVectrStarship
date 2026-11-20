@@ -14,8 +14,8 @@ ChainStep MissionChain::step(const ChainInput &in) {
     return ChainStep::None;
   if (in.activeIdle) {
     // Ended and Idle = reset (resetMission() sets missionEnd()). A reset mission never chains; it cancels whatever
-    // was pending. (Idle without ended is not a reset: the bellyflop mission reports Idle while it runs for the
-    // first time after boot, because its deferred taskInit overwrites the Running set by beginMission.)
+    // was pending. (Idle without ended is not treated as a reset and keeps the chain pending. No mission reports
+    // that today: the bellyflop taskInit override that did is gone since 2026-11-20. Kept as defence in depth.)
     pending_ = false;
     return ChainStep::None;
   }
