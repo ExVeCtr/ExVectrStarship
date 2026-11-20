@@ -2,7 +2,7 @@
 
 How the mission framework in `src/mission/` works, each mission's state machine, and how `src/main.cpp` sequences missions, maps them to telemetry phases and picks flap modes.
 
-Last verified against commit: b073d07
+Last verified against commit: b073d07 (§1, §5, §6.2 and Known issues re-verified on `feature/reset-chain-gnss`, 2026-11-20)
 
 Conventions used here: time is `int64_t` nanoseconds (`Core::SECONDS = 1e9`). The reference frame is NWU (X north, Y west, Z up). Position state and setpoint vectors are `[Vx, Vy, Vz, Px, Py, Pz]`. The attitude state is `[ωx, ωy, ωz, qw, qx, qy, qz]` with q rotating body to reference (see [../codebase-structure.md](../codebase-structure.md)). "Safety task" means `VehicleSafetyAndControlTask` in `main.cpp`.
 
@@ -20,7 +20,8 @@ Every mission derives from `MissionAbstract`, and every concrete mission also de
 | `nextMission_` / `nextMission()` | Chaining: the mission to switch to when this one ends. `nullptr` means fall back to the default (RTH). |
 | `actuatorsEnabled_` | The safety task reads it every tick to gate the TVC, motors and flaps (`main.cpp:1195-1202`). |
 | `disableKinematicSafety_` | When true, the safety task skips the position and tilt out-of-bounds checks for this mission (`main.cpp:1108`). |
-| `missionEnd_` / `missionEnd()` | When true, the safety task switches to `nextMission()` or to RTH (`main.cpp:700-725`). |
+| `missionEnd_` / `missionEnd()` | When true **and the mission is not a reset one**, the safety task switches to `nextMission()` or to RTH (§6.2). Every `resetMission()` also sets it to true, so `missionEnd()` alone does not mean "finished": the chain decision (`Safety::MissionChain`, `src/safety/mission_chain.hpp`) treats "ended and mode Idle" as a reset, which never chains. |
+| `clearMissionState()` | Since 2026-11-20 called by every `resetMission()`: mode Idle, mission time 0 (clock and reported), setpoint copy zero, so a reset mission reports its boot state. |
 
 Virtuals: `beginMission(int64_t startTime)`, `resetMission()`, `missionEnd()`, `nextMission()`. `MissionType` (`mission_abstract.hpp:19`) declares RTH, Remote, Waypoint and FlapDescent, but nothing uses it, and Remote and FlapDescent have no implementation.
 
@@ -82,7 +83,7 @@ void addWaypoint(const Vector<float,3>& position, float velocity = 0,
 | `Initialisation` | `Startup` | `missionTime > −10 s` (`:249`) | actuators off |
 | `Startup` | `Running` | `missionTime > 0` (`:292`) | Every tick in Startup: actuators **on**, setpoint = `[0,0,0, measured P]`, index reset to 0. If the list is empty, adds a default `{0,0,1}, v=0.5, startAccel=1`. |
 | `Running` | (stays `Running`) | last waypoint reached, or timeout on the last waypoint, or cancel | `missionEnd_ = true`. The mode **never becomes `Finished`**, and the mission keeps publishing setpoints toward the last waypoint. |
-| any | `Idle` | `resetMission()` | actuators off, `missionEnd_ = true`, setpoint zeroed |
+| any | `Idle` | `resetMission()` | actuators off, `missionEnd_ = true`, setpoint zeroed, mission time 0 |
 
 In `Idle` (`missionIdle`) the mission sets actuators off, mission time 0 and `missionEnd_ = true` every tick.
 
@@ -110,7 +111,8 @@ In `Idle` (`missionIdle`) the mission sets actuators off, mission time 0 and `mi
 |---|---|---|---|
 | any | `Running` | `beginMission` | actuators **on**, unpause, `controlTvc_.unsubscribeAttitudeSetpoint()` (`:87`) so the mission feeds the attitude controller directly. |
 | `Running` | `Finished` | first true of: **angle < 50°**, then **\|ωy\| > 150°/s**, then **elapsed > 1 s** (`:119-132`, checked in that order) | Resubscribe TVC attitude setpoint to `controlMappingAccToAtt`, `missionEnd_ = true`, pause. `actuatorsEnabled_` stays **true**. |
-| any | `Idle` | `resetMission` | actuators off, `missionEnd_ = true`, pause, resubscribe attitude setpoint. |
+| any | `Idle` | `resetMission` | actuators off, `missionEnd_ = true`, pause, resubscribe attitude setpoint, mission time 0. |
+| (first run after boot) | `Idle` while running | `taskInit` (`:71-74`) | The task is paused from construction, so the scheduler runs its `taskInit` on the first unpaused tick, **after** `beginMission`, and overwrites `Running` with `Idle` (`missionEnd_` stays false). The transition still runs and ends in `Finished`. See Known issues. |
 
 **Setpoint:** each tick, `controlTvc_.setAttitudeStateSetpoint([0,0,0, q])` where `q = Quat(axis (0,1,0), −90°)` (`:102`). With q body→ref, body +Z maps to ref −X, so the nose points **south** whatever the home position is. The position setpoint topic is **never published** by this mission. The position controller stays subscribed to it, so its last input is stale (whatever `Simple_Subscriber` holds).
 
@@ -151,9 +153,9 @@ In `Idle` (`missionIdle`) the mission sets actuators off, mission time 0 and `mi
 |---|---|---|
 | any | `Running` (via `Startup` in the same call) | `beginMission` |
 | `Running` | `Finished` | landing detected in Descent (below) |
-| any | `Idle` | `resetMission` (`missionEnd_ = true`, actuators off) |
+| any | `Idle` | `resetMission` (`missionEnd_ = true`, actuators off, mission time 0, setpoint zero, `runningState_ = Stabilize`) |
 
-In `Finished` (`missionLanded`) the mission sets actuators off, `missionEnd_ = true` and the setpoint to **all zeros** (`:438`). `runningState_` is not reset by `resetMission`.
+In `Finished` (`missionLanded`) the mission sets actuators off, `missionEnd_ = true` and the setpoint to **all zeros**. Since 2026-11-20 `resetMission` also resets `runningState_` to `Stabilize` and the setpoint to zero (the boot values); `beginMission` sets both again, so a running RTH is unaffected.
 
 ### Running sub-states (`RunningState`)
 
@@ -214,13 +216,19 @@ Since 2026-11-20 the zeroing column sets `missionZeroing_`; `applyEstimatorZeroi
 
 Disabled controllers do not go silent: `ControlAttitudeTvc` publishes `[0,0,0.1,0]` (0.1 N axial) when disabled (`lib/ExVectrControl/src/control_attitude_tvc.cpp:262`).
 
-Switching, after the edge handling:
+Switching, after the edge handling, is decided by `Safety::MissionChain::step()` (`src/safety/mission_chain.*`, pure, host-tested in `test/test_mission_chain`). A chain is **pending** only from an accepted `MissionBegin` until RTH ends or a reset (`SystemReset`, or `MissionAbort` of a mission that is not Running):
 
 | Condition | Action |
 |---|---|
-| active == RTH and `missionEnd()` | `enableMotors(false)`, flaps off, `vehicleShutdownControl(true)` |
-| `missionEnd()` and `nextMission()` ∈ {RTH, nullptr} | `missionSelection_ = 0`, `switchMissionTo(&defaultMission_)` |
-| `missionEnd()` and `nextMission()` is another mission | `switchMissionTo(nextMission())` |
+| active == RTH and `missionEnd()` (pending or not; also the steady state after boot and after SystemReset) | `enableMotors(false)`, flaps off, `vehicleShutdownControl(true)`; the chain is no longer pending |
+| chain not pending | nothing |
+| pending, `missionEnd()` and mode `Idle` (= the mission was reset) | nothing; the chain is cancelled |
+| pending, `missionEnd()`, not Idle, `nextMission()` ∈ {RTH, nullptr} | `missionSelection_ = 0`, `switchMissionTo(&defaultMission_)` |
+| pending, `missionEnd()`, not Idle, `nextMission()` is another mission | `switchMissionTo(nextMission())` |
+
+Before 2026-11-20 the switch used `missionEnd()` alone. Because `resetMission()` sets it, a SystemReset (which reset only the active mission and left it active) and a `MissionAbort` during the countdown made the next tick start the next mission: waypoint → bellyflop → freefall → RTH hot start (bench, simulation).
+
+`resetMissionsToBootState()` (SystemReset): chain reset, `resetMission()` on all four mission objects, RTH (Idle) active with the position controller subscribed to its setpoint topic, `missionSelection_ = 0`, `missionPhase_ = Idle` (the phase mapping then shows `Completed` once initialised, as after boot), mission zeroing off, `controlAttitudeTvc` and `controlPositionStandard` disabled, flaps off, `lastMissionMode_ = Idle` (no edge pending). Not reset (not mission state): the flap observer keeps its last `ControlAttitudeBellyFlopSetting` until the next Running mission; the flap telemetry shows the last angles while the flap outputs are disabled.
 
 `switchMissionTo(m, t0 = 0)` (`:531`): `reset()` on the old mission, `reset()` on the new one, `m->beginMission(t0)`, then resubscribe the position controller's setpoint to `m`.
 
@@ -242,7 +250,8 @@ Other ways a mission gets switched:
 | Source | Condition | Action |
 |---|---|---|
 | `Telecommand_MissionBegin` (`:871`) | vehicle mode `Ready` (armed **not** required) | `switchMissionTo(&missionWaypointTask, paramInt × 1 s)`, vehicle mode → `Running`, `enableMotors(!simulationMode_)`. The mission starts at `missionTime = paramInt` s, so a countdown needs a **negative** paramInt: Init lasts until −10 s, Startup until 0 s. |
-| `Telecommand_MissionAbort` (`:897`) | vehicle mode `Running` | Mission mode `Running`: switch to RTH. Otherwise: actuators off, shutdown, `resetMission()`, `clearFailures()`. |
+| `Telecommand_MissionAbort` | vehicle mode `Running` | Mission mode `Running`: switch to RTH (the chain stays pending until RTH ends). Otherwise: actuators off, shutdown, chain reset, `resetMission()` (the mission stays the active one, Idle; the phase still reads `Hover`), `clearFailures()` (which also clears the initialisation flag, so the vehicle goes Startup → Ready; the arm state is unchanged); nothing follows (before 2026-11-20 the chain continued to bellyflop). Bench (simulation): abort in Startup → Ready, mission Idle, no switch for 30 s. |
+| `Telecommand_SystemReset` | 0xC5 | `resetMissionsToBootState()` plus the system state reset (overview.md). |
 | Mag data older than 2.5 s (`:1059-1068`) | vehicle mode `Running` and mission mode `Running` | switch to RTH |
 | `Telecommand_MissionSelect` (`:855`) | — | no-op (only logs) |
 
@@ -343,4 +352,6 @@ In `Acsent` mode the flap controller commands 90° (retracted) unless extend is 
 | Low | `mission_abstract.hpp:19-25` | `MissionType` (Remote, FlapDescent) is unused and unimplemented. MissionSelect is a no-op. | Dead API surface. |
 | Low | `mission_bellyflop.hpp:112` | `LOG_MSG` every 10 ms during bellyflop. | Serial load in a time-critical phase. |
 | Info | main.cpp `handleTelecommands`, `vehicleIsReady` | After a mission, the vehicle mode stays `Running` (only Startup can return to Ready). | A new MissionBegin needs SystemReset first (since 2026-11-20 it no longer re-zeroes; the waypoint mission's Initialisation still does). |
-| High | main.cpp SystemReset case, `handleVehicleMissionControl` | **SystemReset during a mission continues the mission chain** (bench, simulation, 2026-11-20; the same code path existed before this branch). `resetMission()` sets the active mission's `missionEnd`, so the next 10 Hz tick runs "Mission ended. Switching to next mission": waypoint -> bellyflop -> freefall -> **RTH hot start** in mission mode `Running`. The vehicle mode meanwhile goes Startup -> Ready, and in Ready `vehicleShutdownControl(false)` enables TVC/flap actuators per the mission (motors stay off: SystemReset disabled them and motors are only enabled by MissionBegin). A second SystemReset ends it (RTH `missionEnd` -> shutdown). | An emergency SystemReset in flight cuts the motors as intended, but leaves the servos commanded by an RTH that thinks it is flying, and the vehicle reports Ready with mission Running. `ZeroEstimators` is refused in that state (active mission). Needs a decision (for example: SystemReset switches to RTH Idle without chaining). |
+| Critical | `mission_bellyflop.hpp:66` (`setPaused(true)` in the constructor), `:71-74` (`taskInit`), main.cpp `handleVehicleMissionControl` | **Bellyflop reports `Idle` during its first run after boot** (bench, simulation, 2026-11-20). The scheduler runs a task's `taskInit` on its first run; the bellyflop task is paused until `beginMission`, so `taskInit` runs after `beginMission` and sets mode `Idle` over `Running`. The shared mode-edge handling then sees Running→Idle and **disables `controlAttitudeTvc` and `controlPositionStandard` and the flaps** for the whole first bellyflop, while the mission's TVC actuators stay enabled (the disabled attitude controller outputs `[0,0,0.1,0]`). Telemetry shows mission mode Idle with phase Descent. From the second bellyflop since boot it reports Running. `MissionChain` keeps the chain pending for an Idle mission that has not ended, so freefall and RTH still follow. | The first (in practice every) flight's pitch-over has no TVC attitude control, contrary to §6.2 "controllers stay enabled". Fix candidates (needs the user's decision, flight-safety): drop the mode assignment from `MissionBellyflop::taskInit`, or do not start the task paused. Not changed on `feature/reset-chain-gnss`. |
+| Fixed 2026-11-20 | main.cpp SystemReset case, `handleVehicleMissionControl` | (was High) SystemReset during a mission continued the mission chain (waypoint → bellyflop → freefall → RTH hot start in Running while the vehicle reported Ready with TVC/flap actuators enabled). Root cause: switching on `missionEnd()` alone, which `resetMission()` sets. Fixed by `Safety::MissionChain` and `resetMissionsToBootState()`. Bench (simulation, `feature/reset-chain-gnss`): SystemReset in waypoint Init, Startup, hover, ascent, bellyflop, freefall, RTH deceleration, RTH translation and RTH landing: mission mode Idle within one tick, vehicle Ready, actuator telemetry constant and no mission start or switch for 30 s each; a full mission afterwards ran normally. | |
+| Fixed 2026-11-20 | main.cpp MissionAbort case | `MissionAbort` while the mission was not Running (countdown: Init or Startup) reset the mission, and its `missionEnd()` started bellyflop, then freefall (which ends at once on the ground), then an **RTH hot start with actuators and (outside simulation) motors enabled**. Now the chain is reset and nothing follows. | |

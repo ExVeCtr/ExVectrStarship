@@ -70,8 +70,8 @@ SensorCalib (mag calibration telecommand) ── disarms, blocks Ready, aborts a
 ```
 
 - **Startup → Ready:** every input (GNSS, gyro, mag, baro, both estimators) has published at least once **and** a valid estimator zero exists since boot, with no zeroing window active (`EstimatorZeroing::readyAllowed()`, `src/safety/estimator_zeroing.hpp`). Without a valid zero the vehicle stays in Startup.
-- **Failure latches.** Once in Failure, only a `SystemReset` telecommand clears it. SystemReset resets the system state only (failures, mode, mission, disarm, actuators off); the estimators keep running untouched. With a valid zero since boot the vehicle returns to Ready as soon as all inputs have published again (within 0.5 s on the bench), without zeroing.
-- **Boot:** the GNSS driver blocks the scheduler for about 1.3 s at t ≈ 5 s, so today the vehicle latches Failure (sensorFailure) right after initialisation at every boot (Known issues in [hardware-and-drivers.md](hardware-and-drivers.md#known-issues--limitations)). The automatic boot zero still runs and completes; a SystemReset afterwards gives Ready.
+- **Failure latches.** Once in Failure, only a `SystemReset` telecommand clears it. SystemReset resets the system state only (failures, mode, disarm, actuators and motors off) and **resets the whole mission chain to the state after boot** (user decision 2026-11-20): every mission Idle with mission time 0 and setpoint zero, RTH active and Idle, no pending next mission, mission controllers and flaps off (`resetMissionsToBootState()`, main.cpp; `Safety::MissionChain`, `src/safety/mission_chain.hpp`). Nothing starts again without a new `MissionBegin`. Same code path in simulation and real mode. It does **not** change simulation mode. The estimators keep running untouched. With a valid zero since boot the vehicle returns to Ready as soon as all inputs have published again (within 0.5 s on the bench), without zeroing.
+- **Boot:** since 2026-11-20 the GNSS configuration runs as a non-blocking sequence (one bounded u-blox call per 1 ms task run, the old `delay(1000)` is a timed wait state; [hardware-and-drivers.md](hardware-and-drivers.md#6-ubloxserialgnss-srcublox_gnsshppcpp)). The vehicle reaches Ready after the 10 s boot zero without latching Failure (bench: 3 boots, longest vehicle-side POSE gap 64-83 ms at t ≈ 6.7 s; before: about 1.3 s stall and Failure (sensorFailure) at every boot).
 
 ### Estimator zeroing (user decision 2026-11-20)
 
@@ -100,7 +100,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 - **Short press** (released within 1 s): `SystemReset` behaviour (state reset, no zeroing).
 - **Held longer than 1 s:** starts zeroing and continues while SE is held; zeroing ends on release.
 - The hold variant needs a **hold state on the vehicle**: the vehicle zeroes while it keeps receiving the held state (fresh RC state) plus a short grace, which differs from the fixed window of the `ZeroEstimators` telecommand. T9b must reconcile the two, for example: zero while the hold state is fresh, and keep the timer as the ground-station variant. The same preconditions apply (disarmed, on the ground).
-- Note for the workspace `docs/safety.md` 4.2, which says a latched condition is cleared by "SE held at least 1 s": with this mapping the latch is cleared by the short press, and the hold zeroes. The main session must align that text.
+- The workspace `docs/safety.md` 4.2/4.3 was aligned 2026-11-20: a latched condition is cleared by the short press (reset system state), the hold (> 1 s) zeroes and clears nothing.
 
 ### Failure detection (`checkForFailures`)
 
@@ -127,8 +127,8 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 ### Known safety gaps (decide before the next flight)
 
 - Radio loss or a single 0.5 s sensor dropout in flight cuts all actuators instead of attempting RTH or a controlled descent.
-- A SystemReset during a mission lets the mission chain continue to an RTH hot start in Ready (servos active, motors off) until a second SystemReset ([missions.md](missions.md) Known issues).
-- The vehicle latches Failure at every boot (GNSS driver blocking delay); a SystemReset after boot is part of the procedure until fixed.
+- (Fixed 2026-11-20: a SystemReset during a mission no longer lets the chain continue, and the vehicle no longer latches Failure at every boot.)
+- The bellyflop mission reports mission mode Idle during its first run after boot, and the Idle mode edge disables the TVC attitude and position controllers for that bellyflop ([missions.md](missions.md) Known issues). Needs a decision before a flight that uses the bellyflop.
 - Arming does not gate mission start.
 - Altitude is not bounded by the out-of-bounds check.
 - Estimator and controller bugs that affect flight safety are listed in the Known issues sections of [libs/ExVectrDSP.md](../libs/ExVectrDSP.md), [libs/ExVectrControl.md](../libs/ExVectrControl.md) and [missions.md](missions.md).
@@ -138,11 +138,11 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 Telecommands arrive on port 0x7F (TEMPORARY adapter of the old port-1000 `Telecommand`, from node 0 on USB or radio, until T9b replaces it with the RC-state command path). Full list and byte layout: [hardware-and-drivers.md](hardware-and-drivers.md#10-telecommands-srctelecommandhpp-temporary-adapter-on-port-0x7f).
 
 Typical sequence:
-1. Power on → Startup. **Keep the vehicle still**: after initialisation it zeroes its estimators for 10 s (`ZEROING` shown). Today it then sits in Failure (boot issue above): send `SystemReset` → **Ready** (no new zero).
+1. Power on → Startup. **Keep the vehicle still**: after initialisation it zeroes its estimators for 10 s (`ZEROING` shown), then **Ready**.
 2. Optional: `SimulationMode` (0xA9) to fly the mission against the body simulator.
 3. `Arm` (0xA5).
 4. `MissionBegin` (paramInt = start delay in s). The waypoint mission runs through Initialisation (estimator zeroing) → Startup (TVC actuator test) → Running.
-5. Abort at any time with `MissionAbort` (in Running → RTH; otherwise shutdown), or `SystemReset` (0xC5) as an emergency stop (state reset only, no zeroing).
+5. Abort at any time with `MissionAbort` (in Running → RTH; otherwise shutdown: the mission is reset and nothing follows), or `SystemReset` (0xC5) as an emergency stop (state and mission chain reset to the boot state, no zeroing, simulation mode unchanged).
    To re-zero on the ground (new start spot, vehicle moved): `ZeroEstimators` (type 10, 0x2E, seconds), disarmed, vehicle still.
 6. After landing, RTH finishes and the vehicle auto-disarms.
 
