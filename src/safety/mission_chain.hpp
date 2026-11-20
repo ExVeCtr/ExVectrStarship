@@ -18,8 +18,11 @@
  * Rules:
  * - A chain is pending only between an accepted MissionBegin (begin()) and the end of the chain (RTH ended) or a
  *   reset (reset(): SystemReset, MissionAbort of a mission that is not Running).
- * - The chain advances only while it is pending and the active mission has ended without being reset, i.e. it is
- *   not in mode Idle. An Idle active mission cancels the pending chain.
+ * - The chain advances only while it is pending and the active mission has ended without being reset. "Reset"
+ *   means ended AND mode Idle (resetMission() sets both); such a mission cancels the pending chain. An Idle mission
+ *   that has not ended is not a reset and keeps the chain pending: MissionBellyflop reports Idle during its first
+ *   run after boot (its taskInit runs on the first unpaused tick, after beginMission, and overwrites Running with
+ *   Idle; see docs/project/missions.md Known issues) and must still chain to freefall when it finishes.
  * - The RTH-end shutdown (RthEnded) is reported whenever the default mission (RTH) is active and ended, pending or
  *   not: it is also the steady state after boot and after a SystemReset (RTH Idle, missionEnd() true), and it only
  *   switches things off.
@@ -41,7 +44,7 @@ enum class ChainStep : uint8_t {
 /// The active mission as the safety task sees it this tick.
 struct ChainInput {
   bool activeIsDefault = false;     ///< the active mission is the default mission (RTH)
-  bool activeIdle = false;          ///< the active mission is in mode Idle (reset or never begun)
+  bool activeIdle = false;          ///< the active mission is in mode Idle (reset, never begun, or bellyflop's first run)
   bool activeEnded = false;         ///< active->missionEnd()
   bool nextIsDefaultOrNone = false; ///< active->nextMission() is the default mission or nullptr
 };

@@ -31,10 +31,13 @@ struct FakeMission {
   int64_t lastTick = 0;
   int64_t runningSince = 0;
   int begins = 0;
+  bool taskInitDone = false; // bellyflop only: paused at construction, its taskInit runs on the first unpaused tick
+  bool paused = true;        // bellyflop only: unpaused by begin, paused by reset and when finished
 
   explicit FakeMission(Kind k) : kind(k) {}
 
   void reset() {
+    paused = true;
     mode = Mode::Idle;
     ended = true;
     actuators = false;
@@ -54,6 +57,7 @@ struct FakeMission {
       missionTime = t0;
       break;
     case Kind::Bellyflop:
+      paused = false;
       mode = Mode::Running;
       actuators = true;
       break;
@@ -70,6 +74,23 @@ struct FakeMission {
   }
 
   void tick(int64_t now) {
+    if (kind == Kind::Bellyflop) {
+      // Paused unless begun and not finished; on the first unpaused tick after boot, taskInit sets mode Idle and
+      // leaves missionEnd false (MissionBellyflop::taskInit), then the transition runs on and ends in Finished.
+      if (paused)
+        return;
+      if (!taskInitDone) {
+        taskInitDone = true;
+        mode = Mode::Idle;
+      }
+      if (now - runningSince > 1 * S) {
+        mode = Mode::Finished;
+        ended = true;
+        paused = true;
+      }
+      lastTick = now;
+      return;
+    }
     if (mode != Mode::Idle)
       missionTime += now - lastTick;
     lastTick = now;
@@ -257,6 +278,12 @@ static void test_step_rules() {
   TEST_ASSERT_EQUAL(ChainStep::None, c.step(in));
   TEST_ASSERT_TRUE(c.pending());
 
+  // Pending, Idle but not ended (bellyflop's first run after boot) -> nothing, chain stays pending.
+  in.activeEnded = false;
+  in.activeIdle = true;
+  TEST_ASSERT_EQUAL(ChainStep::None, c.step(in));
+  TEST_ASSERT_TRUE(c.pending());
+
   // Pending, but the active mission is Idle (was reset) and ended -> nothing, and the chain is cancelled.
   in.activeEnded = true;
   in.activeIdle = true;
@@ -398,7 +425,7 @@ static void test_reset_after_waypoint_end_same_tick_window() {
                "waypoint ended");
 }
 static void test_reset_in_bellyflop() {
-  resetInPhase([](Vehicle &v) { return v.active == &v.bf && v.bf.mode == Mode::Running; }, "bellyflop");
+  resetInPhase([](Vehicle &v) { return v.active == &v.bf && !v.bf.ended; }, "bellyflop");
 }
 static void test_reset_in_freefall() {
   resetInPhase([](Vehicle &v) { return v.active == &v.ff && v.ff.mode == Mode::Running; }, "freefall");
@@ -408,6 +435,25 @@ static void test_reset_in_rth() {
 }
 static void test_reset_after_rth_landed() {
   resetInPhase([](Vehicle &v) { return v.active == &v.rth && v.rth.mode == Mode::Finished; }, "RTH landed");
+}
+
+static void test_bellyflop_first_run_idle_still_chains() {
+  // Regression (bench 2026-11-20): bellyflop reports Idle (missionEnd false) during its first run after boot. The
+  // chain must not treat that as a reset.
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  int guard = 0;
+  while (v.active != &v.bf && guard++ < 10000)
+    v.runFor(10 * MS);
+  v.runFor(300 * MS);
+  TEST_ASSERT_TRUE(v.active == &v.bf);
+  TEST_ASSERT_TRUE(v.bf.mode == Mode::Idle);
+  TEST_ASSERT_TRUE(v.chain.pending());
+  v.runFor(200 * S);
+  TEST_ASSERT_EQUAL(1, v.ff.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
 }
 
 static void test_abort_not_running_stops_chain() {
@@ -458,6 +504,7 @@ int main(int, char **) {
   RUN_TEST(test_reset_in_freefall);
   RUN_TEST(test_reset_in_rth);
   RUN_TEST(test_reset_after_rth_landed);
+  RUN_TEST(test_bellyflop_first_run_idle_still_chains);
   RUN_TEST(test_abort_not_running_stops_chain);
   RUN_TEST(test_abort_running_goes_to_rth_and_ends);
   return UNITY_END();
