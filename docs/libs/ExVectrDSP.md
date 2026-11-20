@@ -153,7 +153,8 @@ Common pattern:
 - **Inputs:**
   - `setTVCInputTopic(Topic<Vector<4>> [Fx,Fy,Fz,T] body N / N·m, tvcPosition, angleLimit, forceLimit)`.
   - `setFlapSettingInputTopic(Topic<ControlAttitudeFlapSetting>)`.
-  - `enableTVC`, `enableFlaps`, `enableZeroingMode`, `setAttitudeState`, `setPositionState`.
+  - `enableTVC`, `enableFlaps`, `enableZeroingMode` (holds the body at the start pose every tick), `setAttitudeState`, `setPositionState`.
+  - `resetToStartPose()`: upright (q = identity), at the origin, at rest. Used by zeroing mode, by `SimulationMode` on and by `SystemReset` in simulation mode (app, overview.md "Simulation mode").
   - Note: the `flapsEnabled_` flag is stored but never read; flap forces are always applied.
 - **Outputs**, same layouts as the estimators:
   - `getAttitudeEstTopic()` `[ω,q]`.
@@ -261,7 +262,7 @@ positionTopicSwitch.subscribe(sim.getStateEstTopic());
 | Med | `src/imu_gps_position_kf.cpp:276-343` | The range is used as a vertical distance with no tilt compensation. | Ground distance is wrong when tilted. The VL53L0X window is 0.4–1.5 m, so this matters during touchdown. |
 | Med | `src/body_simulator.cpp:58-65` (Quat-semantics) | The TVC angle clamp uses `Quat(f×z, α−limit).conjugate().rotate(f)`, which pushes the vector further from +Z (to `2α − limit`). The app's `src/starship_tvc.cpp:88-91` uses a double conjugate and is correct. | The simulator lets TVC exceed the angle limit, so the sim is optimistic about control authority. |
 | Med | `src/body_simulator.cpp:115` | `airFlowVector = -velocityBody - windVelocity`: a world-frame wind is subtracted from a body-frame vector without rotation. The sign is also inverted for a wind-velocity definition. | Wind acts along body axes and rotates with the vehicle, so the wind disturbance model is wrong. |
-| Med | `src/body_simulator.cpp:213-214` | Zeroing mode sets `positionState_ = {0,0,0,1,0,0}` (pN = 1 m) and `attitudeState_ = {0,0,0, 0,0,0,1}` (q = (0,0,0,1), a 180° yaw). | The simulator starts 1 m north and yawed 180°. Likely intended zeros and identity. |
+| ~~Med~~ Fixed | `src/body_simulator.cpp` (zeroing mode) | Zeroing mode set `positionState_ = {0,0,0,1,0,0}` (pN = 1 m) and `attitudeState_ = {0,0,0, 0,0,0,1}` (q = (0,0,0,1), a 180° yaw). | Fixed 2026-11-20 (feature/review-fixes): zeroing mode holds `resetToStartPose()` (origin, identity), the same pose as simulation start and the sim `SystemReset`. |
 | Low | `src/body_simulator.cpp:105` (Quat-semantics) | `attitude.conjugate().rotate(velocity)` is world→body. | Correct with current Math; it was inverted before. |
 | Low | `src/body_simulator.cpp:157-168`, `:321-334` (Quat-semantics) | Flap CoP and normal rotations `Quat(z, ±angle).rotate(...)` change sign vs the old Math. The flaps now fold toward +X at 90°. | Geometry is mirrored relative to the tuning date. Verify the flap force and torque directions in sim against hardware. |
 | Low | `src/body_simulator.cpp:385` | End-cap area is `2πr²` instead of `πr²`. | End-cap drag is twice too high. |

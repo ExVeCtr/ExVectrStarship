@@ -808,9 +808,18 @@ public:
         // 2026-11-20). Simulation mode is NOT changed (user decision 2026-11-20).
         resetMissionsToBootState();
         clearFailures();
-        // State reset only (user decision 2026-11-20): the estimators and the body simulator are NOT zeroed or
-        // re-referenced; ZeroEstimators does that. An active zeroing window is aborted (no zero recorded); the
-        // valid-zero record since boot is kept, so the vehicle returns to Ready without a new zero if it has one.
+        // State reset only (user decision 2026-11-20): the estimators are NOT zeroed or re-referenced;
+        // ZeroEstimators does that (a vehicle that was carried needs ZeroEstimators). An active zeroing window is
+        // aborted (no zero recorded); the valid-zero record since boot is kept, so the vehicle returns to Ready
+        // without a new zero if it has one.
+        // Simulation mode only (review 2026-11-20, a documented sim/flight difference, overview.md "Simulation
+        // mode"): the simulated body is the world, not an estimator. It is put back to its start pose (upright, at
+        // the origin, at rest), so a run that ended tilted or away from the origin does not carry over into the
+        // next one and re-trigger the out-of-bounds failures. In real mode nothing physical can be reset.
+        if (simulationMode_) {
+          bodySimulator.resetToStartPose();
+          LOG_MSG("System reset: simulated body back to its start pose\n");
+        }
         if (zeroing_.abort()) {
           LOG_MSG("Estimator zeroing aborted by system reset, no zero recorded\n");
         }
@@ -978,12 +987,7 @@ public:
                   .getGroundTopic()); // Subscribe to the ground distance
           // topic of the body simulator
 
-          // bodySimulator.setPaused(false); // Unpause the body simulator to
-          // start the simulation
-          bodySimulator.setAttitudeState(
-              {0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
-          bodySimulator.setPositionState(
-              {0, 0, 0, 0, 0, 0}); // Reset the position state to the origin
+          bodySimulator.resetToStartPose(); // upright, at the origin, at rest
 
           bodySimulator.setPaused(
               false); // Unpause the body simulator to start the simulation
