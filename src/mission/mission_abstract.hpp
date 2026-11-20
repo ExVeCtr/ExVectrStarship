@@ -44,6 +44,20 @@ protected:
 
     bool missionEnd_ = false; // If true, then the mission is finished and the vehicle should be in a safe state.
 
+    /**
+     * Puts the reported mission state back to its boot values: mode Idle, mission time 0, setpoint zero.
+     * Every resetMission() calls it, so a reset mission reports exactly what it reported after boot
+     * (SystemReset, user decision 2026-11-20). Note: resetMission() also sets missionEnd_ = true; that is NOT a
+     * request to continue the chain (Safety::MissionChain ignores ended missions that are Idle).
+     */
+    void clearMissionState() {
+        missionState_.missionMode = MissionMode::MissionMode_Idle;
+        missionTime_.setTime(0);
+        missionState_.missionTime = 0;
+        for (int i = 0; i < 6; i++)
+            missionState_.positionSetpoint[i] = 0;
+    }
+
 
 public:
 
@@ -110,7 +124,7 @@ public:
     };
 
     virtual void resetMission() {
-        missionState_.missionMode = MissionMode::MissionMode_Idle;
+        clearMissionState();
         actuatorsEnabled_ = false; // Disable actuators
         LOG_MSG("Attempted to reset mission, but mission is not implemented.\n"); // Log the mission reset
     }

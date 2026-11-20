@@ -90,7 +90,7 @@ public:
   };
 
   void resetMission() override {
-    missionState_.missionMode = MissionMode::MissionMode_Idle;
+    clearMissionState();
     actuatorsEnabled_ = false; // Disable actuators
     missionEnd_ = true;        // Set the mission end to true
     LOG_MSG("Reset mission bellyflop transition.\n"); // Log the mission reset

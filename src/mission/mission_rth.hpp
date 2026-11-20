@@ -142,9 +142,13 @@ public:
   };
 
   void resetMission() override {
-    missionState_.missionMode = MissionMode::MissionMode_Idle;
+    clearMissionState();
     actuatorsEnabled_ = false;                // Disable actuators
     missionEnd_ = true;                       // Set the mission end to true
+    // Boot values (SystemReset returns the mission state to the state after boot). beginMission() sets both
+    // again (missionStartup()), so this has no effect on a running RTH.
+    runningState_ = RunningState::RunningState_Stabilize;
+    positionSetpoint_ = {0, 0, 0, 0, 0, 0};
     LOG_MSG("Reset mission ReturnToHome.\n"); // Log the mission reset
   }
 

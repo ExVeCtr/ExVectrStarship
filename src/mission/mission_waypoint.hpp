@@ -175,7 +175,7 @@ public:
   };
 
   void resetMission() override {
-    missionState_.missionMode = MissionMode::MissionMode_Idle;
+    clearMissionState();
     actuatorsEnabled_ = false; // Disable actuators
     missionEnd_ = true;        // Set the mission end to true
     currentWaypointIndex_ = 0; // Reset the waypoint index

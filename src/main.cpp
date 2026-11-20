@@ -36,6 +36,7 @@
 #include "starship_hardware.h"
 #include "starship_tvc.hpp"
 #include "safety/estimator_zeroing.hpp"
+#include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
@@ -333,6 +334,10 @@ private:
 
   MissionAbstract *mission_;
 
+  // Mission chain switching (docs/project/missions.md section 6.2): a chain is pending only from an accepted
+  // MissionBegin until RTH ends or a reset. A reset mission (mode Idle) never advances the chain.
+  Safety::MissionChain missionChain_;
+
   MissionPhase missionPhase_ = MissionPhase::MissionPhase_Idle;
 
   // Log rate limit of the auto-disarm messages (logging only, no effect on the
@@ -400,6 +405,31 @@ public:
     mission_->resetMission(); // Reset the mission
     mission_->beginMission(startTime);
     controlPositionStandard.subscribeSetpoint(mission_->getSetpointTopic());
+  }
+
+  /**
+   * SystemReset (user decision 2026-11-20): the mission state becomes the state after boot, in simulation and in
+   * real mode alike. No chain step is pending, every mission object is reset (Idle, mission time 0, setpoint
+   * zero, actuators off, bellyflop paused with the TVC attitude setpoint back on the acc-to-att mapping), the
+   * default mission (RTH, Idle) is active, the mission controllers and the flaps are off and the mission-mode edge
+   * tracking starts again from Idle. Nothing can start again without a new MissionBegin.
+   */
+  void resetMissionsToBootState() {
+    missionChain_.reset();
+    missionWaypointTask.resetMission();
+    missionBellyflop.resetMission();
+    missionFreefallTask.resetMission();
+    defaultMission_.resetMission();
+    mission_ = &defaultMission_;
+    controlPositionStandard.subscribeSetpoint(defaultMission_.getSetpointTopic());
+    missionSelection_ = 0;
+    missionPhase_ = MissionPhase::MissionPhase_Idle;
+    // What the Idle mode edge does, applied now so that no edge is pending.
+    missionZeroing_ = false; // applied by applyEstimatorZeroing()
+    controlAttitudeTvc.enableControl(false);
+    controlPositionStandard.enableControl(false);
+    starshipFlaps.enableActuators(false);
+    lastMissionMode_ = MissionMode::MissionMode_Idle;
   }
 
   void taskInit() override {
@@ -572,7 +602,19 @@ public:
 
     }
 
-    if (mission_ == &defaultMission_ && mission_->missionEnd()) {
+    // Chain switching. missionEnd() alone is not enough: every resetMission() sets it, so a reset mission would
+    // start the next one (the SystemReset bug, 2026-11-20). Safety::MissionChain only advances a pending chain
+    // whose active mission ended without being reset (docs/project/missions.md section 6.2).
+    Safety::ChainInput chainIn;
+    chainIn.activeIsDefault = (mission_ == &defaultMission_);
+    chainIn.activeIdle = (missionState.missionMode == MissionMode::MissionMode_Idle);
+    chainIn.activeEnded = mission_->missionEnd();
+    chainIn.nextIsDefaultOrNone =
+        (mission_->nextMission() == &defaultMission_ || mission_->nextMission() == nullptr);
+    const bool chainWasPending = missionChain_.pending();
+
+    switch (missionChain_.step(chainIn)) {
+    case Safety::ChainStep::RthEnded:
       if (starshipTVC.isActuatorsEnabled()) {
         LOG_MSG("RTH mission ended.\n"); // Log the mission end
       }
@@ -580,23 +622,24 @@ public:
       starshipTVC.enableMotors(false);      // Disable motors
       starshipFlaps.enableActuators(false); // Disable actuators
       vehicleShutdownControl(true);         // Disable everything
-    } else if (mission_->missionEnd() &&
-               (mission_->nextMission() == &defaultMission_ ||
-                mission_->nextMission() ==
-                    nullptr)) { // Mission has ended and we are not in the
-      // default mission (RTH), then we switch to RTH
-      // mission.
-      LOG_MSG("Mission ended. Switching to default mission.\n"); // Log the
-      // mission end
+      break;
+
+    case Safety::ChainStep::SwitchToDefault:
+      LOG_MSG("Mission ended. Switching to default mission.\n");
       missionSelection_ = 0; // Set the mission selection to the default mission
       switchMissionTo(&defaultMission_); // Switch to the default mission
-    } else if (mission_->missionEnd() &&
-               mission_->nextMission() !=
-                   nullptr) { // If the mission has ended and there is a next
-      // mission, then we switch to the next mission.
-      LOG_MSG("Mission ended. Switching to next mission.\n"); // Log the
-      // mission end
+      break;
+
+    case Safety::ChainStep::SwitchToNext:
+      LOG_MSG("Mission ended. Switching to next mission.\n");
       switchMissionTo(mission_->nextMission()); // Switch to the next mission
+      break;
+
+    case Safety::ChainStep::None:
+      if (chainWasPending && !missionChain_.pending()) {
+        LOG_MSG("Mission chain cancelled: active mission was reset\n");
+      }
+      break;
     }
   }
 
@@ -710,7 +753,9 @@ public:
         allSystemsInitialised_ = false; // Reset the system initialisation flag
         starshipTVC.enableActuators(false); // Disable actuators
         vehicleShutdownControl(true);       // Disable everything
-        mission_->resetMission();
+        // The whole mission chain is reset to the state after boot; it is never continued (user decision
+        // 2026-11-20). Simulation mode is NOT changed (user decision 2026-11-20).
+        resetMissionsToBootState();
         clearFailures();
         // State reset only (user decision 2026-11-20): the estimators and the body simulator are NOT zeroed or
         // re-referenced; ZeroEstimators does that. An active zeroing window is aborted (no zero recorded); the
@@ -776,6 +821,7 @@ public:
         missionSelection_ = 1;
         switchMissionTo(&missionWaypointTask,
                         startTime); // Switch to the selected mission
+        missionChain_.begin();      // the configured chain may advance from now on
 
         vehicleMode_ =
             VehicleMode::VehicleMode_Running; // Vehicle is now running and
@@ -802,6 +848,10 @@ public:
         } else {
           starshipTVC.enableActuators(false); // Disable actuators
           vehicleShutdownControl(true);       // Disable everything
+          // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
+          // chain on the next tick (an abort during the countdown started bellyflop, then freefall, then an RTH
+          // hot start). The mission stays the active one, in Idle.
+          missionChain_.reset();
           mission_->resetMission();
           clearFailures();
         }
@@ -817,8 +867,8 @@ public:
       ctx.initialised = allSystemsInitialised_;
       ctx.armed = vehicleArmed_;
       ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
-      // On the ground: no mode in which the vehicle can fly, and no mission active (a SystemReset during a
-      // mission can leave a chained mission running in Ready, see docs/project/overview.md Known safety gaps).
+      // On the ground: no mode in which the vehicle can fly, and no mission active (since 2026-11-20 a SystemReset
+      // always returns the missions to Idle; the mission check stays as defence in depth).
       const MissionMode mm = mission_->getMissionState().missionMode;
       ctx.onGround = (vehicleMode_ == VehicleMode::VehicleMode_Startup ||
                       vehicleMode_ == VehicleMode::VehicleMode_Ready) &&
