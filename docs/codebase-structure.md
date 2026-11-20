@@ -25,7 +25,7 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── board_v_1_0.h         Flight-computer board pinout
 │   ├── starship_hardware.h   Vehicle pinout + physical limits (mass, thrust, TVC angles)
 │   ├── gnssdriver/           Vendored SparkFun u-blox library (gitignored)
-│   └── sx12xxAL/             Vendored SX12xx library (gitignored, unused, excluded from the build)
+│   └── sx12xxAL/             Leftover vendored SX12xx library (gitignored, not used, kept out of the build by a filter)
 ├── lib/
 │   ├── ExVectr*/             The ExVectr framework, one git submodule per library
 │   └── Adafruit_*/           Display libraries (SSD1306 OLED), committed as plain folders
@@ -119,7 +119,7 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x92 | `TASK_TIMING` | down | 5 Hz | – |
 | 0x93 | `CALIBRATION` (applied sensor calibration) | down | 0.5 Hz | – |
 
-Packet layouts: ExVectrPackets schema (hash 0xCFB7AEED), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+Packet layouts: ExVectrPackets schema (hash 0x4FE838D2), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
 Losing the ground station (no valid frame from node 0 on either link for 2 s) sets `radioConnectionLoss`, as before. Until T9b this includes the radio path, where only node 0 data frames (not its heartbeats) reach the vehicle.
 
@@ -128,6 +128,6 @@ Losing the ground station (no valid frame from node 0 on either link for 2 s) se
 - `pio run` builds, `pio run -t upload` flashes (`upload_port` in `platformio.ini` is a Windows COM port; override it locally with `--upload-port`).
 - PlatformIO binary on this machine: `~/.platformio/penv/bin/pio`.
 - **USB Serial carries only ExVectrNetwork stream frames**: `pio device monitor` shows binary. Console text (`LOG_MSG`, Core print) arrives as `LOG_TEXT` packets in the ground station. Never `Serial.print` in `src/`. `LOG_MSG`/`VRBS_MSG` switches are in `ExVectrCore/print.hpp`.
-- `platformio.ini`: `-Ilib/ExVectrPackets/gen` (generated packet headers), `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (platform console off), `build_src_filter` excludes `src/sx12xxAL`. `default_envs = teensy40`, so `pio run` builds only the firmware.
+- `platformio.ini`: `-Ilib/ExVectrPackets/gen` (generated packet headers), `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (platform console off), `build_src_filter` keeps a leftover local `src/sx12xxAL` out of the build. `default_envs = teensy40`, so `pio run` builds only the firmware.
 - Host tests: `~/.platformio/penv/bin/pio test -e native` (Unity) builds `src/comms/telemetry_mapping.cpp`, `src/comms/vehicle_network.cpp` and the ExVectrNetwork stack natively (`test/test_telemetry_mapping`, `test/test_vehicle_network`).
 - Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B. After the calibration telemetry (2026-11-20): FLASH code 230744 B, RAM1 code 228584 B, padding 792 B, 242528 B free for local variables (unchanged).

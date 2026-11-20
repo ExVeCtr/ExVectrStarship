@@ -42,7 +42,7 @@ network::EgressFilter VehicleNetwork::uartFilter() {
 
 VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart,
                                TelecommandSinkI &telecommands)
-    : telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
+    : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
       telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false) {
   usbNode_.addLink(usbLink_);
@@ -96,6 +96,11 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
 
 bool VehicleNetwork::isGroundStationPresent() const {
   return usbNode_.isPresent(kGroundStationNode) || uartNode_.isPresent(kGroundStationNode);
+}
+
+bool VehicleNetwork::isUartPeerSeen() const {
+  const network::NodeEntry *e = uartNode_.entry(kShipNode);
+  return e && e->valid && (time_.nowNs() - e->lastSeenNs) <= kUartPeerTimeoutNs;
 }
 
 bool VehicleNetwork::anyIncompatiblePeer() const {

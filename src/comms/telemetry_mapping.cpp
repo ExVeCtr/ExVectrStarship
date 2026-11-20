@@ -127,6 +127,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   if (s.motorsEnabled) f |= Packets::VehicleStatus::kFlagsMotorsEnabled;
   if (s.gsPresent) f |= Packets::VehicleStatus::kFlagsGsPresent;
   if (s.incompatible) f |= Packets::VehicleStatus::kFlagsIncompatible;
+  if (s.uartPeerSeen) f |= Packets::VehicleStatus::kFlagsUartPeerSeen;
   if (s.mode == VehicleMode::VehicleMode_Failure) f |= Packets::VehicleStatus::kFlagsFailsafe;
   p.flags = f;
   p.failure_bits = packFailureBits(s.failures);

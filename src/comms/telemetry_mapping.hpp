@@ -52,6 +52,7 @@ struct TelemetrySnapshot {
   bool motorsEnabled = false; ///< motor outputs enabled by the existing logic (StarshipTVC motors && actuators)
   bool gsPresent = false;     ///< ground station node 0 present (the radioConnectionLoss observable)
   bool incompatible = false;  ///< a present node reported another network version or schema hash
+  bool uartPeerSeen = false;  ///< valid frame from the ship node (3) on the UART within 3 s (information only)
 
   // Estimates (attitude/position topic switches: estimators, or the body simulator in simulation mode)
   float att[7] = {0, 0, 0, 1, 0, 0, 0}; ///< [wx, wy, wz, qw, qx, qy, qz]

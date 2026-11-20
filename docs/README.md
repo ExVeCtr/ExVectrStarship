@@ -39,7 +39,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | ExVectrControl | 8d6efab | 084bea1 | NowNs port only |
 | ExVectrActuator | 4d3c87a | db98892 | NowNs port only |
 | ExVectrNetwork | de708ca | `origin/Development` | **feature/network-migration:** the new stack (stream links, Node, PortMux, PacketPort). The old stack and its NowNs port 7072cfe are gone |
-| ExVectrPackets | 9674f89 | a96bd7b (`feature/link-config`, ExVectrLink's copy, unpushed) | **feature/network-migration-fixes:** branch `feature/calibration-telemetry`, adds `CALIBRATION` (0x93), schema hash 0xCFB7AEED. a96bd7b adds `LINK_REBOOT` and `LINK_CONFIG` on top of 4ca8fb1 |
+| ExVectrPackets | 2c9c121 | 9674f89 (`feature/calibration-telemetry`) | **feature/uart-cleanup-airpose:** `AIR_POSE.pos` i32 at 1 mm (30 B payload, wire break: Router, ship node, ground station must take the same pin), `VEHICLE_STATUS.flags` bit `UART_PEER_SEEN`, schema hash **0x4FE838D2**. Below it: `CALIBRATION` (0x93), hash 0xCFB7AEED; a96bd7b (`feature/link-config`, ExVectrLink's copy, unpushed) a96bd7b adds `LINK_REBOOT` and `LINK_CONFIG` on top of 4ca8fb1 |
 | ExVectrArduinoPlatform | d481e6c | 4f31846 (`origin/Development`) | **feature/network-migration:** `EXVECTR_ARDUINO_NO_SERIAL_CONSOLE` build flag |
 | ExVectrMath, ExVectrHAL, ExVectrData | unchanged | | No change needed |
 

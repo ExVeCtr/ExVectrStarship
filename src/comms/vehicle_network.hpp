@@ -14,6 +14,8 @@
  *   station on USB and radio at once) is delivered once (sequence filter).
  * - Each node sends the vehicle heartbeat (1 Hz) on its link. Heartbeats and LINK_STATS of other nodes are
  *   informational only (node table, incompatibility flag).
+ * - isUartPeerSeen(): any valid frame from node 3 on the UART within kUartPeerTimeoutNs (3 s), the
+ *   VEHICLE_STATUS UART_PEER_SEEN flag. Information only.
  * - isGroundStationPresent(): any valid frame from node 0 on either link within kGsTimeoutNs (2 s). This is the
  *   observable of the existing radioConnectionLoss failure, as NetworkNode::isNodeReachable(0) with its 2 s
  *   timeout was on the old SX1280 link.
@@ -49,6 +51,9 @@ public:
   static constexpr uint32_t kTickHz = 100; ///< sendTelemetry() call rate: the fastest USB rate
   /// Ground-station presence timeout: the 2 s of the old NetworkNode(1, datalink, 2 s) (radioConnectionLoss).
   static constexpr int64_t kGsTimeoutNs = 2000000000LL;
+  static constexpr uint8_t kShipNode = 3; ///< the ExVectrLink RX module (ship radio node) on the UART
+  /// UART_PEER_SEEN window: any valid frame from node 3 on the UART within this time (information only).
+  static constexpr int64_t kUartPeerTimeoutNs = 3000000000LL;
   static constexpr size_t kUsbTxRing = 2048;
   static constexpr size_t kUartTxRing = 1024;
 
@@ -81,6 +86,11 @@ public:
 
   /// Any valid frame from node 0 (ground station) on USB or UART within kGsTimeoutNs.
   bool isGroundStationPresent() const;
+  /// A valid frame from the ship node (node 3) arrived on the UART (not USB) within kUartPeerTimeoutNs. Read from
+  /// the UART node's node table (last frame time per source), so no raw byte polling. Information only: the
+  /// NetworkStatus the ground station gets over USB reflects the USB node, so a dead UART is invisible there;
+  /// VEHICLE_STATUS.flags UART_PEER_SEEN carries this. Vehicle behaviour never depends on it (safety.md 4.1).
+  bool isUartPeerSeen() const;
   /// A present node reported another network version or schema hash than ours.
   bool anyIncompatiblePeer() const;
 
@@ -105,6 +115,7 @@ private:
     return node.send(dst, T::kPort, buf, n, static_cast<network::wire::Qos>(T::kQos), T::kLatest);
   }
 
+  network::TimeSourceI &time_;
   TelecommandSinkI &telecommands_;
   network::StreamFrameLink<kUsbTxRing> usbLink_;
   network::StreamFrameLink<kUartTxRing> uartLink_;

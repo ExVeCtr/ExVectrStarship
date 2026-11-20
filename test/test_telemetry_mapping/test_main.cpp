@@ -109,6 +109,10 @@ void test_vehicle_status() {
   s.mode = VehicleMode::VehicleMode_Failure;
   p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_TRUE(p.flags & Packets::VehicleStatus::kFlagsFailsafe);
+  TEST_ASSERT_FALSE(p.flags & Packets::VehicleStatus::kFlagsUartPeerSeen);
+  s.uartPeerSeen = true;
+  p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_HEX8(0x40, p.flags & Packets::VehicleStatus::kFlagsUartPeerSeen);
 }
 
 void test_pose_full_precision() {
@@ -128,14 +132,21 @@ void test_air_pose_fixed_point_and_saturation() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeAirPose(s));
   TEST_ASSERT_FLOAT_WITHIN(1.0f / 32767, s.att[3], p.q[0]);
-  TEST_ASSERT_FLOAT_WITHIN(0.05f, 10.0f, p.pos[0]);
-  TEST_ASSERT_FLOAT_WITHIN(0.05f, -20.0f, p.pos[1]);
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, 10.0f, p.pos[0]); // 1 mm resolution (i32, 0.001 m)
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, -20.0f, p.pos[1]);
   TEST_ASSERT_FLOAT_WITHIN(0.005f, -2.0f, p.vel[1]);
+  // Altitude resolves to the millimetre (the old i16 0.1 m field would have given 12.3)
+  s.pos[5] = 12.3456f;
+  p = roundTrip(makeAirPose(s));
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, 12.346f, p.pos[2]);
+  TEST_ASSERT_TRUE(fabsf(p.pos[2] - 12.3f) > 0.04f);
   // Saturates instead of overflowing (old int16 telemetry was undefined behaviour out of range)
-  s.pos[3] = 1e6f;
+  s.pos[3] = 1e10f;
+  s.pos[4] = -1e10f;
   s.pos[0] = -1e6f;
   p = roundTrip(makeAirPose(s));
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, 3276.7f, p.pos[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 2147483.647f, p.pos[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, -2147483.647f, p.pos[1]);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, -327.67f, p.vel[0]);
   // NaN becomes the invalid sentinel and decodes as NaN
   s.pos[4] = NAN;
@@ -365,9 +376,9 @@ void test_legacy_telecommand_layout() {
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
   TEST_ASSERT_EQUAL_UINT(28, Packets::VehicleStatus::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(24, Packets::AirPose::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
-  TEST_ASSERT_EQUAL_HEX32(0xCFB7AEEDu, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x4FE838D2u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }

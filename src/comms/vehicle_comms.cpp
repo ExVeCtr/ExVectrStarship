@@ -113,6 +113,7 @@ void VehicleComms::taskThread() {
   snap_.t_ns = Core::NowNs();
   snap_.gsPresent = net_.isGroundStationPresent();
   snap_.incompatible = net_.anyIncompatiblePeer();
+  snap_.uartPeerSeen = net_.isUartPeerSeen();
   net_.sendTelemetry(tick_, snap_);
   if (VehicleNetwork::taskTimingDue(tick_)) sendTaskTiming();
 

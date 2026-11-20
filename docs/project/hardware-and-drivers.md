@@ -11,7 +11,7 @@ Vendored third-party code (gitignored, not ExVectr):
 | Folder | What it is |
 |---|---|
 | `src/gnssdriver/` | SparkFun u-blox GNSS Arduino Library v2.2.27 (`SFE_UBLOX_GNSS`), used by `ublox_gnss.*`. |
-| `src/sx12xxAL/` | StuartsProjects SX12XX-LoRa library (`SX128XLT`). **No longer used** (the on-board SX1280 datalink was removed in T9a); excluded from the build by `build_src_filter` in `platformio.ini`. The folder can be deleted locally. |
+| `src/sx12xxAL/` | Leftover vendored StuartsProjects SX12XX-LoRa library, gitignored. **Not part of the firmware** (the on-board SX1280 was physically removed from the board on 2026-11-20 and its datalink in T9a). If the folder is still present locally, `build_src_filter` in `platformio.ini` keeps it out of the build (without the filter its sources are compiled into the image). It can be deleted locally, after which the filter is harmless.
 
 ---
 
@@ -34,12 +34,11 @@ Sources: `src/starship_hardware.h` (actuators, vehicle constants), `src/board_v_
 | 2 | `MPU9250_INT_PIN` | MPU9250 data-ready interrupt | `mpuIntHandler` |
 | 3 | `MPU9250_NCS_PIN` | MPU9250 SPI chip select | `spiMPU` (SPI) |
 | 6 | `BME280_NCS_PIN` | BME280 SPI CS (**unused**: the BME280 runs on I2C 0x76, main.cpp:79) | — |
-| 9, 5, 15, 14, 10 | `SX1280_NSS_PIN`, `_NRESET_PIN`, `_RFBUSY_PIN`, `_DIO1_PIN`, `_RXEN_PIN` | Old on-board SX1280 (CS, reset, BUSY, DIO1, RX enable) | **Unused** since T9a (defines kept in `board_v_1_0.h`). The pins are no longer initialised. |
-| 17 | `SX1280_TXEN_PIN` | Old SX1280 TX enable | **Now TX4** (UART to the RX module) |
-| 16 | `QMC5883L_INT_PIN` | Magnetometer interrupt (unused in software) | **Now RX4** (UART from the RX module) |
+| 16 | `QMC5883L_INT_PIN` | Magnetometer interrupt (unused in software) | **Now RX4**: wired to the ship node TX (GPIO1). Pin 17 is TX4, wired to the ship node RX (GPIO3); it has no `board_v_1_0.h` define. |
+| 5, 9, 10, 14, 15, 17 | (none) | Formerly the SX1280 pins. The module is physically removed (2026-11-20) and the defines are deleted | Free. 16/17 are the UART to the ship node (Serial4); the others are unused |
 | 4 | `RGBLED_PIN` | RGB LED (**unused**) | — |
 | 26 | `INPUT_VOLTAGE_ADC_PIN` | Battery ADC, factor 1.0 (**unused**) | — |
-| Serial4 | `RX_MODULE_SERIALPORT` | ExVectrLink RX module, ExVectrNetwork stream link, 460800 8N1 (pins 16/17; **the ship node is NOT wired to these**, it is on pads 30/31, see section 5) | `vehicleComms` (section 5) |
+| Serial4 | `RX_MODULE_SERIALPORT` | ExVectrLink RX module, ExVectrNetwork stream link, 460800 8N1 (pin 16 RX4 / pin 17 TX4, bench-confirmed 2026-11-20, see section 5) | `vehicleComms` (section 5) |
 | Serial5 | `NEO_M8Q_SERIALPORT` (define unused; main.cpp:82 hard-codes `Serial5`) | u-blox GNSS UART | `gnss` |
 
 Buses (`initialiseHardware`, main.cpp): `SPI` for the MPU9250. `Wire` at 100 kHz for the BME280 (0x76), QMC5883 (0x0D), VL53L0X (0x29) and SSD1306 128×32 OLED (0x3C). The VL53L0X driver requests 400 kHz on its bus device (`vl53l0x_driver.cpp:72-73`), and that bus is the same `Wire`.
@@ -128,7 +127,7 @@ Drives four flap servos from `ControlAttitudeFlapSetting` (`lib/ExVectrControl/i
 
 ## 5. ExVectrNetwork links (`src/comms/`)
 
-Since the network migration (T9a) the vehicle has **no on-board radio**. `Datalink_SX1280` and the on-board SX1280 are gone. The vehicle talks ExVectrNetwork (library doc: [../libs/ExVectrNetwork.md](../libs/ExVectrNetwork.md); wire format and design: workspace `docs/network-design.md`) over two byte-stream links:
+Since the network migration (T9a) the vehicle has **no on-board radio**. `Datalink_SX1280` and the on-board SX1280 (physically removed from the board on 2026-11-20) are gone. The vehicle talks ExVectrNetwork (library doc: [../libs/ExVectrNetwork.md](../libs/ExVectrNetwork.md); wire format and design: workspace `docs/network-design.md`) over two byte-stream links:
 
 | Link | Port | Settings | Peer |
 |---|---|---|---|
@@ -145,7 +144,7 @@ Since the network migration (T9a) the vehicle has **no on-board radio**. `Datali
 
 **Constant cost:** every tick builds and encodes the same packets whatever is connected. Writes are bounded by `availableForWrite()` and never block (the Teensy USB write would otherwise wait up to 120 ms for a host that does not read). With nothing draining a link its TX ring fills and further frames are dropped (`stats.txDropped`); encoding happens before that check. Telemetry is no longer produced inside the estimator topic callbacks (the old 5/10/1 Hz attitude, position and GNSS callbacks ran in the EKF/KF publish context): the control path does less work than before.
 
-**Heartbeats:** each node sends the vehicle heartbeat (role 1, schema hash `Packets::kSchemaHash`) at 1 Hz on its link. Heartbeats and `LINK_STATS` of the modules are informational: they fill the node table and the `INCOMPATIBLE` flag (a present node with another network version or schema hash), nothing else.
+**Heartbeats:** each node sends the vehicle heartbeat (role 1, schema hash `Packets::kSchemaHash`) at 1 Hz on its link. UART peer: `UART_PEER_SEEN` (see section 9, `VEHICLE_STATUS.flags`) reports whether node 3 was heard on the UART in the last 3 s. Heartbeats and `LINK_STATS` of the modules are informational: they fill the node table and the `INCOMPATIBLE` flag (a present node with another network version or schema hash), nothing else.
 
 **Ground-station presence and `radioConnectionLoss`:** `VehicleComms::isGroundStationPresent()` is true while any valid frame (heartbeat or data) from node 0 arrived on USB or UART within **2 s** (`presenceTimeoutNs`). `checkForFailures` uses it exactly where it used `NetworkNode::isNodeReachable(0)` (old timeout 2 s). Consequences on the new topology:
 - **USB (bench):** the ground station's 1 Hz heartbeat keeps node 0 present, as the old radio heartbeat did.
@@ -154,9 +153,9 @@ Since the network migration (T9a) the vehicle has **no on-board radio**. `Datali
 
 **Port table:** [../codebase-structure.md](../codebase-structure.md#radio-and-usb-network).
 
-**Bench-confirmed wiring (2026-11-20, `tools/uart_pin_scan.py`):** the ship node (RX module, node 3) is **not** on Serial3 or Serial4. Its TX (ESP8285 GPIO1) goes to **Teensy pad 30** (GPIO_EMC_37; node 3 stream frames decoded from a captured edge trace at 460800 baud, sources 2 and 3, ports 0x01 and 0x10), and its RX (GPIO3) is reached through **Teensy pad 31** (GPIO_EMC_36; node 3 heard node 1 heartbeats bit-banged open-drain on that pad, `NetworkStatus` age[1] about 0.04 s). Neither pad is a pin of any Teensy 4.0 hardware UART (the core's `HardwareSerial` tables do not list them), so **neither `Serial3` nor `Serial4` can work with this wiring**, which explains why the vehicle sees no node 3. Pins 14, 15, 16, 17 showed no edges at all. Options: move the two wires to a UART pair (for example ship TX to pin 15 RX3 and pin 14 TX3 to ship RX, then `RX_MODULE_SERIALPORT = Serial3`), or write a software UART on pads 30/31 (not done). `src/starship_hardware.h` is unchanged until the user decides. Scan tool: `pio run -e teensy40_pinscan` (`tools/pinscan/pinscan.cpp`, bench only, links no flight code) driven by `tools/uart_pin_scan.py`; the other active pads were pin 2 (MPU9250 interrupt, 1 kHz) and pin 21 (u-blox GNSS on Serial5 RX at 115200).
+**Wiring (bench-confirmed end to end, 2026-11-20):** the ship node (ESP8285 "RX module", node 3) is wired to **Serial4**: ship node TX (GPIO1) to **Teensy pin 16 (RX4)**, **Teensy pin 17 (TX4)** to ship node RX (GPIO3), 3.3 V, 460800 8N1. Verified with the ExVectrLink Router: it lists node 1 as present and the vehicle telemetry arrives over the radio. History: the module was first found on pads 30/31 (GPIO_EMC_37/36), which are not pins of any Teensy 4.0 hardware UART, so no `SerialN` could read them; the wires were moved to 16/17. During the SX1280 removal the TX pin (17) had been shorted to ground; it was repaired.
 
-**Hardware note (original choice, superseded by the bench result above):** Serial4 was chosen because both pins are electrically safe on the existing board: pin 17 was the SX1280 `TXEN` output (the Teensy already drove it), pin 16 the unused QMC5883 interrupt (input). Serial3 (pins 14/15) would drive the SX1280 `DIO1` output if the old module is still fitted. **The wiring to the RX module must be confirmed on the bench** (Known issues).
+**Finding the wiring again (bench tool):** `tools/uart_pin_scan.py` (run with the ground-station venv python, which has pyserial; needs the Router attached) disables the ground-station USB source, flashes the bench-only scan firmware (`pio run -e teensy40_pinscan`, `tools/pinscan/pinscan.cpp`, links no flight code), listens on every UART RX pin and scans all pads for edges, then transmits node 1 heartbeats on candidate TX pins one at a time while polling node 3's `NetworkStatus` through the Router (age[1] about 0 means the ship node heard node 1). It finishes by rebuilding and flashing the flight firmware of the checked-out branch and re-enabling the USB source (`--no-restore` leaves the scan firmware on). `--quick` re-checks only the known candidates (460800 listen, TX on pin 17, bit-bang pad 31). Use it after any rewiring or hardware change near the UART.
 
 ---
 
@@ -259,7 +258,7 @@ These are the values of the `if (false)` block in `initialiseMemory` for the acc
 
 ## 9. Telemetry: generated packets (`src/comms/telemetry_mapping.cpp`)
 
-The packets are the generated ExVectrPackets classes (schema hash 0xCFB7AEED, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
+The packets are the generated ExVectrPackets classes (schema hash 0x4FE838D2, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
 
 **Sets and rates** (100 Hz tick, rates from the generated `kUsbRateHz` / `kAirRateHz`):
 
@@ -292,12 +291,12 @@ UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB a
 | | `mode` | `VehicleMode`: 0 Startup, 1 SensorInit, 2 SensorCalib, 3 Ready, 4 Running, 5 Failure |
 | | `mission_mode`, `mission_phase` | `MissionMode` (0 Idle … 4 Finished), `MissionPhase` (0 Idle … 7 Completed) |
 | | `ctrl_source` | 0 (NONE): no RC control source until T9b |
-| | `flags` | ARMED = `vehicleArmed_`; SIMULATION; MOTORS_ENABLED = `StarshipTVC` motors enabled **and** actuators enabled (the existing logic; there is no hard motor gate before T9b); GS_PRESENT = ground-station presence (above); INCOMPATIBLE; FAILSAFE = mode is Failure (actuators cut) |
+| | `flags` | ARMED = `vehicleArmed_`; SIMULATION; MOTORS_ENABLED = `StarshipTVC` motors enabled **and** actuators enabled (the existing logic; there is no hard motor gate before T9b); GS_PRESENT = ground-station presence (above); INCOMPATIBLE; FAILSAFE = mode is Failure (actuators cut); UART_PEER_SEEN (bit 6) = a valid frame from the ship node (node 3) arrived on the UART within 3 s (`VehicleNetwork::isUartPeerSeen()`, from the UART node's node table, so USB frames and other nodes never set it). **Information only:** nothing in the vehicle reads it (safety.md 4.1). It exists because `NetworkStatus` seen over USB reflects only the USB node, so a dead UART is otherwise invisible |
 | | `failure_bits` | bit 0 sensor, 1 attitude, 2 position, 3 position out of bounds, 4 attitude out of bounds, 5 radio connection loss |
 | | `sensor_state` | 2 bits per sensor, `TelemetrySensor` (0 Init, 1 Calib, 2 Ready, 3 Failure): bits 0-1 GNSS, 2-3 IMU, 4-5 baro, 6-7 mag, 8-9 attitude KF, 10-11 position KF |
 | | `last_req_id`, `last_req_status`, `rc_age` | 0, 0, NaN (no `REQUEST` / `RC_STATE` until T9b) |
 | `POSE` | `omega`, `q`, `vel`, `pos` | attitude state `[ω, q]`, position state `[V, P]` (f32) |
-| `AIR_POSE` | `q`, `pos` (0.1 m, ±3276 m), `vel` (0.01 m/s, ±327 m/s) | as `POSE`, fixed point, saturating |
+| `AIR_POSE` | `q` (i16, 1/32767), `pos` (**i32, 0.001 m = 1 mm**, ±2147483 m; was i16 0.1 m until 2026-11-20), `vel` (i16, 0.01 m/s, ±327 m/s) | as `POSE`, fixed point, saturating; 30 byte payload. USB `POSE` is f32 and unchanged |
 | `ACTUATORS` | `flaps` | true flap angles `[TL, TR, BL, BR]`, rad |
 | | `tvc` | `[atan2(Fx, Fz), atan2(Fy, Fz)]` of the actual thrust vector (body frame), rad |
 | | `thrust` | `|[Fx, Fy, Fz]|`, N. The roll torque `T` has no field (Known issues) |
@@ -491,9 +490,10 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Low | `starship_hardware.h:25-26`, `starship_tvc.hpp:92-94` | `TVC_SERVO_LIMIT` is unparenthesised. `TVC_ANGLE_FACTOR` is duplicated by the hard default `tvcFactor = 15`. | Changing the define does not change the TVC mixing. Macro expansion hazard. |
 | Low | `ublox_gnss.cpp:150-170` | Baud fallback messages are wrong ("15200", always "9600"). A failed 115200 reconfig returns without `setInitialised(false)`. | Misleading logs. The task may run unconfigured. |
 | Low | `telecommand.hpp:152`, `:156`, `:159` | Header comments disagree with the code: CalibStart duration, SystemReset leaving sim mode, MissionBegin "seconds in the future". | Operator and ground-software confusion. |
-| High | `starship_hardware.h` `RX_MODULE_SERIALPORT` | Bench scan 2026-11-20: the ship node is wired to Teensy pads 30 (its TX) and 31 (its RX), which are not hardware UART pins. Serial4 (pins 16/17) and Serial3 (14/15) see nothing, so the vehicle never sees node 3. | The UART link to the RX module does not work until the wires are moved to a UART pin pair (then set the define) or a software UART is written. See section 5. |
+| Info | `starship_hardware.h` `RX_MODULE_SERIALPORT` | Resolved 2026-11-20: the ship node is wired to Serial4 (pin 16 RX4 / pin 17 TX4), confirmed end to end (Router shows node 1, vehicle telemetry arrives over the radio). It was first on pads 30/31 and was moved. | None. If the harness is rewired, re-check with `tools/uart_pin_scan.py` (section 5). |
 | High | main.cpp `checkForFailures`, section 5 | **TEMPORARY until T9b:** `radioConnectionLoss` = no valid frame from node 0 for 2 s on USB or UART. Over the radio path the modules drop node 0 heartbeats by design, so a ground station reached only by radio keeps the vehicle out of Failure only if it sends node 0 data (telecommand, `REQUEST`) at least every 2 s. The ground station has no telecommand encoder yet. | Over the radio alone the vehicle enters Failure after initialisation unless the ground station sends data. Bench use over USB behaves as before. T9b replaces it with the `RC_STATE` control-source timeout. |
 | Medium | section 10 | **TEMPORARY until T9b:** the legacy telecommand on port 0x7F is accepted from any frame claiming source 0 on either link, with only the three magic values as protection (as before on port 1000). It is not in the ExVectrPackets schema. | Same exposure as before; any device on USB or behind the RX module can command the vehicle. |
 | Low | section 9 | `ACTUATORS` has no field for the TVC roll torque `T`. | Roll torque is no longer telemetered (it was `VehicleState.tvcTorque`, mis-scaled). Needs a schema field. |
 | Low | `ExVectrNetwork` (library) | The legacy SX1280 sources of the library are compiled (unused, dropped at link time). | Library warnings in the build log. |
-| Info | `board_v_1_0.h` | BME280 SPI CS, RGB LED, battery ADC and the old SX1280 pins are defined but unused (QMC INT pin 16 is now RX4). There is no battery monitoring. | No low-voltage protection. |
+| Info | altitude resolution (`POSE.pos[2]`, `AIR_POSE.pos[2]`) | The telemetry itself no longer limits it: `POSE` is f32 (sub-mm at a few m) and `AIR_POSE` is 1 mm since 2026-11-20 (was 0.1 m). What remains: BME280 pressure at 16x oversampling has about 0.2 Pa noise (about 1.5-2 cm of altitude), IIR filter setting 1, and the f32 pressure (Q24.8 compensation output, resolution 0.0078 Pa near 100 kPa, about 0.7 mm) and `calcAltitudeFromPressure` in f32 (about 0.5 mm per ULP of p/p0). The position KF fuses baro, GNSS and range with large baro covariance (`cov*1000`), and the reference is a 10 % low-pass of the baro during zeroing, so the altitude is smoothed, not quantised. No casts to integer on the vehicle before the packet. | Expect centimetre-level noise and slow drift (weather, temperature), not steps. Estimator not changed. |
+| Info | `board_v_1_0.h` | BME280 SPI CS, RGB LED, battery ADC are defined but unused (QMC INT pin 16 is now RX4). There is no battery monitoring. | No low-voltage protection. |

@@ -196,6 +196,53 @@ void test_other_nodes_never_give_gs_presence() {
   TEST_ASSERT_FALSE(rig->net.isGroundStationPresent());
 }
 
+// ---------------------------------------------------------------- UART_PEER_SEEN (information only)
+
+void test_uart_peer_seen_from_node3_on_uart_for_3s() {
+  Peer rx(&rig->uartDown, &rig->uartUp, rig->clk, 3, wire::Role::LinkRx);
+  TEST_ASSERT_FALSE(rig->net.isUartPeerSeen());
+  rx.node.sendHeartbeat();
+  rx.poll();
+  rig->net.pollLinks();
+  TEST_ASSERT_TRUE(rig->net.isUartPeerSeen());
+  rig->clk.advanceMs(3000); // exactly 3 s: still seen
+  TEST_ASSERT_TRUE(rig->net.isUartPeerSeen());
+  rig->clk.t += 1; // just over 3 s: cleared
+  TEST_ASSERT_FALSE(rig->net.isUartPeerSeen());
+  rx.node.sendHeartbeat(); // and it comes back
+  rx.poll();
+  rig->net.pollLinks();
+  TEST_ASSERT_TRUE(rig->net.isUartPeerSeen());
+}
+
+void test_uart_peer_seen_ignores_usb_and_other_nodes() {
+  // Node 3 frames on USB never set it (only the UART counts).
+  Peer rxOnUsb(&rig->usbDown, &rig->usbUp, rig->clk, 3, wire::Role::LinkRx);
+  rxOnUsb.node.sendHeartbeat();
+  rxOnUsb.poll();
+  rig->net.pollLinks();
+  TEST_ASSERT_TRUE(rig->net.usbNode().isPresent(3));
+  TEST_ASSERT_FALSE(rig->net.isUartPeerSeen());
+  // Frames from the other nodes on the UART (ground station 0, TX module 2) do not either.
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  tx.node.sendHeartbeat();
+  tx.poll();
+  rig->gsUart.node.sendHeartbeat();
+  rig->pollAll();
+  TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(2));
+  TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(0));
+  TEST_ASSERT_FALSE(rig->net.isUartPeerSeen());
+}
+
+void test_uart_peer_seen_from_node3_data_frame() {
+  Peer rx(&rig->uartDown, &rig->uartUp, rig->clk, 3, wire::Role::LinkRx);
+  const uint8_t b[2] = {1, 2};
+  TEST_ASSERT_TRUE(rx.node.send(VehicleNetwork::kVehicleNode, 0x01, b, 2, wire::Qos::Link, true));
+  rx.poll();
+  rig->net.pollLinks();
+  TEST_ASSERT_TRUE(rig->net.isUartPeerSeen());
+}
+
 void test_corrupted_bytes_do_not_count() {
   const uint8_t junk[] = {0x12, 0x34, 0x56, 0x00, 0x05, 0x01, 0x40, 0x03, 0xFF, 0x00};
   rig->usbUp.put(junk, sizeof junk);
@@ -409,6 +456,9 @@ int main() {
   RUN_TEST(test_gs_heartbeat_on_usb_gives_presence_for_2s);
   RUN_TEST(test_gs_data_on_uart_gives_presence);
   RUN_TEST(test_other_nodes_never_give_gs_presence);
+  RUN_TEST(test_uart_peer_seen_from_node3_on_uart_for_3s);
+  RUN_TEST(test_uart_peer_seen_ignores_usb_and_other_nodes);
+  RUN_TEST(test_uart_peer_seen_from_node3_data_frame);
   RUN_TEST(test_corrupted_bytes_do_not_count);
   RUN_TEST(test_telecommand_from_gs_on_usb_delivered_unchanged);
   RUN_TEST(test_telecommand_from_gs_on_uart_delivered);
