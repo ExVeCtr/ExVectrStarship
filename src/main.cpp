@@ -35,6 +35,7 @@
 #include "starship_flaps.hpp"
 #include "starship_hardware.h"
 #include "starship_tvc.hpp"
+#include "safety/estimator_zeroing.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
@@ -318,6 +319,15 @@ private:
   bool allSystemsInitialised_ = false;
   bool simulationMode_ = false;
 
+  // Estimator zeroing (docs/project/overview.md, "Estimator zeroing"): the ZeroEstimators / boot-zero window
+  // and the "valid zero since boot" rule for Ready. missionZeroing_ is the zeroing requested by the active
+  // mission's Initialisation mode (unchanged behaviour). The estimators are in zeroing mode while either holds.
+  Safety::EstimatorZeroing zeroing_;
+  Safety::LogRateLimit zeroRefusedLog_{1 * Core::SECONDS};
+  Safety::LogRateLimit zeroBlockedLog_{1 * Core::SECONDS};
+  bool missionZeroing_ = false;
+  bool zeroingApplied_ = false;
+
   size_t missionSelection_ = 0; // The index of the currently selected mission.
   Core::ListArray<MissionAbstract *> missionList_;
 
@@ -377,6 +387,9 @@ public:
 
   bool isVehicleArmed() { return vehicleArmed_; }
 
+  /// The ZeroEstimators / boot-zero window is active (VEHICLE_STATUS flag ZEROING).
+  bool estimatorZeroingActive() const { return zeroing_.active(); }
+
   MissionAbstract *getCurrentMission() { return mission_; }
 
   MissionPhase getCurrentMissionPhase() { return missionPhase_; }
@@ -423,10 +436,24 @@ public:
   void taskThread() override {
     handleTelecommands();
 
+    if (zeroing_.update(Core::NowNs())) {
+      LOG_MSG("Estimator zeroing complete, valid zero recorded\n");
+    }
+
     if (!systemsInitialised()) {
       starshipTVC.enableActuators(false); // Disable actuators
       vehicleShutdownControl(true);       // Disable everything
+      applyEstimatorZeroing();
       return; // Wait until all systems are initialised
+    }
+
+    // Automatic boot zero: once all inputs have published and no valid zero exists since boot. The vehicle
+    // stays in Startup until it has completed (vehicleIsReady, zeroing_.readyAllowed()).
+    if (zeroing_.shouldStartAutoZero(allSystemsInitialised_,
+                                     vehicleMode_ == VehicleMode::VehicleMode_Startup)) {
+      zeroing_.startAuto(Core::NowNs());
+      LOG_MSG("Automatic estimator zeroing started (%.0f s), keep the vehicle still\n",
+              double(Safety::EstimatorZeroing::kDefaultDurationS));
     }
 
     if (mission_ == &defaultMission_) {
@@ -462,9 +489,25 @@ public:
     handleVehicleMissionControl(); // Handle the vehicle mission control
 
     auto vehicleReady = vehicleIsReady();
-    vehicleShutdownControl(!vehicleReady);
+    // Belt and braces: no actuation while a zeroing window is active (Arm and MissionBegin are refused then,
+    // and ZeroEstimators is only accepted on the ground, so this is normally already the case).
+    vehicleShutdownControl(!vehicleReady || zeroing_.active());
 
     vehicleArmingControl();
+
+    applyEstimatorZeroing();
+  }
+
+  /// Puts the position KF, the attitude EKF and the body simulator into zeroing mode while the mission's
+  /// Initialisation mode or the zeroing window asks for it (same three estimators in simulation and flight).
+  void applyEstimatorZeroing() {
+    const bool want = missionZeroing_ || zeroing_.active();
+    if (want == zeroingApplied_)
+      return;
+    posEstTask.enableZeroingMode(want);
+    imuTask.enableZeroingMode(want);
+    bodySimulator.enableZeroingMode(want);
+    zeroingApplied_ = want;
   }
 
   void handleVehicleMissionControl() {
@@ -474,11 +517,7 @@ public:
 
     if (missionState.missionMode != lastMissionMode_) {
       if (missionState.missionMode == MissionMode::MissionMode_Idle) {
-        posEstTask.enableZeroingMode(false);
-        imuTask.enableZeroingMode(
-            false); // Enable zeroing mode for the attitude estimator
-        bodySimulator.enableZeroingMode(
-            false); // Enable zeroing mode for the body simulator
+        missionZeroing_ = false; // applied by applyEstimatorZeroing()
         // controlRocket.enableControl(false); // Disable control for the rocket
         controlAttitudeTvc.enableControl(
             false); // Disable control for the attitude
@@ -488,12 +527,7 @@ public:
         starshipFlaps.enableActuators(false); // Disable actuators
       } else if (missionState.missionMode ==
                  MissionMode::MissionMode_Initialisation) {
-        posEstTask.enableZeroingMode(
-            true); // Enable zeroing mode for the position estimator
-        imuTask.enableZeroingMode(
-            true); // Enable zeroing mode for the attitude estimator
-        bodySimulator.enableZeroingMode(
-            true); // Enable zeroing mode for the body simulator
+        missionZeroing_ = true; // estimator zeroing on (applyEstimatorZeroing())
         // controlRocket.enableControl(false); // Disable control for the rocket
         controlAttitudeTvc.enableControl(
             false); // Disable control for the attitude
@@ -502,12 +536,7 @@ public:
         // starshipTVC.enableMotors(false); // Enable motors
         starshipFlaps.enableActuators(true); // Disable actuators
       } else if (missionState.missionMode == MissionMode::MissionMode_Startup) {
-        posEstTask.enableZeroingMode(
-            false); // Disable zeroing mode for the position estimator
-        imuTask.enableZeroingMode(
-            false); // Enable zeroing mode for the attitude estimator
-        bodySimulator.enableZeroingMode(
-            false); // Enable zeroing mode for the body simulator
+        missionZeroing_ = false;
         // controlRocket.enableControl(false); // Disable control for the rocket
         controlAttitudeTvc.enableControl(
             false); // Disable control for the attitude
@@ -521,20 +550,13 @@ public:
         // starshipTVC.enableMotors(true); // Enable motors
         starshipFlaps.enableActuators(false); // Disable actuators
       } else if (missionState.missionMode == MissionMode::MissionMode_Running) {
-        posEstTask.enableZeroingMode(false);
-        imuTask.enableZeroingMode(false);
-        bodySimulator.enableZeroingMode(false);
+        missionZeroing_ = false;
         controlAttitudeTvc.enableControl(mission_->getActuatorsEnabled());
         controlPositionStandard.enableControl(mission_->getActuatorsEnabled());
         starshipFlaps.enableActuators(true); // Disable actuators
       } else if (missionState.missionMode ==
                  MissionMode::MissionMode_Finished) {
-        posEstTask.enableZeroingMode(
-            false); // Disable zeroing mode for the position estimator
-        imuTask.enableZeroingMode(
-            false); // Enable zeroing mode for the attitude estimator
-        bodySimulator.enableZeroingMode(
-            false); // Enable zeroing mode for the body simulator
+        missionZeroing_ = false;
         // controlRocket.enableControl(false); // Disable control for the rocket
         controlAttitudeTvc.enableControl(
             false); // Disable control for the attitude
@@ -588,6 +610,10 @@ public:
     case TelecommandType::Telecommand_CalibStart:
       if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
         if (telecommand.paramInt > 0) {
+          // The vehicle is rotated during the mag calibration: a zero taken now would be invalid.
+          if (zeroing_.abort()) {
+            LOG_MSG("Estimator zeroing aborted by mag calibration, no zero recorded\n");
+          }
           magCalibTask.beginCalibration();    // Start the mag calibration
           starshipTVC.enableActuators(false); // Disable actuators
 
@@ -686,13 +712,13 @@ public:
         vehicleShutdownControl(true);       // Disable everything
         mission_->resetMission();
         clearFailures();
-        posEstTask.setPositionReference();
-        bodySimulator.setAttitudeState(
-            {0, 0, 0, 1, 0, 0, 0}); // Reset the attitude state to the origin
-        bodySimulator.setPositionState(
-            {0, 0, 0, 0, 0, 0}); // Reset the position state to the origin
-        // bodySimulator.enableZeroingMode(true); // Enable zeroing mode for
-        // the body simulator
+        // State reset only (user decision 2026-11-20): the estimators and the body simulator are NOT zeroed or
+        // re-referenced; ZeroEstimators does that. An active zeroing window is aborted (no zero recorded); the
+        // valid-zero record since boot is kept, so the vehicle returns to Ready without a new zero if it has one.
+        if (zeroing_.abort()) {
+          LOG_MSG("Estimator zeroing aborted by system reset, no zero recorded\n");
+        }
+        applyEstimatorZeroing();
 
         starshipTVC.enableMotors(false);      // Disable motors
         starshipFlaps.enableActuators(false); // Disable actuators
@@ -704,6 +730,12 @@ public:
 
     case TelecommandType::Telecommand_Arm:
       if (telecommand.paramInt == 0xA5) { // Validate.
+
+        if (!zeroing_.armAllowed()) {
+          if (zeroBlockedLog_.due(Core::NowNs()))
+            LOG_MSG("Arm refused: estimator zeroing active\n");
+          break;
+        }
 
         vehicleArmed_ = true;
 
@@ -733,7 +765,10 @@ public:
 
     case TelecommandType::Telecommand_MissionBegin:
 
-      if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
+      if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !zeroing_.missionBeginAllowed()) {
+        if (zeroBlockedLog_.due(Core::NowNs()))
+          LOG_MSG("Mission begin refused: estimator zeroing active\n");
+      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
         int64_t startTime =
             int64_t(telecommand.paramInt) *
             Core::SECONDS; // Get the start time from the telecommand
@@ -774,6 +809,32 @@ public:
         LOG_MSG("Mission abort telecommand\n"); // Log the mission abort
       }
       break;
+
+    case TelecommandType::Telecommand_ZeroEstimators: {
+      // One-shot ground action (safety.md section 2 rule 5): accepted only while initialised, disarmed, motors
+      // off and on the ground (mode Startup or Ready). The window ends on the vehicle's own timer.
+      Safety::ZeroRequestContext ctx;
+      ctx.initialised = allSystemsInitialised_;
+      ctx.armed = vehicleArmed_;
+      ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
+      // On the ground: no mode in which the vehicle can fly, and no mission active (a SystemReset during a
+      // mission can leave a chained mission running in Ready, see docs/project/overview.md Known safety gaps).
+      const MissionMode mm = mission_->getMissionState().missionMode;
+      ctx.onGround = (vehicleMode_ == VehicleMode::VehicleMode_Startup ||
+                      vehicleMode_ == VehicleMode::VehicleMode_Ready) &&
+                     (mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished);
+      const int64_t now = Core::NowNs();
+      const auto result = zeroing_.request(telecommand.paramInt, telecommand.paramFloat, ctx, now);
+      if (Safety::accepted(result)) {
+        LOG_MSG("Estimator zeroing %s (%.1f s), keep the vehicle still\n", Safety::toString(result),
+                double(zeroing_.endNs() - now) / Core::SECONDS);
+        applyEstimatorZeroing();
+      } else if (zeroRefusedLog_.due(now)) {
+        LOG_MSG("ZeroEstimators refused: %s (%lu refused since boot)\n", Safety::toString(result),
+                (unsigned long)zeroing_.refusedCount());
+      }
+      break;
+    }
 
     case TelecommandType::Telecommand_SimulationMode:
 
@@ -1033,8 +1094,10 @@ public:
         !failureState_.attitudeOutOfBounds &&
         vehicleMode_ != VehicleMode::VehicleMode_Failure &&
         vehicleMode_ != VehicleMode::VehicleMode_SensorCalib) {
-      if (vehicleMode_ == VehicleMode::VehicleMode_Startup ||
-          vehicleMode_ == VehicleMode::VehicleMode_Failure) {
+      if (vehicleMode_ == VehicleMode::VehicleMode_Startup) {
+        // Ready requires a valid estimator zero since boot and no active zeroing window.
+        if (!zeroing_.readyAllowed())
+          return false;
         vehicleMode_ = VehicleMode::VehicleMode_Ready;
       }
 
