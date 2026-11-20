@@ -70,6 +70,9 @@ namespace VCTR
             /// True once the configuration sequence has finished (PVT reading active).
             bool configured() const { return config_.done(); }
 
+            /// Read back after configuration (UBX-CFG-GNSS): GPS and Galileo on, everything else off.
+            bool constellationsAsIntended() const { return SNSR::constellationsAsIntended(readGnss_); }
+
         private:
             void setupSerial(uint32_t baudRate);
 
@@ -78,6 +81,22 @@ namespace VCTR
 
             /// Runs the configuration sequence: at most one library call per task run, waits are timed states.
             void runConfiguration();
+
+            /// One UBX poll (or write, len > 0) of cls/id through a custom packet into ubxPayload_. True on reply.
+            bool ubxPoll(uint8_t cls, uint8_t id);
+            bool ubxWrite(uint8_t cls, uint8_t id, uint16_t len);
+
+            /// Logs the read-back result once, when the sequence is done.
+            void logReadBack();
+
+            // UBX payload buffer for the custom packets (the library writes up to MAX_PAYLOAD_SIZE bytes into it).
+            uint8_t ubxPayload_[MAX_PAYLOAD_SIZE];
+            uint16_t ubxPayloadLen_ = 0;
+            int lastUbxStatus_ = -1; ///< sfe_ublox_status_e of the last ubxPoll/ubxWrite (for the failure log)
+            bool gnssPolledForWrite_ = false;
+            GnssConstellations readGnss_;
+            GnssInUse readInUse_;
+            GnssNavRate readRate_;
 
             GnssConfigSequencer config_;
             int64_t configStartNs_ = 0;

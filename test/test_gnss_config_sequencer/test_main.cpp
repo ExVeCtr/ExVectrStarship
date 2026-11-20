@@ -1,6 +1,7 @@
 // Host tests of src/gnss_config_sequencer.cpp: pio test -e native
-// The u-blox configuration sequence of UbloxSerialGNSS: same steps and order as the old blocking taskInit, the 1 s
-// wait before GPS off as a timed state (no blocking), baud fallback, retries, skip-and-continue, Failed states.
+// The u-blox configuration sequence of UbloxSerialGNSS: step order (GPS + Galileo in one CFG-GNSS write, then the
+// read-back of CFG-GNSS, MON-GNSS and CFG-RATE), the 1 s wait after the constellation change as a timed state (no
+// blocking), baud fallback, retries, skip-and-continue, Failed states, and the pure UBX payload helpers.
 #include <unity.h>
 
 #include "gnss_config_sequencer.hpp"
@@ -13,9 +14,10 @@ static constexpr int64_t MS = 1000000LL;
 void setUp() {}
 void tearDown() {}
 
-static const A kConfigOrder[] = {A::SetUart1Ubx,    A::SetNavRate10Hz, A::SetAutoPvt,  A::SetDynModelAirborne2g,
-                                 A::DisableGlonass, A::EnableGalileo,  A::DisableBeidou, A::DisableSbas,
-                                 A::DisableQzss,    A::DisableImes,    A::DisableGps,  A::SaveConfig};
+static const A kConfigOrder[] = {A::SetUart1Ubx,       A::SetNavRate10Hz, A::SetAutoPvt,
+                                 A::SetDynModelAirborne2g, A::PollGnssForWrite, A::SetGnssGpsGalileo, A::SaveConfig,
+                                 A::ReadGnssConfig,    A::ReadGnssInUse,  A::ReadNavRate};
+static constexpr int kN = sizeof(kConfigOrder) / sizeof(kConfigOrder[0]);
 
 /// Drives the sequencer with a 1 ms task, every action succeeding in `stepMs` ms. Records the actions in order.
 struct Driver {
@@ -57,17 +59,18 @@ static void test_happy_path_order_and_gps_wait() {
   TEST_ASSERT_FALSE(d.seq.failed());
   TEST_ASSERT_EQUAL_UINT8(0, d.seq.skippedSteps());
 
-  // begin (115200), setSerialRate, reopen, then the configuration steps in the old order.
-  TEST_ASSERT_EQUAL_INT(3 + 12, d.n);
+  // begin (115200), setSerialRate, reopen, then the configuration steps.
+  TEST_ASSERT_EQUAL_INT(3 + kN, d.n);
   TEST_ASSERT_EQUAL(A::Begin, d.log[0]);
   TEST_ASSERT_EQUAL(A::SetSerialRate, d.log[1]);
   TEST_ASSERT_EQUAL(A::Reopen, d.log[2]);
-  for (int i = 0; i < 12; i++)
+  for (int i = 0; i < kN; i++)
     TEST_ASSERT_EQUAL(kConfigOrder[i], d.log[3 + i]);
 
-  // GPS off comes at least 1 s after IMES off finished (was delay(1000)), and not much later.
-  const int imes = 3 + 9, gps = 3 + 10;
-  const int64_t gap = d.at[gps] - (d.at[imes] + d.stepMs * MS);
+  // Save follows the constellation write at once; the read-back comes at least 1 s after the save (GNSS restart).
+  const int save = 3 + 6, readBack = 3 + 7;
+  TEST_ASSERT_TRUE(d.at[save] - d.at[save - 1] <= (d.stepMs + 2) * MS);
+  const int64_t gap = d.at[readBack] - (d.at[save] + d.stepMs * MS);
   TEST_ASSERT_TRUE(gap >= 1000 * MS);
   TEST_ASSERT_TRUE(gap <= 1002 * MS);
 
@@ -86,14 +89,19 @@ static void test_waiting_returns_none_and_is_idempotent() {
   s.report(false, 1); // ignored
   TEST_ASSERT_EQUAL(A::Reopen, s.next(2));
   s.report(true, 2);
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 7; i++) {
     TEST_ASSERT_EQUAL(kConfigOrder[i], s.next(3));
     s.report(true, 3);
   }
-  // In the 1 s wait: nothing to do.
+  // In the 1 s wait after the save: nothing to do.
   TEST_ASSERT_EQUAL(A::None, s.next(3));
   TEST_ASSERT_EQUAL(A::None, s.next(3 + 999 * MS));
-  TEST_ASSERT_EQUAL(A::DisableGps, s.next(3 + 1000 * MS));
+  for (int i = 7; i < kN; i++) {
+    TEST_ASSERT_EQUAL(kConfigOrder[i], s.next(3 + 1001 * MS));
+    s.report(true, 3 + 1001 * MS);
+  }
+  TEST_ASSERT_TRUE(s.done());
+  TEST_ASSERT_EQUAL(A::None, s.next(3 + 2000 * MS));
 }
 
 static bool failBauds(A a, int, uint32_t baud) { return a == A::Begin && baud != 38400; }
@@ -134,7 +142,7 @@ static void test_reopen_retries_then_fails() {
   TEST_ASSERT_TRUE(d.at[3] - d.at[2] >= GnssConfigSequencer::kRetryWaitNs);
 }
 
-static bool failGalileoTwice(A a, int k, uint32_t) { return a == A::EnableGalileo && k < 2; }
+static bool failGalileoTwice(A a, int k, uint32_t) { return a == A::SetGnssGpsGalileo && k < 2; }
 
 static void test_step_retry_succeeds() {
   Driver d;
@@ -142,7 +150,7 @@ static void test_step_retry_succeeds() {
   d.run(10000);
   TEST_ASSERT_TRUE(d.seq.done());
   TEST_ASSERT_EQUAL_UINT8(0, d.seq.skippedSteps());
-  TEST_ASSERT_EQUAL_INT(3 + 12 + 2, d.n);
+  TEST_ASSERT_EQUAL_INT(3 + kN + 2, d.n);
 }
 
 static bool failNavRateAlways(A a, int, uint32_t) { return a == A::SetNavRate10Hz; }
@@ -153,13 +161,127 @@ static void test_step_skipped_after_max_attempts() {
   d.run(10000);
   TEST_ASSERT_TRUE(d.seq.done());
   TEST_ASSERT_EQUAL_UINT8(1, d.seq.skippedSteps());
-  TEST_ASSERT_EQUAL_INT(3 + 12 + GnssConfigSequencer::kMaxAttempts - 1, d.n);
+  TEST_ASSERT_EQUAL_INT(3 + kN + GnssConfigSequencer::kMaxAttempts - 1, d.n);
   TEST_ASSERT_EQUAL(A::SetAutoPvt, d.log[3 + 1 + GnssConfigSequencer::kMaxAttempts]);
 }
 
 static void test_step_max_wait_below_sensor_timeout() {
   // One bounded step (ACK wait) must stay well below the 0.5 s sensor data timeout of the safety task.
   TEST_ASSERT_TRUE(GnssConfigSequencer::kStepMaxWaitMs < 500);
+}
+
+static bool failMonGnssAlways(A a, int, uint32_t) { return a == A::ReadGnssInUse; }
+
+static void test_readback_failure_is_skipped_not_fatal() {
+  // A receiver without MON-GNSS (or a lost reply) must not stop PVT reading: skipped, sequence done.
+  Driver d;
+  d.fail = failMonGnssAlways;
+  d.run(10000);
+  TEST_ASSERT_TRUE(d.seq.done());
+  TEST_ASSERT_EQUAL_UINT8(1, d.seq.skippedSteps());
+  TEST_ASSERT_EQUAL(A::ReadNavRate, d.log[d.n - 1]);
+}
+
+// ---- UBX payload helpers ----------------------------------------------------------------------------------------
+
+/// A u-blox M8 CFG-GNSS poll reply as shipped (GPS, SBAS, QZSS, GLONASS on; Galileo, BeiDou, IMES off).
+static uint16_t m8Default(uint8_t *p) {
+  const uint8_t blocks[7][8] = {
+      {0, 8, 16, 0, 0x01, 0x00, 0x01, 0x01}, // GPS on, L1C/A
+      {1, 1, 3, 0, 0x01, 0x00, 0x01, 0x01},  // SBAS on
+      {2, 4, 8, 0, 0x00, 0x00, 0x01, 0x01},  // Galileo off, E1OS
+      {3, 8, 16, 0, 0x00, 0x00, 0x01, 0x01}, // BeiDou off
+      {4, 0, 8, 0, 0x00, 0x00, 0x01, 0x03},  // IMES off
+      {5, 0, 3, 0, 0x01, 0x00, 0x01, 0x05},  // QZSS on
+      {6, 8, 14, 0, 0x01, 0x00, 0x01, 0x01}, // GLONASS on
+  };
+  p[0] = 0;
+  p[1] = 32;
+  p[2] = 32;
+  p[3] = 7;
+  for (int b = 0; b < 7; b++)
+    for (int i = 0; i < 8; i++)
+      p[4 + 8 * b + i] = blocks[b][i];
+  return 4 + 8 * 7;
+}
+
+static void test_cfg_gnss_decode_and_apply() {
+  uint8_t p[64];
+  const uint16_t len = m8Default(p);
+  GnssConstellations c;
+  TEST_ASSERT_TRUE(decodeCfgGnss(p, len, c));
+  TEST_ASSERT_TRUE(c.gps && c.sbas && c.qzss && c.glonass);
+  TEST_ASSERT_FALSE(c.galileo || c.beidou || c.imes);
+  TEST_ASSERT_FALSE(constellationsAsIntended(c));
+  TEST_ASSERT_EQUAL_UINT8(32, c.numTrkChUse);
+
+  uint8_t before[64];
+  for (int i = 0; i < len; i++)
+    before[i] = p[i];
+  TEST_ASSERT_TRUE(applyGpsGalileo(p, len));
+  TEST_ASSERT_TRUE(decodeCfgGnss(p, len, c));
+  TEST_ASSERT_TRUE(constellationsAsIntended(c));
+  TEST_ASSERT_TRUE(c.gps && c.galileo && c.qzss);
+  TEST_ASSERT_FALSE(c.sbas || c.beidou || c.imes || c.glonass);
+  // Only the enable bits changed: header, channel counts, sigCfgMask and the other flag bytes untouched.
+  for (int i = 0; i < len; i++) {
+    const bool flagByte0 = i >= 4 && ((i - 4) % 8) == 4;
+    if (!flagByte0)
+      TEST_ASSERT_EQUAL_UINT8(before[i], p[i]);
+    else
+      TEST_ASSERT_EQUAL_UINT8(before[i] & 0xFE, p[i] & 0xFE);
+  }
+}
+
+static void test_cfg_gnss_apply_sets_empty_signal_mask_and_rejects_bad() {
+  uint8_t p[64];
+  uint16_t len = m8Default(p);
+  p[4 + 8 * 2 + 6] = 0; // Galileo sigCfgMask empty
+  TEST_ASSERT_TRUE(applyGpsGalileo(p, len));
+  TEST_ASSERT_EQUAL_UINT8(0x01, p[4 + 8 * 2 + 6]);
+  // Truncated payload, missing Galileo block, null.
+  TEST_ASSERT_FALSE(applyGpsGalileo(p, len - 1));
+  len = m8Default(p);
+  p[3] = 2; // only GPS and SBAS blocks
+  TEST_ASSERT_FALSE(applyGpsGalileo(p, 4 + 16));
+  TEST_ASSERT_FALSE(applyGpsGalileo(nullptr, 60));
+  GnssConstellations c;
+  TEST_ASSERT_FALSE(decodeCfgGnss(p, 3, c));
+  TEST_ASSERT_FALSE(c.valid);
+}
+
+static void test_intended_set() {
+  GnssConstellations c;
+  c.valid = c.gps = c.galileo = true;
+  TEST_ASSERT_TRUE(constellationsAsIntended(c));
+  c.qzss = true; // follows GPS, allowed
+  TEST_ASSERT_TRUE(constellationsAsIntended(c));
+  c.glonass = true;
+  TEST_ASSERT_FALSE(constellationsAsIntended(c));
+  c.glonass = false;
+  c.galileo = false;
+  TEST_ASSERT_FALSE(constellationsAsIntended(c));
+  c.galileo = true;
+  c.valid = false;
+  TEST_ASSERT_FALSE(constellationsAsIntended(c));
+}
+
+static void test_mon_gnss_and_cfg_rate_decode() {
+  const uint8_t mon[8] = {0, 0x0F, 0x03, 0x09, 3, 0, 0, 0}; // supported all four, enabled GPS + Galileo
+  GnssInUse u;
+  TEST_ASSERT_TRUE(decodeMonGnss(mon, 8, u));
+  TEST_ASSERT_EQUAL_UINT8(0x0F, u.supported);
+  TEST_ASSERT_EQUAL_UINT8(0x09, u.enabled);
+  TEST_ASSERT_FALSE(decodeMonGnss(mon, 4, u));
+
+  const uint8_t rate[6] = {100, 0, 1, 0, 1, 0}; // 100 ms, 1 cycle, GPS time
+  GnssNavRate r;
+  TEST_ASSERT_TRUE(decodeCfgRate(rate, 6, r));
+  TEST_ASSERT_EQUAL_UINT16(100, r.measRateMs);
+  TEST_ASSERT_EQUAL_UINT16(1, r.navRateCycles);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 10.0f, r.hz());
+  TEST_ASSERT_FALSE(decodeCfgRate(rate, 5, r));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.hz());
 }
 
 int main(int, char **) {
@@ -172,5 +294,10 @@ int main(int, char **) {
   RUN_TEST(test_step_retry_succeeds);
   RUN_TEST(test_step_skipped_after_max_attempts);
   RUN_TEST(test_step_max_wait_below_sensor_timeout);
+  RUN_TEST(test_readback_failure_is_skipped_not_fatal);
+  RUN_TEST(test_cfg_gnss_decode_and_apply);
+  RUN_TEST(test_cfg_gnss_apply_sets_empty_signal_mask_and_rejects_bad);
+  RUN_TEST(test_intended_set);
+  RUN_TEST(test_mon_gnss_and_cfg_rate_decode);
   return UNITY_END();
 }

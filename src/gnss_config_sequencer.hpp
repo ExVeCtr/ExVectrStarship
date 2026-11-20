@@ -12,13 +12,22 @@
  * ran the whole sequence plus a delay(1000) in one go (about 1.3 s scheduler stall at t = 5 s, which latched
  * sensorFailure at every boot, 2026-11-20).
  *
- * Sequence (unchanged from the old taskInit):
+ * Sequence:
  *  1. Begin at 115200, else 9600, else 38400 baud (one attempt each). None answers: Failed (the task stays paused).
  *  2. SetSerialRate(115200) (result ignored: the receiver changes baud), then Reopen at 115200 (begin).
  *  3. UART1 output UBX only, navigation rate 10 Hz, auto PVT on, dynamic model AIRBORNE <2g.
- *  4. GLONASS off, Galileo on, BeiDou off, SBAS off, QZSS off, IMES off.
- *  5. Wait kGnssSwitchWaitNs (was the delay(1000)), then GPS off.
- *  6. Save the configuration to the receiver's non-volatile memory. Done.
+ *  4. Constellations GPS + Galileo (user decision 2026-11-20): poll UBX-CFG-GNSS, then ONE CFG-GNSS write (separate
+ *     step, so each step stays one bounded call) that enables GPS and Galileo (and QZSS, which the u-blox M8 requires
+ *     together with GPS: it NACKs GPS on with QZSS off) and disables SBAS, BeiDou, IMES and GLONASS in the same
+ *     message (applyGpsGalileo on the polled payload). The
+ *     old per-constellation toggles ended with "GPS off", which the receiver refused at every boot (the old
+ *     "Galileo only" was never in effect).
+ *  5. Save the configuration to the receiver's non-volatile memory (right after the write).
+ *  6. Wait kGnssSwitchWaitNs (the receiver restarts its GNSS subsystem after a CFG-GNSS change). During every wait
+ *     state the driver drains the UART (checkUblox): auto-PVT at 10 Hz otherwise overflows the RX buffer and the
+ *     first exchange after the wait fails (bench 2026-11-20: save timed out 3x after the 1 s wait).
+ *  7. Read back: UBX-CFG-GNSS (configured constellations), UBX-MON-GNSS (constellations in use), UBX-CFG-RATE
+ *     (navigation rate). The driver logs one line with the result. Done.
  *
  * Failure handling: the old code ignored the result of every step after Reopen. Now a failed step is retried after
  * kRetryWaitNs, up to kMaxAttempts attempts, and the sequence then continues with the next step (as before).
@@ -42,18 +51,16 @@ public:
     SetNavRate10Hz,
     SetAutoPvt,
     SetDynModelAirborne2g,
-    DisableGlonass,
-    EnableGalileo,
-    DisableBeidou,
-    DisableSbas,
-    DisableQzss,
-    DisableImes,
-    DisableGps,
+    PollGnssForWrite,  ///< CFG-GNSS poll into the driver's buffer
+    SetGnssGpsGalileo, ///< applyGpsGalileo() on that buffer, CFG-GNSS write (fails if the poll did not succeed)
     SaveConfig,
+    ReadGnssConfig, ///< CFG-GNSS poll -> decodeCfgGnss
+    ReadGnssInUse,  ///< MON-GNSS poll -> decodeMonGnss
+    ReadNavRate,    ///< CFG-RATE poll -> decodeCfgRate
   };
 
   static constexpr int64_t kMsNs = 1000000LL;
-  static constexpr int64_t kGnssSwitchWaitNs = 1000 * kMsNs; ///< between the other constellations and GPS off
+  static constexpr int64_t kGnssSwitchWaitNs = 1000 * kMsNs; ///< after the CFG-GNSS write (GNSS restart)
   static constexpr int64_t kRetryWaitNs = 100 * kMsNs;       ///< before retrying a failed step
   static constexpr uint8_t kMaxAttempts = 3;                 ///< per configuration step
   static constexpr uint16_t kStepMaxWaitMs = 250;            ///< ACK wait passed to each library call
@@ -90,6 +97,48 @@ private:
   uint8_t skipped_ = 0;
   int64_t notBeforeNs_ = 0; ///< no action before this time (wait states)
 };
+
+// ---- UBX payload helpers (pure, host-tested) -------------------------------------------------------------------
+
+/// u-blox gnssId values (UBX-CFG-GNSS).
+enum GnssId : uint8_t { kGnssGps = 0, kGnssSbas = 1, kGnssGalileo = 2, kGnssBeidou = 3, kGnssImes = 4,
+                        kGnssQzss = 5, kGnssGlonass = 6 };
+
+/// Decoded UBX-CFG-GNSS: enable bit per constellation (false if its block is missing).
+struct GnssConstellations {
+  bool valid = false;
+  bool gps = false, sbas = false, galileo = false, beidou = false, imes = false, qzss = false, glonass = false;
+  uint8_t numTrkChHw = 0, numTrkChUse = 0;
+};
+
+/// Decodes a UBX-CFG-GNSS payload (4 + 8 * numConfigBlocks bytes). False if malformed.
+bool decodeCfgGnss(const uint8_t *payload, uint16_t len, GnssConstellations &out);
+
+/// Modifies a polled UBX-CFG-GNSS payload in place for GPS + Galileo: enable GPS, Galileo and QZSS (QZSS follows GPS,
+/// the M8 refuses GPS without it; each gets its primary signal, sigCfgMask 0x01, if the mask is empty), disable every
+/// other block (SBAS, BeiDou, IMES, GLONASS). The payload is then sent back
+/// as one CFG-GNSS write. False if malformed or the GPS or Galileo block is missing (nothing should be sent then).
+bool applyGpsGalileo(uint8_t *payload, uint16_t len);
+
+/// The intended set: GPS and Galileo on, SBAS, BeiDou, IMES and GLONASS off (QZSS not checked, it follows GPS).
+bool constellationsAsIntended(const GnssConstellations &c);
+
+/// Decoded UBX-MON-GNSS (bit 0 GPS, 1 GLONASS, 2 BeiDou, 3 Galileo).
+struct GnssInUse {
+  bool valid = false;
+  uint8_t supported = 0, enabled = 0;
+};
+bool decodeMonGnss(const uint8_t *payload, uint16_t len, GnssInUse &out);
+
+/// Decoded UBX-CFG-RATE.
+struct GnssNavRate {
+  bool valid = false;
+  uint16_t measRateMs = 0;
+  uint16_t navRateCycles = 0;
+  /// Navigation solutions per second (0 if invalid).
+  float hz() const { return (valid && measRateMs && navRateCycles) ? 1000.0f / (measRateMs * navRateCycles) : 0; }
+};
+bool decodeCfgRate(const uint8_t *payload, uint16_t len, GnssNavRate &out);
 
 } // namespace SNSR
 } // namespace VCTR
