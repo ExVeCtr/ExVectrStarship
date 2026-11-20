@@ -1,5 +1,5 @@
 # ExVectrPackets
-> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 2c9c121 (feature/uart-cleanup-airpose, schema hash 0x4FE838D2)`
+> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 53a7020 (feature/split-reset-zero, schema hash 0x761D5378)`
 
 The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/telemetry-sets.md`, `docs/versioning.md`, `docs/adding-a-packet.md` and the generated `docs/packet-reference.md` (every field, offset, scaling and unit). This file covers what the flight software uses.
 
@@ -18,8 +18,10 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 
 | Port | Packet | Set | Rate on the vehicle | Content (SI) |
 |---|---|---|---|---|
-| 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags (incl. `UART_PEER_SEEN`, node 3 heard on the UART within 3 s, information only), failure bits, sensor states |
+| 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags (incl. `UART_PEER_SEEN`, node 3 heard on the UART within 3 s, information only; `ZEROING`, estimator zeroing window active; the byte is now full), failure bits, sensor states |
 | 0x21 | `AirPose` | radio | 10 Hz UART | q (i16), position (i32, 1 mm), velocity (i16, 0.01 m/s), fixed point, 30 B |
+| 0x22 | `AirActuators` | radio | 25 Hz UART, 2 samples each (50 samples/s) | newest and previous (about 20 ms older, `prev_age`) actuator sample: TVC deflection, roll torque, thrust, flaps; i16/u16 fixed point, 38 B |
+| 0x23 | `AirMission` | radio | 5 Hz UART | mission time (i32 ms), mission mode, phase, index, waypoint, position setpoint (i32 1 mm), velocity setpoint (i16 0.01 m/s), 30 B |
 | 0x03 | `HandsetTelem` | USB + radio | 2 Hz each | display values for the Pocket (dst 0xFF) |
 | 0x80 | `Pose` | USB | 100 Hz | omega, q, velocity, position (f32) |
 | 0x81 | `Actuators` | USB | 50 Hz | flaps, TVC deflection, thrust, ground distance |

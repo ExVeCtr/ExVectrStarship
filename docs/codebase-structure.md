@@ -15,7 +15,8 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── mission/              Mission framework + missions (waypoint, bellyflop, freefall, RTH)
 │   ├── starship_tvc.*        TVC mixer/actuator layer (4 vane servos + 2 contra-rotating motors)
 │   ├── starship_flaps.*      Flap actuator layer (4 flap servos) + ControlAttitudeFlaps settings types
-│   ├── comms/                ExVectrNetwork links (USB + UART to the RX module), telemetry task, packet mapping
+│   ├── comms/                ExVectrNetwork links (USB + UART to the RX module), telemetry task, packet mapping, radio link rule
+│   ├── safety/               Pure safety decision logic (estimator zeroing window, "valid zero since boot" rule), host-tested
 │   ├── ublox_gnss.*          u-blox NEO-M8Q GNSS driver → SNSR::GNSS topic
 │   ├── vl53l0x/              VL53L0X ToF rangefinder driver → SNSR::RangeFinder topic
 │   ├── telemetry.hpp         Vehicle/mission state enums and structs (wire formats: ExVectrPackets, comms/)
@@ -29,7 +30,8 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 ├── lib/
 │   ├── ExVectr*/             The ExVectr framework, one git submodule per library
 │   └── Adafruit_*/           Display libraries (SSD1306 OLED), committed as plain folders
-├── test/                     Host tests of src/comms (pio test -e native)
+├── test/                     Host tests of src/comms and src/safety (pio test -e native)
+├── tools/                    Bench tools (UART pin scan, bench_vehicle_usb.py temporary USB session)
 ├── include/                  PlatformIO default, unused
 └── utils/                    Helper scripts
 ```
@@ -109,6 +111,8 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x03 | `HANDSET_TELEM` (dst 0xFF) | down | 2 Hz | 2 Hz |
 | 0x20 | `VEHICLE_STATUS` | down | 20 Hz | 5 Hz |
 | 0x21 | `AIR_POSE` | down | – | 10 Hz |
+| 0x22 | `AIR_ACTUATORS` (2 samples per packet) | down | – | 25 Hz |
+| 0x23 | `AIR_MISSION` | down | – | 5 Hz |
 | 0x7F | legacy `Telecommand`, **TEMPORARY until T9b**, from node 0 only | up | yes | yes |
 | 0x80 | `POSE` | down | 100 Hz | – |
 | 0x81 | `ACTUATORS` | down | 50 Hz | – |
@@ -119,9 +123,9 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x92 | `TASK_TIMING` | down | 5 Hz | – |
 | 0x93 | `CALIBRATION` (applied sensor calibration) | down | 0.5 Hz | – |
 
-Packet layouts: ExVectrPackets schema (hash 0x4FE838D2), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+Packet layouts: ExVectrPackets schema (hash 0x761D5378), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
-Losing the ground station (no valid frame from node 0 on either link for 2 s) sets `radioConnectionLoss`, as before. Until T9b this includes the radio path, where only node 0 data frames (not its heartbeats) reach the vehicle.
+`radioConnectionLoss` (since 2026-11-20): no **radio packet** for 2 s, where a radio packet is a DATA frame arriving on the UART from node 0 or node 2 (the far side of the air link; normally the Pocket's `RC_STATE` at 25 Hz). Heartbeats, node 3 frames and anything on USB never count; before the first radio packet, a 10 s boot grace applies. The ground station on USB no longer influences it ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
 
 ## Build
 
@@ -129,5 +133,5 @@ Losing the ground station (no valid frame from node 0 on either link for 2 s) se
 - PlatformIO binary on this machine: `~/.platformio/penv/bin/pio`.
 - **USB Serial carries only ExVectrNetwork stream frames**: `pio device monitor` shows binary. Console text (`LOG_MSG`, Core print) arrives as `LOG_TEXT` packets in the ground station. Never `Serial.print` in `src/`. `LOG_MSG`/`VRBS_MSG` switches are in `ExVectrCore/print.hpp`.
 - `platformio.ini`: `-Ilib/ExVectrPackets/gen` (generated packet headers), `-DEXVECTR_ARDUINO_NO_SERIAL_CONSOLE` (platform console off), `build_src_filter` keeps a leftover local `src/sx12xxAL` out of the build. `default_envs = teensy40`, so `pio run` builds only the firmware.
-- Host tests: `~/.platformio/penv/bin/pio test -e native` (Unity) builds `src/comms/telemetry_mapping.cpp`, `src/comms/vehicle_network.cpp` and the ExVectrNetwork stack natively (`test/test_telemetry_mapping`, `test/test_vehicle_network`).
-- Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B. After the calibration telemetry (2026-11-20): FLASH code 230744 B, RAM1 code 228584 B, padding 792 B, 242528 B free for local variables (unchanged).
+- Host tests: `~/.platformio/penv/bin/pio test -e native` (Unity) builds `src/comms/telemetry_mapping.cpp`, `src/comms/vehicle_network.cpp`, `src/safety/estimator_zeroing.cpp` and the ExVectrNetwork stack natively (`test/test_telemetry_mapping`, `test/test_vehicle_network`, `test/test_estimator_zeroing`).
+- Resource baseline (Nov 2026, after the network migration T9a): FLASH code 229080 B, RAM1 variables 52384 B, code 226920 B, padding 2456 B, 242528 B free for local variables; RAM2 variables 22528 B (of which `vehicleComms` 10096 B in DMAMEM), 501760 B free for malloc/new. Before T9a (ExVectrCore 18bbb09 update): FLASH code 245400 B, RAM1 variables 56448 B, 205696 B free; RAM2 variables 12416 B. After the calibration telemetry (2026-11-20): FLASH code 230744 B, RAM1 code 228584 B, padding 792 B, 242528 B free for local variables (unchanged). After `feature/split-reset-zero` (2026-11-20; baseline 7ac9b96: code 228712 B, variables 52384 B, 242528 B free): FLASH code 234392 B, RAM1 variables 53504 B (+1120), code 232232 B (+3520), padding 29912 B, **208640 B free** (-33888 B). The drop is mostly ITCM granularity: RAM1 code is allocated in 32 KB banks and the code crossed 7 x 32 KB = 229376 B, so a new bank was reserved (padding). About 26 KB of code can be added before the next bank.

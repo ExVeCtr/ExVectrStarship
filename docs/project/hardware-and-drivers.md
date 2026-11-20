@@ -146,10 +146,14 @@ Since the network migration (T9a) the vehicle has **no on-board radio**. `Datali
 
 **Heartbeats:** each node sends the vehicle heartbeat (role 1, schema hash `Packets::kSchemaHash`) at 1 Hz on its link. UART peer: `UART_PEER_SEEN` (see section 9, `VEHICLE_STATUS.flags`) reports whether node 3 was heard on the UART in the last 3 s. Heartbeats and `LINK_STATS` of the modules are informational: they fill the node table and the `INCOMPATIBLE` flag (a present node with another network version or schema hash), nothing else.
 
-**Ground-station presence and `radioConnectionLoss`:** `VehicleComms::isGroundStationPresent()` is true while any valid frame (heartbeat or data) from node 0 arrived on USB or UART within **2 s** (`presenceTimeoutNs`). `checkForFailures` uses it exactly where it used `NetworkNode::isNodeReachable(0)` (old timeout 2 s). Consequences on the new topology:
-- **USB (bench):** the ground station's 1 Hz heartbeat keeps node 0 present, as the old radio heartbeat did.
-- **Radio path:** the TX and RX modules drop node 0 heartbeats (and `RC_STATE`) before the vehicle, by design. Only node 0 *data* frames reach the vehicle over the radio (for example `REQUEST`, or the temporary telecommand). Until T9b, a ground station connected only through the radio must send such data at least every 2 s, or the vehicle enters Failure (`radioConnectionLoss`) after initialisation. Frames from nodes 2 and 3 never count.
-- T9b replaces this with the `RC_STATE` control-source timeout.
+**Radio link and `radioConnectionLoss` (user decision 2026-11-20):** `VehicleNetwork::isRadioLinkAlive()` (`src/comms/vehicle_network.cpp`) drives `radioConnectionLoss` in `checkForFailures`.
+- A **radio packet** is a valid DATA frame that arrives **on the UART** with source **node 0** (ground station, relayed by the Router) or **node 2** (Router / Pocket: `RC_STATE`, `LINK_STATS`, ...), that is, from the far side of the air link. A small tap (`VehicleNetwork::RadioTap`) sits between the UART link and the UART node, records the receive time of such frames and passes every frame on unchanged.
+- **Never counted:** heartbeats of any node (link-status information only, no timeout of their own), frames from node 3 (the ship node's own `LINK_STATS` and heartbeat prove only that the UART works), and everything on USB. The ground station on USB therefore no longer influences `radioConnectionLoss`.
+- **Timeout:** alive while the last radio packet is at most **2 s** old (`kRadioTimeoutNs`). The Pocket's `RC_STATE` at 25 Hz is the normal keep-alive; any other node 0/2 data frame counts too.
+- **Boot:** before the first radio packet since boot the link counts as alive for **10 s** after boot (`kRadioStartupGraceNs`, measured from the construction of `VehicleNetwork`, i.e. power-on). Why: the RX module and the air link need a few seconds after power-on, and failing at 2 s would latch Failure at every boot; never firing before the first packet would let a vehicle that never had a radio link become Ready. After the first radio packet the grace no longer applies.
+- **SystemReset** clears the latched failure; the radio timestamp is kept, so with the radio still absent the failure latches again on the next check. **Simulation mode:** same rule (safety.md rule 7).
+- **Ground-station presence** (`isGroundStationPresent()`: any valid frame from node 0 on USB or UART within 2 s) is unchanged but **information only**: `VEHICLE_STATUS` `GS_PRESENT`. The OLED link indicator follows the radio rule.
+- What remains for T9b: control-source arbitration (which source may command) and the `RC_STATE` stale failsafe from the accepted control source (safety.md 4.1). Until then any node 0/2 data counts as radio activity, including a ground-station telecommand.
 
 **Port table:** [../codebase-structure.md](../codebase-structure.md#radio-and-usb-network).
 
@@ -258,7 +262,7 @@ These are the values of the `if (false)` block in `initialiseMemory` for the acc
 
 ## 9. Telemetry: generated packets (`src/comms/telemetry_mapping.cpp`)
 
-The packets are the generated ExVectrPackets classes (schema hash 0x4FE838D2, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
+The packets are the generated ExVectrPackets classes (schema hash 0x761D5378, byte layouts in the library's `docs/packet-reference.md`). Decoded values are SI; fixed-point scaling, saturation and NaN handling are done by the generated `encode()`. The old raw structs `VehicleState` (port 50) and `Net::Packet*` (ports 10-12) are removed; `MissionState` (`telemetry.hpp`) stays as the missions' internal state.
 
 **Sets and rates** (100 Hz tick, rates from the generated `kUsbRateHz` / `kAirRateHz`):
 
@@ -275,10 +279,12 @@ The packets are the generated ExVectrPackets classes (schema hash 0x4FE838D2, by
 | 0x93 | `CALIBRATION` | 0.5 Hz (every 2 s, `VehicleNetwork::kCalibrationPeriodTicks`; the schema rate is 0) | – | 0 |
 | 0x03 | `HANDSET_TELEM` | 2 Hz | 2 Hz | 0xFF |
 | 0x21 | `AIR_POSE` | – | 10 Hz | 0 |
+| 0x22 | `AIR_ACTUATORS` (two samples per packet) | – | 25 Hz | 0 |
+| 0x23 | `AIR_MISSION` | – | 5 Hz | 0 |
 | 0x02 | `LOG_TEXT` | as printed | – | 0 |
 | – | heartbeat | 1 Hz | 1 Hz | 0xFF |
 
-UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB about 18 kB/s plus log text.
+UART total about 2.0 kB/s including framing (air downlink: about 2.1 kB/s of 6.15 kB/s entry capacity, 34 %, see ExVectrPackets `docs/telemetry-sets.md`); USB about 18 kB/s plus log text. Bench check 2026-11-20 over the air: 24.6 `AIR_ACTUATORS`/s and 4.8 `AIR_MISSION`/s arrived at the ground station, `prev_age` 17.5-22.5 ms (mean 20.0 ms).
 
 **Sources** (`TelemetryProvider`, main.cpp; read-only, in the telemetry task): attitude and position from the topic switches (estimators, or the body simulator in simulation mode, as everything downstream sees them), ground distance from the ground topic switch, GNSS from `gnss`, flap angles from `trueFlapSettingTopic`, TVC from `StarshipTVC::getTVCActualThrustTopic()`, raw sensors from the MPU9250, QMC5883 and BME280 topics, standard deviations from the estimators' covariances, mode/mission/failures from `VehicleSafetyAndControlTask`.
 
@@ -291,7 +297,7 @@ UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB a
 | | `mode` | `VehicleMode`: 0 Startup, 1 SensorInit, 2 SensorCalib, 3 Ready, 4 Running, 5 Failure |
 | | `mission_mode`, `mission_phase` | `MissionMode` (0 Idle … 4 Finished), `MissionPhase` (0 Idle … 7 Completed) |
 | | `ctrl_source` | 0 (NONE): no RC control source until T9b |
-| | `flags` | ARMED = `vehicleArmed_`; SIMULATION; MOTORS_ENABLED = `StarshipTVC` motors enabled **and** actuators enabled (the existing logic; there is no hard motor gate before T9b); GS_PRESENT = ground-station presence (above); INCOMPATIBLE; FAILSAFE = mode is Failure (actuators cut); UART_PEER_SEEN (bit 6) = a valid frame from the ship node (node 3) arrived on the UART within 3 s (`VehicleNetwork::isUartPeerSeen()`, from the UART node's node table, so USB frames and other nodes never set it). **Information only:** nothing in the vehicle reads it (safety.md 4.1). It exists because `NetworkStatus` seen over USB reflects only the USB node, so a dead UART is otherwise invisible |
+| | `flags` | ARMED = `vehicleArmed_`; SIMULATION; MOTORS_ENABLED = `StarshipTVC` motors enabled **and** actuators enabled (the existing logic; there is no hard motor gate before T9b); GS_PRESENT = ground-station presence (section 5; information only, not the failure condition); INCOMPATIBLE; FAILSAFE = mode is Failure (actuators cut); ZEROING (bit 7) = an estimator zeroing window is active (`VehicleSafetyAndControlTask::estimatorZeroingActive()`: boot zero or `ZeroEstimators`; the mission's own Initialisation zeroing does not set it); UART_PEER_SEEN (bit 6) = a valid frame from the ship node (node 3) arrived on the UART within 3 s (`VehicleNetwork::isUartPeerSeen()`, from the UART node's node table, so USB frames and other nodes never set it). **Information only:** nothing in the vehicle reads it (safety.md 4.1). It exists because `NetworkStatus` seen over USB reflects only the USB node, so a dead UART is otherwise invisible |
 | | `failure_bits` | bit 0 sensor, 1 attitude, 2 position, 3 position out of bounds, 4 attitude out of bounds, 5 radio connection loss |
 | | `sensor_state` | 2 bits per sensor, `TelemetrySensor` (0 Init, 1 Calib, 2 Ready, 3 Failure): bits 0-1 GNSS, 2-3 IMU, 4-5 baro, 6-7 mag, 8-9 attitude KF, 10-11 position KF |
 | | `last_req_id`, `last_req_status`, `rc_age` | 0, 0, NaN (no `REQUEST` / `RC_STATE` until T9b) |
@@ -301,6 +307,10 @@ UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB a
 | | `tvc` | `[atan2(Fx, Fz), atan2(Fy, Fz)]` of the actual thrust vector (body frame), rad |
 | | `thrust` | `|[Fx, Fy, Fz]|`, N. The roll torque `T` has no field (Known issues) |
 | | `ground_distance` | ground topic switch `data(1)` (KF state `[rate, distance]`), m; NaN before the first sample |
+| `AIR_ACTUATORS` | `t_us`, `prev_age` | time of the newest sample; newest minus previous sample time, s (nominally 0.020; NaN with no previous sample) |
+| | `tvc[4]`, `roll_torque[2]`, `thrust[2]`, `flaps[8]` | newest first, then previous: same definitions as `ACTUATORS` (`tvc` = `[atan2(Fx,Fz), atan2(Fy,Fz)]` of the actual thrust, `thrust` = its magnitude, `flaps` = true angles `[TL,TR,BL,BR]`), plus `roll_torque` = the actual thrust topic's `T` (the twist actuation as roll torque, N·m; the vane twist fraction is `T·45/thrust`, limited to ±0.5). Fixed point: angles 0.1 mrad, torque 0.01 mN·m, thrust 1 mN, saturating, NaN -> sentinel. Samples are taken every 20 ms (`VehicleNetwork::kActuatorSampleTicks`) into `ActuatorHistory` (4 entries) and the packet is sent at 25 Hz on a sampling tick, so the previous sample is exactly the one before the newest. The values are the modelled actual output (commands after the mixer limits and the rate model), not servo feedback; the vehicle has no servo feedback |
+| `AIR_MISSION` | `mission_time`, `mission_mode`, `phase`, `index`, `setpoint_pos`, `setpoint_vel` | as `MISSION` (+ `mission_mode` as in `VEHICLE_STATUS`), fixed point: time 1 ms, position 1 mm, velocity 0.01 m/s |
+| | `waypoint` | `missionWaypointTask.currentWaypointIndex()` while the waypoint mission is active, else 255. No attitude setpoint: the TVC controller's applied reference has no getter (ExVectrControl) and the mapper output is not used in the bellyflop |
 | `MISSION` | `setpoint_pos`, `setpoint_vel` | `positionSetpoint[3..5]`, `[0..2]` |
 | | `mission_time` | `missionTime` ns -> s (1 ms wire resolution; negative in the countdown) |
 | | `index`, `phase` | `MissionState.missionIndex` (always 0, see missions.md), current `MissionPhase` |
@@ -342,7 +352,7 @@ UART total about 0.65 kB/s including framing (the air budget is 6.2 kB/s); USB a
 
 Network frame from the ground station: CTRL `0x48` (DATA, QoS EVENT, not latest), TTL 3, DST 1, SRC 0, PORT 0x7F, SEQ (+1 per command), then the 8 bytes.
 
-### Command list (handler: `VehicleSafetyAndControlTask::handleTelecommands`, main.cpp:537-787)
+### Command list (handler: `VehicleSafetyAndControlTask::handleTelecommands`, main.cpp:603-902)
 
 Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 
@@ -352,12 +362,13 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 | 1 | `CalibApply` | `subsystem == Magneto` | none | bias = fit, scale = 1/fitScale·I. Write key 101, read key 201, apply to `magTransformTopic` (RAM only until Save). |
 | 2 | `Load` | — | — | **Not handled.** |
 | 3 | `Save` | `subsystem == Magneto` | none | EEPROM ← RAM image (all keys). |
-| 4 | `SystemReset` | `paramInt == 0xC5` | none | Mode `Startup`, re-init sensors, actuators/motors/flaps off, `resetMission()`, `clearFailures()`, reset the position reference, reset the simulator state, **disarm**. Does **not** leave simulation mode, although the header says so. |
-| 5 | `Arm` | `paramInt == 0xA5` arms; **any other value disarms** | none | Sets `vehicleArmed_`. Auto-disarm on Failure, SensorCalib, Startup or SensorInit, and after RTH finishes. |
+| 4 | `SystemReset` | `paramInt == 0xC5` | none | **System state only (since 2026-11-20):** mode `Startup`, re-init (wait for all inputs), actuators/motors/flaps off, `resetMission()`, `clearFailures()`, **disarm**, aborts an active zeroing window. Then `Ready` as soon as the inputs are back, without a new zero, if a valid zero exists since boot. It does **not** zero or re-reference the estimators or reset the body simulator (use `ZeroEstimators`), and does **not** change simulation mode. |
+| 5 | `Arm` | `paramInt == 0xA5` arms; **any other value disarms** | `0xA5`: no zeroing window active (else refused, rate-limited log) | Sets `vehicleArmed_`. Auto-disarm on Failure, SensorCalib, Startup or SensorInit, and after RTH finishes. Disarm is always accepted. |
 | 6 | `SimulationMode` | `paramInt == 0xA9` | none | **Toggles.** On: motors off, topic switches → `bodySimulator`, simulator reset and unpaused. Off: switches → estimators, simulator paused, mode `Startup`, re-init, actuators off. |
-| 7 | `MissionBegin` | `paramInt` = initial mission time in s (use ≤ −10 for the full countdown) | mode `Ready` | `switchMissionTo(waypoint, paramInt·1 s)`, mode `Running`, motors enabled unless in simulation. **Arming not required.** |
+| 7 | `MissionBegin` | `paramInt` = initial mission time in s (use ≤ −10 for the full countdown) | mode `Ready`, no zeroing window active (else refused, rate-limited log) | `switchMissionTo(waypoint, paramInt·1 s)`, mode `Running`, motors enabled unless in simulation. **Arming not required.** |
 | 8 | `MissionSelect` | — | mode `Ready` | No-op (log only). |
 | 9 | `MissionAbort` | none | mode `Running` | Mission mode `Running`: switch to RTH. Else: actuators off, reset mission, clear failures. |
+| 10 | `ZeroEstimators` | `paramInt == 0x2E`; `paramFloat` = window in s (NaN or 0: 10 s; clamped to 1..60 s) | initialised (all inputs published), disarmed, motors off, mode `Startup` or `Ready`, active mission `Idle` or `Finished`. Otherwise ignored, counted, rate-limited log (1/s) | Starts the zeroing window (overview.md, "Estimator zeroing"); a second one during the window restarts it with the new duration. One-shot ground action, timed on the vehicle. **The vehicle must be still.** |
 
 There is no authentication beyond the three magic values and the source address 0 (which any node on a link can claim). The vehicle subscribes to no other port: telemetry ports are send-only now.
 
@@ -480,7 +491,7 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Medium | `vl53l0x_driver.cpp:834-856` | Range status is not checked. `cov = 0.15·range` is σ-like, not m². | Out-of-range readings (~8.19 m) are published. The KF window 0.4–1.5 m (main.cpp:1932) masks this today. |
 | Medium | `vl53l0x_driver.cpp:72-73`, main.cpp:1732 | The VL53L0X sets its I2C device to 400 kHz on the shared `Wire`, while main sets 100 kHz. | Whether the bus clock changes per transaction depends on the HAL. The BME280, QMC5883 and OLED may run at 400 kHz. |
 | Medium | `PWM_Output` (lib) used by both drivers | `outputEnabled_` is never assigned in `enableOutput()` (`lib/ExVectrActuator/src/pwm_output.cpp:103-114`). Disable writes 0 duty once, but the next `setValue()` drives the pin again. | The drivers only work because they call `setValue` exclusively while enabled. Any future `setValue` on a disabled output re-energises it. |
-| Medium | `ublox_gnss.cpp:199` | `delay(1000)` (plus up to three blocking `begin()` attempts) inside `taskInit`. | Stalls the cooperative scheduler, including IMU processing, for at least 1 s at t ≈ 5 s. |
+| High | `ublox_gnss.cpp:199` | `delay(1000)` (plus up to three blocking `begin()` attempts) inside `taskInit`. | Stalls the cooperative scheduler, including IMU processing, for at least 1 s at t ≈ 5 s. **Consequence (bench 2026-11-20, also on 7ac9b96):** right after "All systems initialised" (t ≈ 6.25 s) the attitude-EKF and position-KF data (and IMU, baro) are > 0.5 s old, so `checkForFailures` latches **Failure (sensorFailure) at every boot**. A `SystemReset` after boot is needed to reach Ready. The automatic boot zero still runs and completes in Failure. |
 | Low | `starship_flaps.hpp:37` | `FLAP_MIN_ANGLE = 15°` clamps the controller's 0° (full extension, used by `Upright`). | Flaps never fully extend. The true-flap topic shows 15°. |
 | Low | main.cpp:1789-1792 | Gyro bias hard-coded at boot overrides the stored calibration. | Stale bias when the IMU or temperature changes. The key 100 bias is silently ignored. `CALIBRATION` shows it (`OFFSET_OVERRIDE`). |
 | Medium | EEPROM key 102 (bench vehicle) | The stored accel calibration (`b = (0.428, 0.558, 2.143)` m/s², `C·T = diag(−0.9984, 1.003, −0.9673)`) maps the resting raw accel (\|raw\| 8.44 m/s²) to \|cal\| 10.3 m/s², not 9.81. The z offset no longer matches the sensor (it may have shifted, or the values were fitted in another frame). | The tilt estimate can be off by a few degrees (the x/y offset error is not observable at rest in one orientation). Needs a new accel calibration (six-position) before flight; there is no accel calibration command. |
@@ -489,9 +500,10 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Low | main.cpp `systemsInitialised` | "GNSS data not new" (and the other "... not new" lines) are logged every 100 ms until all sensors deliver. | About 10 `LOG_TEXT` lines/s on the bench without GNSS. Not rate-limited (only the auto-disarm messages are, 2026-11-20). |
 | Low | `starship_hardware.h:25-26`, `starship_tvc.hpp:92-94` | `TVC_SERVO_LIMIT` is unparenthesised. `TVC_ANGLE_FACTOR` is duplicated by the hard default `tvcFactor = 15`. | Changing the define does not change the TVC mixing. Macro expansion hazard. |
 | Low | `ublox_gnss.cpp:150-170` | Baud fallback messages are wrong ("15200", always "9600"). A failed 115200 reconfig returns without `setInitialised(false)`. | Misleading logs. The task may run unconfigured. |
-| Low | `telecommand.hpp:152`, `:156`, `:159` | Header comments disagree with the code: CalibStart duration, SystemReset leaving sim mode, MissionBegin "seconds in the future". | Operator and ground-software confusion. |
+| Low | `telecommand.hpp` | Header comments disagree with the code: CalibStart duration, MissionBegin "seconds in the future". (The SystemReset comment was corrected 2026-11-20: it never left simulation mode.) | Operator and ground-software confusion. |
+| Medium | main.cpp `handleTelecommands`, section 10 | Only the newest telecommand per 100 ms tick is handled (`Simple_Subscriber`). Seen on the bench 2026-11-20: a `ZeroEstimators` sent within the same tick as a `SystemReset` from another sender was lost. | Two senders (or a fast sequence) can silently drop a command. Senders must space commands > 100 ms (the ground station enforces 500 ms). T9b replaces the path. |
 | Info | `starship_hardware.h` `RX_MODULE_SERIALPORT` | Resolved 2026-11-20: the ship node is wired to Serial4 (pin 16 RX4 / pin 17 TX4), confirmed end to end (Router shows node 1, vehicle telemetry arrives over the radio). It was first on pads 30/31 and was moved. | None. If the harness is rewired, re-check with `tools/uart_pin_scan.py` (section 5). |
-| High | main.cpp `checkForFailures`, section 5 | **TEMPORARY until T9b:** `radioConnectionLoss` = no valid frame from node 0 for 2 s on USB or UART. Over the radio path the modules drop node 0 heartbeats by design, so a ground station reached only by radio keeps the vehicle out of Failure only if it sends node 0 data (telecommand, `REQUEST`) at least every 2 s. The ground station has no telecommand encoder yet. | Over the radio alone the vehicle enters Failure after initialisation unless the ground station sends data. Bench use over USB behaves as before. T9b replaces it with the `RC_STATE` control-source timeout. |
+| Medium | main.cpp `checkForFailures`, section 5 | **Until T9b:** `radioConnectionLoss` counts any DATA frame from node 0 or 2 on the UART as radio activity (normally the Pocket's `RC_STATE`). There is no control-source arbitration and no `RC_STATE` stale failsafe yet. Fixed 2026-11-20: the former rule (node 0 frames on USB or UART) failed 2 s after boot over the radio alone. | A ground-station telecommand over the radio also keeps the link alive. T9b adds the control-source timeout (safety.md 4.1). The 2 s timeout itself was verified on the host only (the Pocket cannot be switched off from the bench). |
 | Medium | section 10 | **TEMPORARY until T9b:** the legacy telecommand on port 0x7F is accepted from any frame claiming source 0 on either link, with only the three magic values as protection (as before on port 1000). It is not in the ExVectrPackets schema. | Same exposure as before; any device on USB or behind the RX module can command the vehicle. |
 | Low | section 9 | `ACTUATORS` has no field for the TVC roll torque `T`. | Roll torque is no longer telemetered (it was `VehicleState.tvcTorque`, mis-scaled). Needs a schema field. |
 | Low | `ExVectrNetwork` (library) | The legacy SX1280 sources of the library are compiled (unused, dropped at link time). | Library warnings in the build log. |
