@@ -104,6 +104,10 @@ public:
   /// most kRadioTimeoutNs old; before the first radio packet since boot, alive only during the boot grace
   /// (kRadioStartupGraceNs after construction).
   bool isRadioLinkAlive() const;
+  /// A radio packet (see isRadioLinkAlive) really arrived within kRadioTimeoutNs; NO boot grace. For telemetry
+  /// "connected" and the connection counter (review 2026-11-20: the failure predicate above is true during the
+  /// boot grace before any packet, which made the display report a connection that never existed).
+  bool isRadioPacketRecent() const;
   /// A radio packet (see isRadioLinkAlive) has arrived since boot.
   bool radioPacketSeen() const { return radioTap_.seen; }
   /// A valid frame from the ship node (node 3) arrived on the UART (not USB) within kUartPeerTimeoutNs. Read from

@@ -121,10 +121,13 @@ void VehicleNetwork::RadioTap::onFrame(const network::FrameView &f, uint8_t link
   if (next) next->onFrame(f, linkIndex);
 }
 
+bool VehicleNetwork::isRadioPacketRecent() const {
+  return radioTap_.seen && time_.nowNs() - radioTap_.lastNs <= kRadioTimeoutNs;
+}
+
 bool VehicleNetwork::isRadioLinkAlive() const {
-  const int64_t now = time_.nowNs();
-  if (radioTap_.seen) return now - radioTap_.lastNs <= kRadioTimeoutNs;
-  return now - startNs_ <= kRadioStartupGraceNs;
+  if (radioTap_.seen) return isRadioPacketRecent();
+  return time_.nowNs() - startNs_ <= kRadioStartupGraceNs;
 }
 
 bool VehicleNetwork::isUartPeerSeen() const {

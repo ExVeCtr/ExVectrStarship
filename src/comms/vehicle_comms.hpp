@@ -115,6 +115,8 @@ public:
   bool isGroundStationPresent() const { return net_.isGroundStationPresent(); }
   /// Radio link alive (VehicleNetwork::isRadioLinkAlive): the radioConnectionLoss observable.
   bool isRadioLinkAlive() const { return net_.isRadioLinkAlive(); }
+  /// A radio packet really arrived within 2 s, no boot grace (VehicleNetwork::isRadioPacketRecent): "connected".
+  bool isRadioPacketRecent() const { return net_.isRadioPacketRecent(); }
 
   void taskInit() override;
   void taskThread() override;

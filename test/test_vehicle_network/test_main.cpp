@@ -211,6 +211,7 @@ void test_radio_boot_grace_without_any_radio_packet() {
   rig->pollAll();
   TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
   TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive()); // boot grace
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent()); // but nothing was ever received: not "connected"
   rig->clk.advanceMs(10000);                      // exactly 10 s after construction: still in the grace
   TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
   rig->clk.t += 1;
@@ -221,13 +222,17 @@ void test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout() {
   Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx); // Router / Pocket RC_STATE
   rig->clk.advanceMs(20000);                                               // grace long over
   TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
   sendData(tx);
   TEST_ASSERT_TRUE(rig->net.radioPacketSeen());
   TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
   rig->clk.advanceMs(2000); // exactly 2 s: alive
   TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
   rig->clk.t += 1; // just over: lost
   TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
   rig->clk.advanceMs(5000); // restart after a gap
   sendData(tx);
   TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
@@ -243,7 +248,9 @@ void test_radio_node0_data_on_uart_keeps_alive() {
 void test_radio_after_first_packet_grace_no_longer_applies() {
   Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
   sendData(tx); // first packet at t = 0 s after boot
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
   rig->clk.advanceMs(2001);
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
   TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive()); // within the 10 s boot window, but the 2 s rule applies
 }
 
@@ -272,6 +279,7 @@ void test_radio_heartbeats_node3_and_usb_never_count() {
   TEST_ASSERT_TRUE(rig->net.isGroundStationPresent()); // gs_present (information) still works
   TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
   TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
 }
 
 // ---------------------------------------------------------------- UART_PEER_SEEN (information only)

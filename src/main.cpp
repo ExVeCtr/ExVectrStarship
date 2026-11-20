@@ -1689,7 +1689,9 @@ public:
     }*/
 
     if (accSub.isDataNew() || true) {
-      bool connected = vehicleComms.isRadioLinkAlive(); // radio link (radioConnectionLoss observable)
+      // A radio packet really seen within 2 s (no boot grace): the failure predicate isRadioLinkAlive() is true
+      // during the 10 s boot grace and would count a connection that never existed.
+      bool connected = vehicleComms.isRadioPacketRecent();
       if (!lastConnectionState && connected) {
         connectionCounter++;
       }
