@@ -1,6 +1,6 @@
 # ExVectrControl
 
-> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 8d6efab = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
+> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified)`
 
 ## Purpose & scope
 
@@ -35,6 +35,7 @@
   - `e_v = v_cmd + v_ff − v`.
   - `a = Kv·e_v + I + [0,0,g]`.
   - The integral `I += e_v·Ki·dt` is clamped so that `Kv·e_v + I` stays within the accel limits (conditional anti-windup; no sign reversal), then clamped to ±3. `I` is reset while `enableControl(false)`.
+  - `resetControlState()` (since 6e07d38): `I = 0`, the delta-time reference is set to now, and the setpoint state is set to "hold the latest measured position with zero velocity" until the next setpoint arrives (a setpoint already received and not yet read is still used). Gains and the enable flag are unchanged. The flight software calls it on every enable of the TVC controller set and on a mission switch while enabled (missions.md 6.2).
   - **The output itself is not clamped.**
 - **Tuning (defaults; setters exist for the position and velocity gains and position limits only):**
 
@@ -64,6 +65,7 @@
   - `subscribeAttitudeSetpoint(Topic<Vector<7>>)` with `[ω_sp, q_sp]`. `unsubscribeAttitudeSetpoint()` and `setAttitudeStateSetpoint(v7)` exist for direct override, used by `MissionBellyflop`.
   - `subscribeAccelerationSetpoint(Topic<Vector<3>>)`: world accel including g.
 - **Output:** `getTvcTopic()` publishes `Topic<Vector<4>>` = `[Fx,Fy,Fz (N, body), T (roll torque)]`. When disabled it publishes `[0,0,0.1,0]`.
+- `resetControlState()` (since 6e07d38): `I = 0` and the delta-time reference set to now. Setpoints, gains and the enable flag are unchanged. (`I` is also zeroed every run while disabled.)
 - **Law:**
   1. `q_e = q* ⊗ q_sp` (body frame, w ≥ 0).
   2. `z_d = q_e.rotate(e_z)`. Tilt error vector `= normalize(e_z × z_d)·∠(e_z, z_d)`.
@@ -185,9 +187,9 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 
 - `src/main.cpp:168-172`: instantiates all four controllers. `CTRL::StarshipTVC` and `CTRL::StarshipFlaps` (actuator mapping) live in `src/starship_tvc.*` and `src/starship_flaps.*`, not in the library.
 - `src/main.cpp:1939-1961`: topic wiring. The position setpoint comes from the active mission (`:536`).
-- `src/main.cpp:620-690`, `:674-675`: `enableControl` per vehicle/mission phase.
-- `src/main.cpp:1258-1330`: `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (freefall mission → Stabilize, RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
-- `src/mission/mission_bellyflop.hpp:87`, `:98`, `:103`, `:134`: takes over the TVC attitude setpoint directly.
+- `src/main.cpp` `applyControlPhase()`: `enableControl` and `resetControlState()` of the position and TVC attitude controllers from the explicit phase table `Safety::controlPhaseFor` (`src/safety/control_phase.*`), every tick (since 2026-11-20; before, on mission-mode edges). See missions.md 6.2.
+- `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (bellyflop and freefall missions → Stabilize (bellyflop since 2026-11-20), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
+- `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (inert since 2026-11-20 while the phase table keeps the TVC controllers off during the bellyflop, `kTvcDuringBellyflopTransition`).
 - `CTRL::PhysicsBodySim` is used inside `DSP::BodySimulator`. `SimplePID` is unused.
 
 ## Known issues & limitations

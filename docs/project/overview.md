@@ -36,7 +36,7 @@ MissionWaypoint ──► MissionBellyflop ──► MissionFreefall ──► M
  3. 120 m   ascent at 7 m/s       or ≥150°/s rate)        stop altitude 20 m      land at {0,0,·}
 ```
 
-Any mission ending without a successor, an abort telecommand, or a magnetometer timeout in flight switches to **RTH**, the universal fallback. Waypoint arguments and phase logic: [missions.md](missions.md).
+Any mission ending without a successor, a `MissionAbort` in flight (from any phase, including the bellyflop and freefall), or a magnetometer timeout in flight switches to **RTH**, the universal fallback. A `MissionAbort` on the ground (countdown, or the ground check: altitude < 0.5 m and speed < 0.5 m/s) resets and stops instead. Waypoint arguments, phase logic and the abort rules: [missions.md](missions.md) 6.2.
 
 ## Guidance, navigation and control
 
@@ -54,7 +54,8 @@ q_ref, accel_ref, [ω,q] → ControlAttitudeTvc (P + rate P + I) → [Fx, Fy, Fz
 → StarshipTVC mixer → vane angles + motor speeds
 ```
 
-- **Bellyflop:** `MissionBellyflop` unsubscribes the TVC controller from the mapper and commands a fixed −90° pitch attitude directly, then hands back.
+- **Controller phases (user decision 2026-11-20):** one explicit table switches the controllers every tick (missions.md 6.2): TVC set (position + TVC attitude) on in the powered phases (waypoint, RTH), off in the countdown, bellyflop and freefall (neutral TVC command `[0,0,0.1 N,0]`); bellyflop set (flap attitude control, `Stabilize`) on in bellyflop and freefall. The TVC set is reset (integrals, setpoint hold) on every enable and on a mission switch.
+- **Bellyflop:** `MissionBellyflop` still unsubscribes the TVC controller from the mapper and commands a fixed −90° pitch attitude, but with the TVC set off in the bellyflop that command is inert: the pitch-over is unpowered (see Known safety gaps).
 - **Flaps:** `FlapModeObserverTask` (10 Hz) picks the `BellyFlopMode` (Ascent / Upright / Stabilize) and target azimuth/pitch per mission. `ControlAttitudeFlaps` turns it into four flap angles. In freefall above 100 m it steers the belly toward home; below stop altitude + 20 m it pitches to 30°.
 
 ## Modes and safety
@@ -128,7 +129,8 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 
 - Radio loss or a single 0.5 s sensor dropout in flight cuts all actuators instead of attempting RTH or a controlled descent.
 - (Fixed 2026-11-20: a SystemReset during a mission no longer lets the chain continue, and the vehicle no longer latches Failure at every boot.)
-- The bellyflop mission reports mission mode Idle during its first run after boot, and the Idle mode edge disables the TVC attitude and position controllers for that bellyflop ([missions.md](missions.md) Known issues). Needs a decision before a flight that uses the bellyflop.
+- (Fixed 2026-11-20: the first bellyflop after boot no longer differs from later ones; RTH after an abort or mag timeout from freefall now has its controllers.)
+- The bellyflop pitch-over is unpowered (TVC set off by the user's phase table). In the simulator the vehicle then does not pitch over in the 1 s transition (tilt 2.3°); real flights of the old firmware pitched over with TVC thrust 0. Confirm before a flight that uses the bellyflop ([missions.md](missions.md) Known issues).
 - Arming does not gate mission start.
 - Altitude is not bounded by the out-of-bounds check.
 - Estimator and controller bugs that affect flight safety are listed in the Known issues sections of [libs/ExVectrDSP.md](../libs/ExVectrDSP.md), [libs/ExVectrControl.md](../libs/ExVectrControl.md) and [missions.md](missions.md).
@@ -142,7 +144,7 @@ Typical sequence:
 2. Optional: `SimulationMode` (0xA9) to fly the mission against the body simulator.
 3. `Arm` (0xA5).
 4. `MissionBegin` (paramInt = start delay in s). The waypoint mission runs through Initialisation (estimator zeroing) → Startup (TVC actuator test) → Running.
-5. Abort at any time with `MissionAbort` (in Running → RTH; otherwise shutdown: the mission is reset and nothing follows), or `SystemReset` (0xC5) as an emergency stop (state and mission chain reset to the boot state, no zeroing, simulation mode unchanged).
+5. Abort at any time with `MissionAbort`: in flight it starts RTH at once from any phase (hover, ascent, bellyflop, freefall; if RTH is already running it continues); on the ground (countdown, or not lifted off: altitude < 0.5 m and speed < 0.5 m/s) the mission is reset, motors and actuators go off, the vehicle returns to Ready and nothing follows. `SystemReset` (0xC5) is the emergency stop (state and mission chain reset to the boot state, no zeroing, simulation mode unchanged; in flight the vehicle falls).
    To re-zero on the ground (new start spot, vehicle moved): `ZeroEstimators` (type 10, 0x2E, seconds), disarmed, vehicle still.
 6. After landing, RTH finishes and the vehicle auto-disarms.
 
