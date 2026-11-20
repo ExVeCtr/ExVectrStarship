@@ -283,6 +283,8 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT32(5, usb.n[Packets::Gnss::kPort]);
   TEST_ASSERT_EQUAL_UINT32(2, usb.n[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirPose::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(1, usb.n[Packets::Calibration::kPort]); // 0.5 Hz: tick 17 of the first 2 s
+  TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Calibration::kPort]);
   TEST_ASSERT_EQUAL_UINT8(0xFF, usb.lastDst[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Pose::kPort]);
   // Radio set on the UART (air rates), nothing from the USB-only range
@@ -310,6 +312,13 @@ void test_task_timing_rate() {
   int n = 0;
   for (uint32_t t = 0; t < 100; t++) n += VehicleNetwork::taskTimingDue(t) ? 1 : 0;
   TEST_ASSERT_EQUAL_INT(5, n);
+}
+
+void test_calibration_rate() {
+  int n = 0;
+  for (uint32_t t = 0; t < 1000; t++) n += VehicleNetwork::calibrationDue(t) ? 1 : 0; // 10 s
+  TEST_ASSERT_EQUAL_INT(5, n);
+  TEST_ASSERT_EQUAL_UINT16(0, Packets::Calibration::kUsbRateHz); // rate lives in the vehicle (0.5 Hz)
 }
 
 void test_nothing_draining_links_drops_frames_without_blocking() {
@@ -408,6 +417,7 @@ int main() {
   RUN_TEST(test_telecommand_wrong_length_rejected);
   RUN_TEST(test_telemetry_sets_and_rates);
   RUN_TEST(test_task_timing_rate);
+  RUN_TEST(test_calibration_rate);
   RUN_TEST(test_nothing_draining_links_drops_frames_without_blocking);
   RUN_TEST(test_incompatible_peer_flag);
   RUN_TEST(test_no_heap_after_construction);

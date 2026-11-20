@@ -24,6 +24,18 @@
 namespace VCTR {
 namespace Comms {
 
+/**
+ * One sensor's calibration as the vehicle applies it (DSP::TopicCoordTransform, main.cpp initialiseMemory and
+ * CalibApply): cal = matrix * (raw - offset), matrix row-major (matrix[3*r + c]) = calibration scale (key 10x .cov)
+ * times the stored sensor->body transform (key 20x), offset = key 10x .val. Vehicle-internal units: gyro rad/s,
+ * accel m/s^2, mag gauss (the QMC5883 driver unit). makeCalibration() converts the mag offset to T.
+ */
+struct SensorCalibration {
+  float offset[3] = {0, 0, 0};
+  float matrix[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  uint8_t source = 0; ///< Packets::Calibration::k*Source* bits (same bit positions for the three sensors)
+};
+
 /// Everything the telemetry sets need, sampled once per telemetry tick.
 struct TelemetrySnapshot {
   int64_t t_ns = 0; ///< vehicle time NowNs()
@@ -69,8 +81,12 @@ struct TelemetrySnapshot {
   float pressure = 0;         ///< Pa
   float temperature = 0;      ///< K
 
+  // Applied sensor calibration (CALIBRATION) and the attitude EKF gyro bias state (body frame, rad/s)
+  SensorCalibration gyroCal, accelCal, magCal;
+  float gyroBiasEst[3] = {0, 0, 0};
+
   // Estimator standard deviations
-  float attStd[3] = {0, 0, 0}; ///< rad
+  float attStd[3] = {0, 0, 0}; ///< rad, about the world axes (attitudeStdWorld)
   float velStd[3] = {0, 0, 0}; ///< m/s
   float posStd[3] = {0, 0, 0}; ///< m
 };
@@ -92,6 +108,12 @@ uint32_t timeUs(int64_t t_ns);
 /// (counterclockwise seen from above, 0 = body X towards North).
 void quatToEulerZYX(const float q[4], float &roll, float &pitch, float &yaw);
 
+/// Attitude standard deviation, rad, as small rotations about the world (NWU) axes [North, West, Up], from the
+/// attitude EKF's quaternion q = [w,x,y,z] (body -> world) and its 4x4 quaternion covariance P (row-major, same
+/// order): with dq = 0.5 * Omega(q) * dtheta for q' = [1, dtheta/2] (x) q, Sigma_theta = 4 * Omega^T P Omega and
+/// out[i] = sqrt(Sigma_theta[i][i]) (negative variances give 0). At q = identity this is 2 * sqrt(P[i+1][i+1]).
+void attitudeStdWorld(const float q[4], const float P[16], float out[3]);
+
 /// Course over ground from an NWU velocity: clockwise from North, [0, 2 pi).
 float courseOverGround(float vNorth, float vWest);
 
@@ -112,6 +134,9 @@ Packets::Gnss makeGnss(const TelemetrySnapshot &s);
 Packets::HandsetTelem makeHandsetTelem(const TelemetrySnapshot &s);
 Packets::ImuRaw makeImuRaw(const TelemetrySnapshot &s);
 Packets::Estimator makeEstimator(const TelemetrySnapshot &s);
+/// raw_frame SENSOR; offsets and matrices copied, the mag offset converted gauss -> T (x 1e-4); the matrices are
+/// unit-free, so the ground station gets cal = M * (raw - offset) in SI from the IMU_RAW values.
+Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
 
 // ---- TEMPORARY legacy telecommand adapter (removed in T9b) ----
 

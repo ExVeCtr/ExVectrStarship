@@ -49,6 +49,19 @@ void quatToEulerZYX(const float q[4], float &roll, float &pitch, float &yaw) {
   yaw = atan2f(2.0f * (w * z + x * y), 1.0f - 2.0f * (y * y + z * z));
 }
 
+void attitudeStdWorld(const float q[4], const float P[16], float out[3]) {
+  const float w = q[0], x = q[1], y = q[2], z = q[3];
+  // Columns of Omega(q): [0, e_i] (x) q, i.e. dq/dtheta_i * 2 for a world-frame rotation about axis i.
+  const float om[3][4] = {{-x, w, -z, y}, {-y, z, w, -x}, {-z, -y, x, w}};
+  for (int i = 0; i < 3; i++) {
+    float v = 0;
+    for (int r = 0; r < 4; r++)
+      for (int c = 0; c < 4; c++) v += om[i][r] * P[4 * r + c] * om[i][c];
+    v *= 4.0f;
+    out[i] = v > 0 ? sqrtf(v) : 0.0f;
+  }
+}
+
 float courseOverGround(float vNorth, float vWest) {
   float c = atan2f(-vWest, vNorth); // east = -west
   if (c < 0.0f) c += 2.0f * kPi;
@@ -218,6 +231,27 @@ Packets::Estimator makeEstimator(const TelemetrySnapshot &s) {
   copy3(s.attStd, p.att_std);
   copy3(s.velStd, p.vel_std);
   copy3(s.posStd, p.pos_std);
+  return p;
+}
+
+Packets::Calibration makeCalibration(const TelemetrySnapshot &s) {
+  Packets::Calibration p;
+  p.t_us = timeUs(s.t_ns);
+  p.raw_frame = Packets::ImuFrame::kSensor; // IMU_RAW carries the driver outputs, before calibration
+  p.gyro_source = s.gyroCal.source;
+  p.accel_source = s.accelCal.source;
+  p.mag_source = s.magCal.source;
+  for (int i = 0; i < 3; i++) {
+    p.gyro_offset[i] = s.gyroCal.offset[i];
+    p.accel_offset[i] = s.accelCal.offset[i];
+    p.mag_offset[i] = s.magCal.offset[i] * 1e-4f; // gauss -> T, as IMU_RAW mag
+    p.gyro_bias_est[i] = s.gyroBiasEst[i];
+  }
+  for (int i = 0; i < 9; i++) {
+    p.gyro_matrix[i] = s.gyroCal.matrix[i];
+    p.accel_matrix[i] = s.accelCal.matrix[i];
+    p.mag_matrix[i] = s.magCal.matrix[i];
+  }
   return p;
 }
 

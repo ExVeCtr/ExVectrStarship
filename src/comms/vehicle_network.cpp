@@ -71,6 +71,8 @@ bool VehicleNetwork::due(uint32_t tick, uint16_t hz, uint32_t phase) {
 
 bool VehicleNetwork::taskTimingDue(uint32_t tick) { return due(tick, Packets::TaskTiming::kUsbRateHz, 13); }
 
+bool VehicleNetwork::calibrationDue(uint32_t tick) { return (tick % kCalibrationPeriodTicks) == 17; }
+
 void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   constexpr uint8_t gs = kGroundStationNode;
   constexpr uint8_t bc = network::kBroadcastAddr;
@@ -84,6 +86,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::Estimator::kUsbRateHz, 4)) sendOn(usbNode_, gs, makeEstimator(s));
   if (due(t, Packets::Gnss::kUsbRateHz, 3)) sendOn(usbNode_, gs, makeGnss(s));
   if (due(t, Packets::HandsetTelem::kUsbRateHz, 7)) sendOn(usbNode_, bc, makeHandsetTelem(s));
+  if (calibrationDue(t)) sendOn(usbNode_, gs, makeCalibration(s)); // USB only (port 0x93), 0.5 Hz
 
   // Radio set on the UART (RX module -> air -> TX module -> ground station), air rates.
   if (due(t, Packets::VehicleStatus::kAirRateHz, 0)) sendOn(uartNode_, gs, makeVehicleStatus(s));

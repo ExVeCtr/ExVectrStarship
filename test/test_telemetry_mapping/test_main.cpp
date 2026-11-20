@@ -241,6 +241,105 @@ void test_imu_raw_and_estimator() {
   TEST_ASSERT_EQUAL_FLOAT(1.2f, e.pos_std[0]);
 }
 
+void test_calibration() {
+  TelemetrySnapshot s = sample();
+  // Gyro: hard-coded bias override, diag(-1,1,-1) transform (as the if(false) block in main.cpp would store)
+  s.gyroCal.offset[0] = 0.016f;
+  s.gyroCal.offset[1] = 0.035f;
+  s.gyroCal.offset[2] = 0.0105f;
+  const float flip[9] = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
+  memcpy(s.gyroCal.matrix, flip, sizeof flip);
+  s.gyroCal.source = Packets::Calibration::kGyroSourceCalibEeprom | Packets::Calibration::kGyroSourceOffsetOverride;
+  // Accel: non-symmetric matrix to catch a transposed (column-major) layout
+  const float a[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+  memcpy(s.accelCal.matrix, a, sizeof a);
+  s.accelCal.offset[2] = 1.5f;
+  s.accelCal.source = Packets::Calibration::kAccelSourceTransformEeprom;
+  // Mag: offset in gauss (vehicle unit), scale 0.05/0.47
+  s.magCal.offset[0] = 0.12f;
+  s.magCal.offset[1] = -0.3f;
+  s.magCal.offset[2] = 0.05f;
+  for (int i = 0; i < 9; i++) s.magCal.matrix[i] = (i % 4 == 0) ? 0.1064f : 0.0f;
+  s.magCal.source = Packets::Calibration::kMagSourceCalibEeprom | Packets::Calibration::kMagSourceRamOnly;
+  s.gyroBiasEst[1] = -0.002f;
+
+  auto c = roundTrip(makeCalibration(s));
+  TEST_ASSERT_EQUAL_UINT32(timeUs(s.t_ns), c.t_us);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Packets::ImuFrame::kSensor), static_cast<uint8_t>(c.raw_frame));
+  TEST_ASSERT_EQUAL_HEX8(0x05, c.gyro_source);
+  TEST_ASSERT_EQUAL_HEX8(0x02, c.accel_source);
+  TEST_ASSERT_EQUAL_HEX8(0x09, c.mag_source);
+  TEST_ASSERT_EQUAL_FLOAT(0.035f, c.gyro_offset[1]);
+  TEST_ASSERT_EQUAL_FLOAT(-1.0f, c.gyro_matrix[0]);
+  TEST_ASSERT_EQUAL_FLOAT(-1.0f, c.gyro_matrix[8]);
+  for (int i = 0; i < 9; i++) TEST_ASSERT_EQUAL_FLOAT(a[i], c.accel_matrix[i]); // row-major, unchanged
+  TEST_ASSERT_EQUAL_FLOAT(1.5f, c.accel_offset[2]);
+  // Mag offset gauss -> T; matrix unit-free (unchanged)
+  TEST_ASSERT_EQUAL_FLOAT(0.12e-4f, c.mag_offset[0]);
+  TEST_ASSERT_EQUAL_FLOAT(-0.3e-4f, c.mag_offset[1]);
+  TEST_ASSERT_EQUAL_FLOAT(0.1064f, c.mag_matrix[4]);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.mag_matrix[1]);
+  TEST_ASSERT_EQUAL_FLOAT(-0.002f, c.gyro_bias_est[1]);
+
+  // The documented ground-station formula cal = M * (raw - offset) on IMU_RAW (SI) equals the vehicle's value
+  // M * (raw_internal - offset_internal), with the mag in T instead of gauss.
+  s.mag[0] = 0.4e-4f; // T, as IMU_RAW
+  s.mag[1] = -0.1e-4f;
+  s.mag[2] = 0.3e-4f;
+  auto r = roundTrip(makeImuRaw(s));
+  for (int row = 0; row < 3; row++) {
+    float gs = 0, ship = 0;
+    for (int col = 0; col < 3; col++) {
+      gs += c.mag_matrix[3 * row + col] * (r.mag[col] - c.mag_offset[col]);
+      ship += s.magCal.matrix[3 * row + col] * (s.mag[col] * 1e4f - s.magCal.offset[col]); // vehicle: gauss
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1e-9f, ship * 1e-4f, gs);
+  }
+}
+
+void test_attitude_std_world() {
+  // Identity: equals the old small-angle mapping 2 * sqrt(P_vector)
+  const float qi[4] = {1, 0, 0, 0};
+  float P[16] = {0};
+  P[0] = 0.5f;           // w variance: no rotation information
+  P[5] = 0.0001f;        // x
+  P[10] = 0.0004f;       // y
+  P[15] = 0.0025f;       // z
+  float o[3];
+  attitudeStdWorld(qi, P, o);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.02f, o[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.04f, o[1]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.10f, o[2]);
+
+  // q = 117 deg about +Z with a pure heading uncertainty sigma: dq = 0.5 * [-z, 0, 0, w] * dpsi.
+  // The old diagonal mapping would have reported 2*sqrt(P_zz) = sigma*w on "z" and nothing for the w part.
+  const float a = 117.0f * (float)M_PI / 180.0f, sigma = 0.3f;
+  const float q[4] = {cosf(a / 2), 0, 0, sinf(a / 2)};
+  const float d[4] = {-0.5f * q[3], 0, 0, 0.5f * q[0]};
+  float Py[16];
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++) Py[4 * r + c] = d[r] * d[c] * sigma * sigma;
+  attitudeStdWorld(q, Py, o);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, o[0]); // sqrt of a float rounding residual
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, o[1]); // sqrt of a float rounding residual
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, sigma, o[2]);
+
+  // Same q, tilt uncertainty about world North only: dq = 0.5 * Omega_x(q) * dtheta
+  const float dx[4] = {-0.5f * q[1], 0.5f * q[0], -0.5f * q[3], 0.5f * q[2]};
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++) Py[4 * r + c] = dx[r] * dx[c] * sigma * sigma;
+  attitudeStdWorld(q, Py, o);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, sigma, o[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, o[1]); // sqrt of a float rounding residual
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, o[2]); // sqrt of a float rounding residual
+
+  // Negative variance (numerically broken P) gives 0, not NaN
+  float Pn[16] = {0};
+  Pn[15] = -1.0f;
+  attitudeStdWorld(qi, Pn, o);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, o[2]);
+}
+
 void test_legacy_telecommand_layout() {
   // Bytes as the old packed struct on the (little-endian) Teensy: Arm (5), subsystem 0, 0xA5, 1.0f
   const uint8_t wire[8] = {0x05, 0x00, 0xA5, 0x00, 0x00, 0x00, 0x80, 0x3F};
@@ -268,7 +367,9 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT(28, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(24, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
-  TEST_ASSERT_EQUAL_HEX32(0x3AFA3CCEu, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0xCFB7AEEDu, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
+  TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
 
 int main() {
@@ -286,6 +387,8 @@ int main() {
   RUN_TEST(test_course_over_ground);
   RUN_TEST(test_mode_text);
   RUN_TEST(test_imu_raw_and_estimator);
+  RUN_TEST(test_calibration);
+  RUN_TEST(test_attitude_std_world);
   RUN_TEST(test_legacy_telecommand_layout);
   RUN_TEST(test_packet_sizes_fit_budget);
   return UNITY_END();

@@ -66,6 +66,10 @@ public:
   void sendTelemetry(uint32_t tick, const TelemetrySnapshot &s);
   /// True on the ticks where TASK_TIMING is due on USB.
   static bool taskTimingDue(uint32_t tick);
+  /// CALIBRATION period on USB: 0.5 Hz (the schema's integer rate fields cannot express it, kUsbRateHz is 0).
+  static constexpr uint32_t kCalibrationPeriodTicks = 2 * kTickHz;
+  /// True on the ticks where CALIBRATION is due on USB (every kCalibrationPeriodTicks, phase 17).
+  static bool calibrationDue(uint32_t tick);
   /// True if a packet at `hz` is due on `tick` with phase `phase` (spreads the packets over the ticks).
   static bool due(uint32_t tick, uint16_t hz, uint32_t phase);
 

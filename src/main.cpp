@@ -102,6 +102,32 @@ DSP::TopicCoordTransform<float> gyroTransformTopic;
 DSP::TopicCoordTransform<float> accTransformTopic;
 DSP::TopicCoordTransform<float> magTransformTopic;
 
+// Copy of what the three transforms above apply (cal = matrix * (raw - offset)), kept only for the CALIBRATION
+// telemetry. Every setTransform goes through applySensorCalibration so the copy cannot diverge.
+Comms::SensorCalibration gyroCalApplied, accCalApplied, magCalApplied;
+bool magCalPendingSave = false; // CalibApply wrote key 101 to the RAM image, not yet saved to EEPROM
+
+constexpr uint8_t CAL_SRC_CALIB_EEPROM = Packets::Calibration::kGyroSourceCalibEeprom;
+constexpr uint8_t CAL_SRC_TRANSFORM_EEPROM = Packets::Calibration::kGyroSourceTransformEeprom;
+constexpr uint8_t CAL_SRC_OFFSET_OVERRIDE = Packets::Calibration::kGyroSourceOffsetOverride;
+constexpr uint8_t CAL_SRC_RAM_ONLY = Packets::Calibration::kGyroSourceRamOnly;
+constexpr uint8_t CAL_SRC_MEMORY_CLEARED = Packets::Calibration::kGyroSourceMemoryCleared;
+
+/// transform.setTransform(matrix, offset), and records it for telemetry.
+void applySensorCalibration(DSP::TopicCoordTransform<float> &transform,
+                            Comms::SensorCalibration &record,
+                            const Math::Matrix<float, 3, 3> &matrix,
+                            const Math::Vector<float, 3> &offset,
+                            uint8_t source) {
+  transform.setTransform(matrix, offset);
+  for (size_t r = 0; r < 3; r++) {
+    record.offset[r] = offset(r);
+    for (size_t c = 0; c < 3; c++)
+      record.matrix[3 * r + c] = matrix(r, c);
+  }
+  record.source = source;
+}
+
 DSP::IMUAttitudeEKFTask imuTask(1 * Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10 * Core::MILLISECONDS);
 
@@ -298,6 +324,24 @@ private:
   MissionAbstract *mission_;
 
   MissionPhase missionPhase_ = MissionPhase::MissionPhase_Idle;
+
+  // Log rate limit of the auto-disarm messages (logging only, no effect on the
+  // arm logic): once when the reason changes, then every DISARM_LOG_PERIOD.
+  static constexpr int64_t DISARM_LOG_PERIOD = 5 * Core::SECONDS;
+  int lastDisarmReason_ = 0; // 0 none, 1 failure, 2 calib, 3 startup, 4 init
+  int64_t lastDisarmLogNs_ = 0;
+
+  /// True if the auto-disarm message for `reason` should be logged now.
+  bool disarmLogDue(int reason) {
+    const int64_t now = Core::NowNs();
+    if (reason != lastDisarmReason_ ||
+        now - lastDisarmLogNs_ >= DISARM_LOG_PERIOD) {
+      lastDisarmReason_ = reason;
+      lastDisarmLogNs_ = now;
+      return true;
+    }
+    return false;
+  }
 
 public:
   VehicleSafetyAndControlTask()
@@ -575,9 +619,9 @@ public:
                 magTransform.val(0), magTransform.val(1),
                 magTransform.val(2)); // Print the bias to the console
 
-        if (memoryManager.writeItem(
-                magTransform,
-                MEMORY_KEY_MAGCALIB)) { // Save the mag transform matrix to
+        const bool magCalWritten =
+            memoryManager.writeItem(magTransform, MEMORY_KEY_MAGCALIB);
+        if (magCalWritten) { // Save the mag transform matrix to
           // memory
           // memoryManager.writeItem(magTransformTopic.getOutputTopic().getTransformMatrix(),
           // MEMORY_KEY_MAGTRANSFORM); // Save the mag transform matrix to
@@ -593,9 +637,10 @@ public:
         }
 
         Math::Matrix<float, 3, 3> sensorToBody_ = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        if (!memoryManager.readItem(
-                sensorToBody_,
-                MEMORY_KEY_MAGTRANSFORM)) { // Read the mag transform matrix
+        const bool magTransformFound = memoryManager.readItem(
+            sensorToBody_,
+            MEMORY_KEY_MAGTRANSFORM); // Read the mag transform matrix
+        if (!magTransformFound) {
           // from memory
           LOG_MSG("Magnetometer transform matrix not found in memory. Using "
                   "identity matrix.\n"); // Log the mag transform matrix not
@@ -605,10 +650,14 @@ public:
               "Magnetometer transform matrix found in memory. Using it.\n"); // Log the mag transform matrix found in memory
         }
 
-        magTransformTopic.setTransform(
-            magTransform.cov * sensorToBody_,
-            magTransform.val); // Set the transform matrix to the mag
-        // transform matrix
+        magCalPendingSave = magCalWritten;
+        applySensorCalibration(
+            magTransformTopic, magCalApplied, magTransform.cov * sensorToBody_,
+            magTransform.val,
+            static_cast<uint8_t>(
+                CAL_SRC_RAM_ONLY |
+                (magTransformFound ? CAL_SRC_TRANSFORM_EEPROM : 0) |
+                (magCalApplied.source & CAL_SRC_MEMORY_CLEARED)));
 
         LOG_MSG("Mag calibration applied\n"); // Log the mag calibration apply
       }
@@ -619,6 +668,11 @@ public:
         LOG_MSG("Saving EEPROM Memory!\n");
         eeprom.transferFrom(
             internalMemory); // Transfer the internal memory to the EEPROM
+        if (magCalPendingSave) { // telemetry flags: the applied mag calib is now in EEPROM
+          magCalApplied.source = static_cast<uint8_t>(
+              (magCalApplied.source & ~CAL_SRC_RAM_ONLY) | CAL_SRC_CALIB_EEPROM);
+          magCalPendingSave = false;
+        }
       }
       break;
 
@@ -1017,25 +1071,25 @@ public:
     if (vehicleMode_ == VehicleMode::VehicleMode_Failure) {
       vehicleArmed_ =
           false; // Disarm the vehicle if the vehicle is in failure mode
-      LOG_MSG(
-          "Vehicle disarmed due to failure mode.\n"); // Log the vehicle disarm
+      if (disarmLogDue(1))
+        LOG_MSG("Vehicle disarmed due to failure mode.\n");
     } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorCalib) {
       vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in sensor
       // calibration mode
-      LOG_MSG(
-          "Vehicle disarmed due to sensor calibration.\n"); // Log the vehicle
-      // disarm
+      if (disarmLogDue(2))
+        LOG_MSG("Vehicle disarmed due to sensor calibration.\n");
     } else if (vehicleMode_ == VehicleMode::VehicleMode_Startup) {
       vehicleArmed_ =
           false; // Disarm the vehicle if the vehicle is in startup mode
-      LOG_MSG(
-          "Vehicle disarmed due to startup mode.\n"); // Log the vehicle disarm
+      if (disarmLogDue(3))
+        LOG_MSG("Vehicle disarmed due to startup mode.\n");
     } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorInit) {
       vehicleArmed_ =
           false; // Disarm the vehicle if the vehicle is in startup mode
-      LOG_MSG("Vehicle disarmed due to sensor initialisation.\n"); // Log the
-      // vehicle
-      // disarm
+      if (disarmLogDue(4))
+        LOG_MSG("Vehicle disarmed due to sensor initialisation.\n");
+    } else {
+      lastDisarmReason_ = 0; // next auto-disarm is logged immediately
     }
 
     // LOG_MSG("Vehicle armed: %d\n", vehicleArmed_); // Log the vehicle armed
@@ -1237,16 +1291,26 @@ public:
       s.accel[i] = acc(i);
       s.mag[i] = mag(i) * 1e-4f; // QMC5883 publishes gauss
     }
+    s.gyroCal = gyroCalApplied;
+    s.accelCal = accCalApplied;
+    s.magCal = magCalApplied;
+    const auto &xa = imuTask.getState(); // [gyro bias(3), q(4)]
+    for (int i = 0; i < 3; i++)
+      s.gyroBiasEst[i] = xa(i);
     s.pressure = baroSubr_.getItem().data.val(0);
     s.temperature = thermoSubr_.getItem().data.val(0) + 273.15f; // degC -> K
 
     // Estimator standard deviations (the real estimators, also in simulation).
+    // Attitude: the EKF's own q and its quaternion covariance block (state
+    // [gyro bias(3), q(4)]), projected onto rotations about the world axes.
     const auto &pa = imuTask.getCovariance();
-    for (int i = 0; i < 3; i++) {
-      // small-angle: rotation angle ~ 2 * quaternion vector part
-      float v = pa(4 + i, 4 + i);
-      s.attStd[i] = v > 0 ? 2.0f * sqrtf(v) : 0.0f;
+    float qEkf[4], pq[16];
+    for (int r = 0; r < 4; r++) {
+      qEkf[r] = xa(3 + r);
+      for (int c = 0; c < 4; c++)
+        pq[4 * r + c] = pa(3 + r, 3 + c);
     }
+    Comms::attitudeStdWorld(qEkf, pq, s.attStd);
     const auto &pp = posEstTask.getCovariance();
     for (int i = 0; i < 3; i++) {
       float vv = pp(i, i), vp = pp(3 + i, 3 + i);
@@ -1639,9 +1703,13 @@ void initialiseMemory() {
   EEPROM.begin();
   internalMemory.transferFrom(eeprom);
 
+  // CALIBRATION telemetry source bits (what was loaded and from where).
+  uint8_t gyroSrc = 0, accSrc = 0, magSrc = 0;
+
   if (memoryManager.getManagerVersion() != memoryManager.getMemoryVersion()) {
     LOG_MSG("Memory manager version mismatch, clearing memory\n");
     memoryManager.clearMemory();
+    gyroSrc = accSrc = magSrc = CAL_SRC_MEMORY_CLEARED;
   }
   // memoryManager.clearMemory();
 
@@ -1661,6 +1729,8 @@ void initialiseMemory() {
 
     memoryManager.allocateItem(magCalibData, MEMORY_KEY_MAGCALIB);
     memoryManager.writeItem(magCalibData, MEMORY_KEY_MAGCALIB);
+  } else {
+    magSrc |= CAL_SRC_CALIB_EEPROM;
   }
 
   if (!memoryManager.readItem(gyroCalibData, MEMORY_KEY_GYROCALIB)) {
@@ -1671,6 +1741,7 @@ void initialiseMemory() {
     memoryManager.allocateItem(gyroCalibData, MEMORY_KEY_GYROCALIB);
     memoryManager.writeItem(gyroCalibData, MEMORY_KEY_GYROCALIB);
   } else {
+    gyroSrc |= CAL_SRC_CALIB_EEPROM;
     LOG_MSG("Gyro calibration data found: %.3f, %.3f, %.3f\n",
             gyroCalibData.val(0) * RAD_TO_DEG,
             gyroCalibData.val(1) * RAD_TO_DEG,
@@ -1684,6 +1755,8 @@ void initialiseMemory() {
 
     memoryManager.allocateItem(accCalibData, MEMORY_KEY_ACCCALIB);
     memoryManager.writeItem(accCalibData, MEMORY_KEY_ACCCALIB);
+  } else {
+    accSrc |= CAL_SRC_CALIB_EEPROM;
   }
 
   if (!memoryManager.readItem(magTransform, MEMORY_KEY_MAGTRANSFORM)) {
@@ -1691,6 +1764,8 @@ void initialiseMemory() {
     magTransform = Math::Matrix<float, 3, 3>::eye();
     memoryManager.allocateItem(magTransform, MEMORY_KEY_MAGTRANSFORM);
     memoryManager.writeItem(magTransform, MEMORY_KEY_MAGTRANSFORM);
+  } else {
+    magSrc |= CAL_SRC_TRANSFORM_EEPROM;
   }
 
   if (!memoryManager.readItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM)) {
@@ -1698,6 +1773,8 @@ void initialiseMemory() {
     gyroTransform = Math::Matrix<float, 3, 3>::eye();
     memoryManager.allocateItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM);
     memoryManager.writeItem(gyroTransform, MEMORY_KEY_GYROTRANSFORM);
+  } else {
+    gyroSrc |= CAL_SRC_TRANSFORM_EEPROM;
   }
 
   if (!memoryManager.readItem(accTransform, MEMORY_KEY_ACCTRANSFORM)) {
@@ -1705,11 +1782,14 @@ void initialiseMemory() {
     accTransform = Math::Matrix<float, 3, 3>::eye();
     memoryManager.allocateItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
     memoryManager.writeItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
+  } else {
+    accSrc |= CAL_SRC_TRANSFORM_EEPROM;
   }
 
   gyroCalibData.val(0) = 0.92 * DEG_TO_RAD;
   gyroCalibData.val(1) = 2.0 * DEG_TO_RAD;
   gyroCalibData.val(2) = 0.6 * DEG_TO_RAD;
+  gyroSrc |= CAL_SRC_OFFSET_OVERRIDE;
 
   /*accCalibData.val = {0.4278, 0.560, 2.0725};
   accCalibData.val(0) /= 0.9984;
@@ -1721,12 +1801,15 @@ void initialiseMemory() {
       0, 0, 0.9673
   };*/
 
-  gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform,
-                                  gyroCalibData.val);
-  accTransformTopic.setTransform(accCalibData.cov * accTransform,
-                                 accCalibData.val);
-  magTransformTopic.setTransform(magCalibData.cov * magTransform,
-                                 magCalibData.val);
+  applySensorCalibration(gyroTransformTopic, gyroCalApplied,
+                         gyroCalibData.cov * gyroTransform, gyroCalibData.val,
+                         gyroSrc);
+  applySensorCalibration(accTransformTopic, accCalApplied,
+                         accCalibData.cov * accTransform, accCalibData.val,
+                         accSrc);
+  applySensorCalibration(magTransformTopic, magCalApplied,
+                         magCalibData.cov * magTransform, magCalibData.val,
+                         magSrc);
 
   // Sync the internal memory with the EEPROM. This wont write anything if we
   // ended up only reading.
@@ -1768,12 +1851,15 @@ void initialiseMemory() {
 
     memoryManager.writeItem(accTransform, MEMORY_KEY_ACCTRANSFORM);
 
-    gyroTransformTopic.setTransform(gyroCalibData.cov * gyroTransform,
-                                    gyroCalibData.val);
-    accTransformTopic.setTransform(accCalibData.cov * accTransform,
-                                   accCalibData.val);
-    magTransformTopic.setTransform(magCalibData.cov * magTransform,
-                                   magCalibData.val);
+    applySensorCalibration(gyroTransformTopic, gyroCalApplied,
+                           gyroCalibData.cov * gyroTransform,
+                           gyroCalibData.val, CAL_SRC_RAM_ONLY);
+    applySensorCalibration(accTransformTopic, accCalApplied,
+                           accCalibData.cov * accTransform, accCalibData.val,
+                           CAL_SRC_RAM_ONLY);
+    applySensorCalibration(magTransformTopic, magCalApplied,
+                           magCalibData.cov * magTransform, magCalibData.val,
+                           CAL_SRC_RAM_ONLY);
 
     eeprom.transferFrom(internalMemory);
   }
