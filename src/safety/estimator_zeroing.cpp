@@ -63,6 +63,11 @@ bool EstimatorZeroing::update(int64_t nowNs) {
 
 bool EstimatorZeroing::abort() {
   const bool was = active_;
+  if (was) {
+    // The estimators were already in zeroing mode for part of the window: whatever zero existed before is no
+    // longer what they hold (review 2026-11-20). Invalid until a complete new window ends.
+    zeroed_ = false;
+  }
   active_ = false;
   return was;
 }

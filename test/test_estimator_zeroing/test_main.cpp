@@ -1,7 +1,8 @@
 // Host tests of src/safety/estimator_zeroing.cpp: pio test -e native
 // The ZeroEstimators validation and preconditions, the duration clamp, the vehicle-side window timer (restart,
 // completion), the "valid zero since boot" rule for Ready, the boot auto-zero condition, the refusal of Arm and
-// MissionBegin during a window, and SystemReset (abort, keeps the valid-zero record).
+// MissionBegin during a window, and SystemReset / mag calibration (abort: an aborted window invalidates the zero,
+// the boot-style auto zero then runs again in Startup).
 #include <math.h>
 #include <unity.h>
 
@@ -137,7 +138,7 @@ static void test_ready_requires_prior_zero_and_boot_auto_zero() {
   TEST_ASSERT_FALSE(z.shouldStartAutoZero(true, true)); // never again once a zero is valid
 }
 
-static void test_system_reset_aborts_and_keeps_record() {
+static void test_system_reset_aborts_window_and_invalidates_zero() {
   // SystemReset during the boot zero: no zero recorded, Ready not allowed, the auto-zero restarts
   EstimatorZeroing boot;
   boot.startAuto(0);
@@ -157,9 +158,22 @@ static void test_system_reset_aborts_and_keeps_record() {
   TEST_ASSERT_TRUE(z.readyAllowed());
   TEST_ASSERT_FALSE(z.shouldStartAutoZero(true, true));
 
-  // SystemReset during a commanded re-zero: aborted, the earlier valid zero is kept
+  // SystemReset (or mag calibration start) during a commanded re-zero after a valid zero (review 2026-11-20): the
+  // estimators were already zeroing, so they hold a partial zero. The valid-zero record is cleared: Ready, Arm-to-
+  // fly (Ready) and MissionBegin need a new complete window. The vehicle is not stuck: back in Startup the
+  // boot-style automatic zero starts again (10 s) and completes.
   z.request(0x2E, 10, groundCtx(), 20 * S);
   TEST_ASSERT_TRUE(z.abort());
+  TEST_ASSERT_FALSE(z.active());
+  TEST_ASSERT_FALSE(z.zeroedSinceBoot());
+  TEST_ASSERT_FALSE(z.readyAllowed());
+  TEST_ASSERT_FALSE(z.update(40 * S));                // the aborted window never completes
+  TEST_ASSERT_FALSE(z.shouldStartAutoZero(true, false)); // not in Startup (e.g. SensorCalib): waits
+  TEST_ASSERT_TRUE(z.shouldStartAutoZero(true, true));   // Startup: the auto zero runs again
+  z.startAuto(41 * S);
+  TEST_ASSERT_FALSE(z.readyAllowed());
+  TEST_ASSERT_FALSE(z.update(50 * S));
+  TEST_ASSERT_TRUE(z.update(51 * S));
   TEST_ASSERT_TRUE(z.zeroedSinceBoot());
   TEST_ASSERT_TRUE(z.readyAllowed());
 }
@@ -181,7 +195,7 @@ int main(int, char **) {
   RUN_TEST(test_refused_request_does_not_touch_active_window);
   RUN_TEST(test_arm_and_mission_begin_refused_while_zeroing);
   RUN_TEST(test_ready_requires_prior_zero_and_boot_auto_zero);
-  RUN_TEST(test_system_reset_aborts_and_keeps_record);
+  RUN_TEST(test_system_reset_aborts_window_and_invalidates_zero);
   RUN_TEST(test_log_rate_limit);
   return UNITY_END();
 }

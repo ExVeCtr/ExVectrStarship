@@ -717,7 +717,7 @@ public:
         if (telecommand.paramInt > 0) {
           // The vehicle is rotated during the mag calibration: a zero taken now would be invalid.
           if (zeroing_.abort()) {
-            LOG_MSG("Estimator zeroing aborted by mag calibration, no zero recorded\n");
+            LOG_MSG("Estimator zeroing aborted by mag calibration: zero invalid, auto zero runs again in Startup\n");
           }
           magCalibTask.beginCalibration();    // Start the mag calibration
           starshipTVC.enableActuators(false); // Disable actuators
@@ -820,9 +820,10 @@ public:
         resetMissionsToBootState();
         clearFailures();
         // State reset only (user decision 2026-11-20): the estimators are NOT zeroed or re-referenced;
-        // ZeroEstimators does that (a vehicle that was carried needs ZeroEstimators). An active zeroing window is
-        // aborted (no zero recorded); the valid-zero record since boot is kept, so the vehicle returns to Ready
-        // without a new zero if it has one.
+        // ZeroEstimators does that (a vehicle that was carried needs ZeroEstimators). Without an active zeroing
+        // window the valid-zero record is kept and the vehicle returns to Ready without a new zero. An ACTIVE window
+        // is aborted and the zero becomes invalid (the estimators hold a partial zero, review 2026-11-20); the
+        // automatic 10 s zero then runs again in Startup before Ready.
         // Simulation mode only (review 2026-11-20, a documented sim/flight difference, overview.md "Simulation
         // mode"): the simulated body is the world, not an estimator. It is put back to its start pose (upright, at
         // the origin, at rest), so a run that ended tilted or away from the origin does not carry over into the
@@ -832,7 +833,7 @@ public:
           LOG_MSG("System reset: simulated body back to its start pose\n");
         }
         if (zeroing_.abort()) {
-          LOG_MSG("Estimator zeroing aborted by system reset, no zero recorded\n");
+          LOG_MSG("Estimator zeroing aborted by system reset: zero invalid, auto zero runs again\n");
         }
         applyEstimatorZeroing();
 

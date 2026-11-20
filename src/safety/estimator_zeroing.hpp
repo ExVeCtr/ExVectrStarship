@@ -12,13 +12,18 @@
  * Rules (docs/project/overview.md, "Estimator zeroing"):
  * - A zeroing window has a fixed end time on the vehicle (one-shot command, no dependence on the sender staying
  *   connected). While it is active the estimators run in zeroing mode; the vehicle must be still.
- * - A window that runs to its end records a valid zero (zeroedSinceBoot()). Nothing ever clears that record
- *   except a reboot.
+ * - A window that runs to its end records a valid zero (zeroedSinceBoot()). Only an aborted window (below) or a
+ *   reboot clears that record.
  * - The vehicle may become Ready only with a valid zero and no window active (readyAllowed()).
  * - After boot, once all inputs have published, the vehicle starts the automatic boot zero (default duration)
  *   if no valid zero exists yet (shouldStartAutoZero()).
  * - Arm (0xA5) and MissionBegin are refused while a window is active.
- * - SystemReset aborts an active window (abort()); the valid-zero record is kept.
+ * - SystemReset and the start of a mag calibration abort an active window (abort()). An active window has always
+ *   begun applying zeroing (the estimators enter zeroing mode on the tick it starts), so the estimators hold a
+ *   partial zero: the valid-zero record is CLEARED (review 2026-11-20), and Ready (hence a mission) needs a new
+ *   complete window. The vehicle is not left waiting: in Startup shouldStartAutoZero() is true again, so the
+ *   automatic 10 s boot-style zero runs (after SystemReset at once; after a mag calibration when it ends and the
+ *   vehicle returns to Startup). Aborting with no window active changes nothing.
  */
 
 #include <stdint.h>
@@ -80,7 +85,8 @@ public:
   /// Advances the window. Returns true exactly once, on the tick the window completes (valid zero recorded).
   bool update(int64_t nowNs);
 
-  /// SystemReset: aborts an active window without recording a zero. The valid-zero record is kept.
+  /// SystemReset / mag calibration start: aborts an active window without recording a zero and clears the
+  /// valid-zero record (the estimators hold a partial zero). No window active: nothing changes.
   /// Returns true if a window was aborted.
   bool abort();
 
