@@ -59,7 +59,9 @@ bool SNSR::UbloxSerialGNSS::initSensor(HAL::DigitalIO &ioBus)
 void SNSR::UbloxSerialGNSS::taskCheck()
 {
 
-    if (getInitialised())
+    // During the configuration sequence the task stays unpaused (it runs every 1 ms and returns at once in the
+    // wait states). Afterwards it only runs when UART bytes are waiting.
+    if (getInitialised() && config_.done())
     {
 
         if (serialPort_->available() > 0)
@@ -72,7 +74,111 @@ void SNSR::UbloxSerialGNSS::taskCheck()
 void SNSR::UbloxSerialGNSS::taskThread()
 {
 
-    readGNSS();
+    if (usbPassthrough_ || config_.done())
+    {
+        readGNSS();
+        return;
+    }
+
+    runConfiguration();
+}
+
+void SNSR::UbloxSerialGNSS::runConfiguration()
+{
+
+    if (config_.failed())
+    {
+        setPaused(true);
+        return;
+    }
+
+    const auto action = config_.next(Core::NowNs());
+    if (action == GnssConfigSequencer::Action::None)
+        return; // waiting (retry or GNSS switch wait)
+
+    const int64_t stepStart = Core::NowNs();
+    const bool ok = performConfigAction(action);
+    const int64_t stepEnd = Core::NowNs();
+    if (stepEnd - stepStart > configMaxStepNs_)
+        configMaxStepNs_ = stepEnd - stepStart;
+    config_.report(ok, stepEnd);
+
+    if (!ok && action == GnssConfigSequencer::Action::Begin)
+    {
+        if (config_.failed())
+        {
+            LOG_MSG("Failed to initialise GNSS module at 115200, 9600 and 38400 baud. GNSS task will be paused and exit.\n");
+        }
+        else
+        {
+            LOG_MSG("Failed to initialise GNSS module, attempting %lu baud...\n", (unsigned long)config_.baud());
+        }
+    }
+    else if (!ok && action != GnssConfigSequencer::Action::SetSerialRate)
+    {
+        LOG_MSG("GNSS config step '%s' failed%s\n", GnssConfigSequencer::toString(action),
+                config_.failed() ? ", GNSS task will be paused and exit" : "");
+    }
+
+    if (config_.failed())
+    {
+        setInitialised(false);
+        setPaused(true);
+    }
+    else if (config_.done())
+    {
+        LOG_MSG("GNSS Module configured (%.2f s, longest step %.1f ms, %u steps skipped).\n",
+                double(Core::NowNs() - configStartNs_) / Core::SECONDS,
+                double(configMaxStepNs_) / Core::MILLISECONDS, (unsigned)config_.skippedSteps());
+        setPaused(true); // taskCheck unpauses when PVT bytes arrive
+    }
+}
+
+bool SNSR::UbloxSerialGNSS::performConfigAction(GnssConfigSequencer::Action action)
+{
+
+    using A = GnssConfigSequencer::Action;
+    constexpr uint16_t w = GnssConfigSequencer::kStepMaxWaitMs;
+
+    switch (action)
+    {
+    case A::Begin:
+        setupSerial(config_.baud());
+        return gnss_.begin(*serialPort_, w);
+    case A::SetSerialRate:
+        gnss_.setSerialRate(115200, COM_PORT_UART1, w);
+        return true;
+    case A::Reopen:
+        setupSerial(115200);
+        return gnss_.begin(*serialPort_, w);
+    case A::SetUart1Ubx:
+        return gnss_.setUART1Output(COM_TYPE_UBX, w);
+    case A::SetNavRate10Hz:
+        return gnss_.setNavigationFrequency(10, w);
+    case A::SetAutoPvt:
+        return gnss_.setAutoPVT(true, w);
+    case A::SetDynModelAirborne2g:
+        return gnss_.setDynamicModel(DYN_MODEL_AIRBORNE2g, w);
+    case A::DisableGlonass:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS, w);
+    case A::EnableGalileo:
+        return gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO, w);
+    case A::DisableBeidou:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_BEIDOU, w);
+    case A::DisableSbas:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_SBAS, w);
+    case A::DisableQzss:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_QZSS, w);
+    case A::DisableImes:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_IMES, w);
+    case A::DisableGps:
+        return gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS, w);
+    case A::SaveConfig:
+        return gnss_.saveConfiguration(w);
+    case A::None:
+        break;
+    }
+    return false;
 }
 
 bool SNSR::UbloxSerialGNSS::readGNSS()
@@ -145,69 +251,11 @@ void SNSR::UbloxSerialGNSS::taskInit()
         return;
     }
 
+    // Non-blocking (2026-11-20): the start-up and configuration (baud search 115200/9600/38400, 115200, UBX
+    // output, 10 Hz, auto PVT, airborne <2g, Galileo only, save) run as GnssConfigSequencer steps in taskThread,
+    // one bounded library call per task run. The old blocking sequence with delay(1000) stalled the scheduler for
+    // about 1.3 s at t = 5 s and latched sensorFailure at every boot.
     VRBS_MSG("Starting up gnss module...\n");
-
-    setupSerial(115200);
-    if (!gnss_.begin(*serialPort_))
-    {
-
-        LOG_MSG("Failed to initialise GNSS module at 15200. Looks like its isnt setup yet. Attempting 9600...\n");
-
-        setupSerial(9600);
-        if (!gnss_.begin(*serialPort_))
-        {
-            LOG_MSG("Failed to initialise GNSS module at 9600. Looks like its isnt setup yet. Attempting 38400...\n");
-            setupSerial(38400);
-            if (!gnss_.begin(*serialPort_))
-            {
-                LOG_MSG("Failed to initialise GNSS module at 38400. GNSS task will be paused and exit.\n");
-                setInitialised(false);
-                setPaused(true);
-                return;
-            }
-        }
-
-        LOG_MSG("GNSS was initialised at 9600. Will be reconfigured in next step.\n");
-    }
-
-    // Serial.begin(String("Staring GNSS module with ") + (moduleStatus_ == eModuleStatus_t::eModuleStatus_NotStarted ? "115200":"9600") + " baud...");
-
-    VRBS_MSG("Configuring GNSS module...\n");
-
-    gnss_.setSerialRate(115200);
-    setupSerial(115200);
-    if (!gnss_.begin(*serialPort_))
-    {
-
-        LOG_MSG("GNSS Failed to go into 115200 baud rate. This is very wierd...\n");
-        return;
-    }
-
-    // LOG_MSG("GNSS Driver setup for gnss serial passthrough!\n");
-    // gnss_.softwareResetGNSSOnly();
-    gnss_.setUART1Output(COM_TYPE_UBX);
-    gnss_.setNavigationFrequency(10);
-    gnss_.setAutoPVT(true);
-    gnss_.setDynamicModel(DYN_MODEL_AIRBORNE2g);
-    // gnss_.getProtocolVersion();
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
-    gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_BEIDOU);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_SBAS);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_QZSS);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_IMES);
-    delay(1000);
-    gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
-
-    // gnss_.enableGNSS(true, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GALILEO);
-    // gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GPS);
-    // gnss_.enableGNSS(false, sfe_ublox_gnss_ids_e::SFE_UBLOX_GNSS_ID_GLONASS);
-
-    // gnss_.factoryDefault();
-
-    gnss_.saveConfiguration();
-
-    VRBS_MSG("GNSS Module configured.\n");
-
-    // setPriority(150);
+    configStartNs_ = Core::NowNs();
+    setPaused(false);
 }

@@ -12,6 +12,8 @@
 
 #include "gnssdriver/src/SparkFun_u-blox_GNSS_Arduino_Library.h"
 
+#include "gnss_config_sequencer.hpp"
+
 namespace VCTR
 {
 
@@ -54,17 +56,32 @@ namespace VCTR
             void taskCheck() override;
 
             /**
-             * @brief Initialises sensor and expected to be called once at start by scheduler
+             * @brief Called once at start by the scheduler. Does not talk to the receiver any more: the
+             * configuration runs as a non-blocking sequence in taskThread (GnssConfigSequencer).
              */
             void taskInit() override;
 
             /**
-             * @brief main task thread that reads all sensor data and publishes it. To be called by scheduler.
+             * @brief Runs one configuration step per call until the receiver is configured, then reads PVT data and
+             * publishes it. To be called by scheduler.
              */
             void taskThread() override;
 
+            /// True once the configuration sequence has finished (PVT reading active).
+            bool configured() const { return config_.done(); }
+
         private:
             void setupSerial(uint32_t baudRate);
+
+            /// Performs one action of the configuration sequence (one bounded library call).
+            bool performConfigAction(GnssConfigSequencer::Action action);
+
+            /// Runs the configuration sequence: at most one library call per task run, waits are timed states.
+            void runConfiguration();
+
+            GnssConfigSequencer config_;
+            int64_t configStartNs_ = 0;
+            int64_t configMaxStepNs_ = 0; ///< longest single configuration step (bounded library call)
 
             void _getData();
 
