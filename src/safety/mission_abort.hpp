@@ -15,14 +15,17 @@
  * - ON THE GROUND: reset and stop. The mission chain is cancelled, the mission goes Idle, motors and actuators off,
  *   the vehicle returns to Ready; nothing restarts.
  *
- * "On the ground" (documented in docs/project/missions.md section 6.2):
- * - the active mission has not left the ground by its phase: the waypoint mission in Idle, Initialisation or
- *   Startup (countdown: the TVC controllers are off and the motors at most at idle, so the vehicle cannot fly), or
- *   any mission that is Idle, or RTH that has finished (landed); or
- * - the ground check holds: estimated altitude above the start point below kGroundAltitudeMax_m AND estimated
- *   speed below kGroundSpeedMax_mps. It is applied to the missions that can only be flying by their phase
- *   (waypoint Running, bellyflop, freefall) to catch a vehicle that never lifted off (for example an abort right at
- *   T0, or a cancelled hover check that chained into bellyflop on the ground).
+ * "On the ground" means BEFORE LIFTOFF and is decided by the mission mode/phase alone (user decision 2026-11-20,
+ * documented in docs/project/missions.md section 6.2):
+ * - the active mission is Idle (nothing running: reset, or never begun);
+ * - the waypoint mission in Initialisation or Startup (countdown: the TVC controllers are off and the motors at most
+ *   at idle, so the vehicle cannot fly);
+ * - RTH that has finished (landed).
+ * Everything else is "in flight": the waypoint mission Running (any phase after the countdown, even at 0.3 m and
+ * 0.2 m/s right after liftoff) or Finished, bellyflop and freefall in any mode but Idle. There is deliberately NO
+ * altitude/speed ground check any more (review 2026-11-20): an estimate-based "on the ground" right after liftoff
+ * would cut the motors and drop the vehicle instead of starting RTH. Consequence: an abort right at T0 with the
+ * vehicle still on the pad also starts RTH, which climbs to the home point (0, 0, 3 m), descends and shuts down.
  * An abort is only accepted while the vehicle mode is Running (a mission was begun); otherwise it is ignored.
  */
 
@@ -44,15 +47,7 @@ struct AbortInput {
   bool vehicleRunning = false; ///< vehicle mode Running
   ActiveMission active = ActiveMission::Rth;
   MissionModeIn mode = MissionModeIn::Idle;
-  float altitude_m = 0;   ///< estimated altitude above the start point (position Pz, NWU)
-  float speed_mps = 0;    ///< magnitude of the estimated velocity
 };
-
-constexpr float kGroundAltitudeMax_m = 0.5f;
-constexpr float kGroundSpeedMax_mps = 0.5f;
-
-/// Ground check from the estimated state alone (true = on the ground).
-bool groundCheck(float altitude_m, float speed_mps);
 
 AbortAction decideAbort(const AbortInput &in);
 

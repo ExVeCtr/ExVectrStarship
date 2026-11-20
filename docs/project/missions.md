@@ -44,7 +44,7 @@ MissionBegin TC ─► Waypoint ──end──► Bellyflop ──end──► 
                        └──── MissionAbort in flight (any phase) / mag timeout (mission mode Running) ────► RTH
 ```
 
-MissionAbort on the ground (countdown, ground check) resets and stops instead (§6.2).
+MissionAbort on the ground (before liftoff, by mission mode only: countdown, Idle mission, RTH landed) resets and stops instead (§6.2).
 
 ---
 
@@ -270,20 +270,20 @@ Before 2026-11-20 the enable was evaluated on mission-mode edges with a shared `
 
 Two kinds of stop: a **failsafe** (a latched `Failure`, for example an IMU failure) cuts everything and the vehicle falls, unchanged. An **abort** (`MissionAbort`, and later the abort outcomes of the failure policy) means "stop and return home". The decision is `Safety::decideAbort` (`src/safety/mission_abort.*`, pure, host-tested), accepted only while the vehicle mode is `Running`:
 
-| Active mission / mode | Ground check | Action |
-|---|---|---|
-| vehicle not `Running` | - | ignored |
-| any mission `Idle` | - | reset and stop |
-| Waypoint `Initialisation` or `Startup` (countdown) | not used | **reset and stop** |
-| Waypoint `Running` (hover, ascent), Bellyflop, Freefall (any mode) | holds | **reset and stop** (never lifted off) |
-| Waypoint `Running`, Bellyflop, Freefall | does not hold | **start RTH now** (hot start) |
-| RTH `Running` | - | keep RTH (no restart) |
-| RTH `Finished` (landed) | - | reset and stop |
+| Active mission / mode | Action |
+|---|---|
+| vehicle not `Running` | ignored |
+| any mission `Idle` | reset and stop |
+| Waypoint `Initialisation` or `Startup` (countdown) | **reset and stop** |
+| Waypoint `Running` (any phase after the countdown: hover, ascent) or `Finished` | **start RTH now** (hot start) |
+| Bellyflop, Freefall (any mode except `Idle`) | **start RTH now** (hot start) |
+| RTH `Running` | keep RTH (no restart) |
+| RTH `Finished` (landed) | reset and stop |
 
-- **On the ground** = the countdown phases above, any `Idle` mission, RTH landed, or the **ground check**: estimated altitude above the start point (`Pz`) < **0.5 m** and estimated speed `|V|` < **0.5 m/s** (`kGroundAltitudeMax_m`, `kGroundSpeedMax_mps`; a NaN estimate never counts as on the ground). In the countdown the TVC controllers are off and the motors at most at idle, so the vehicle cannot fly there.
+- **On the ground** means **before liftoff** and is decided by the mission mode alone (user decision 2026-11-20, review fix): the countdown phases above, any `Idle` mission, RTH landed. In the countdown the TVC controllers are off and the motors at most at idle, so the vehicle cannot fly there. There is **no altitude/speed ground check** any more: it was removed because an abort just after liftoff (waypoint `Running`, 0.3 m, 0.2 m/s) would have reset the mission and cut the motors, dropping the vehicle, instead of starting RTH. Consequence: an abort right at T0 with the vehicle still on the pad starts RTH too; it climbs to the home point (0, 0, 3 m), descends and shuts down. A `Finished` waypoint, bellyflop or freefall mission lasts at most one safety tick before the chain switches on, so it is in the air and starts RTH.
 - **Reset and stop:** TVC actuators and motors off, shutdown, chain reset, `resetMission()` of the active mission (it stays active, Idle; the phase still reads Hover for the waypoint mission), `clearFailures()` (so the vehicle goes Startup → Ready, arm state unchanged). Nothing follows.
 - **Start RTH:** `switchMissionTo(&defaultMission_)`; the chain stays pending until RTH ends (RTH-end shutdown and auto-disarm as after a normal RTH); the TVC set is enabled and reset in the same tick.
-- Log: `Mission abort telecommand: <action> (alt <m> m, speed <m/s> m/s)`.
+- Log: `Mission abort telecommand: <action> (alt <m> m, speed <m/s> m/s)` (altitude and speed are logged for information only; they do not enter the decision).
 
 Other ways a mission gets switched:
 
@@ -384,8 +384,8 @@ In `Acsent` mode the flap controller commands 90° (retracted) unless extend is 
 | Medium | main.cpp:1316-1321 | Waypoint flap branch tests `defaultMission_.stabilising()`. RTH's `runningState_` persists after a run. | Wrong branch after any RTH run. Harmless only while `EXTEND_FLAPS_ASCENT == false`. |
 | Medium | main.cpp:874-880, `mission_waypoint.hpp:249`, `:292` | The MissionBegin `paramInt` is the initial mission time, not "seconds in the future" as `telecommand.hpp:159` says. Values > −10 skip Init and Startup. | Operator error can skip estimator zeroing or overlap the TVC test with take-off. |
 | High | `src/safety/control_phase.hpp` (`kTvcDuringBellyflopTransition = false`), `mission_bellyflop.hpp` | **The bellyflop pitch-over is unpowered** (user decision 2026-11-20: TVC controllers off during bellyflop and freefall). `MissionBellyflop` still writes a −90° pitch setpoint to the TVC attitude controller, which is now disabled, so it is inert; the transition ends by its 1 s time limit. Bench (simulation, 2026-11-20): first run after boot and a run after SystemReset identical: mission mode Running, thrust 0.10 N, TVC deflection 0, flaps Stabilize, tilt 0.4 → 1.6° and 4.2 → 9.5° at the end (remaining angle 88.8° / 88.5°); freefall then starts nearly vertical. Before (later runs on earlier firmware): 14 N with 3° TVC deflection for 0.4 s, pitch rate 130°/s, ended by the angle trigger at 0.54 s. The old firmware's real flights (flight4, flight5) had TVC thrust 0 during the pitch-over and still pitched over (flight4: tilt 8° → 103° in 0.9 s), which the simulator does not reproduce (no aerodynamic model of it). | Confirm the intended pitch-over mechanism before a flight that uses the bellyflop: unpowered (now) or TVC-powered (`kTvcDuringBellyflopTransition = true`, one line). Freefall with the vehicle still vertical is untested in the simulator beyond the bench runs. |
-| Medium | `src/safety/mission_abort.hpp` (`kGroundAltitudeMax_m`, `kGroundSpeedMax_mps`) | The abort ground check uses the estimated altitude and speed (0.5 m, 0.5 m/s). The baro altitude noise on the bench is σ 0.25 m with excursions to ±0.5 m (overview.md). | In the waypoint mission after T0, an estimate reading ≥ 0.5 m (or ≥ 0.5 m/s) on the pad turns an intended stop into an RTH hot start (climb toward (0,0,3)); a vehicle hovering below 0.5 m and slower than 0.5 m/s is treated as on the ground and dropped. The countdown (Init/Startup) does not depend on it. Thresholds need the user's confirmation. |
-| Low | main.cpp `checkForFailures` (mag timeout) | The magnetometer-timeout switch to RTH still uses its own trigger (mission mode Running), not `Safety::decideAbort`. | No ground check for that path (unchanged behaviour). The failure policy (T9b) should route it through the abort decision. |
+| ~~Medium~~ Fixed | `src/safety/mission_abort.*` | The abort ground check used the estimated altitude and speed (0.5 m, 0.5 m/s): a vehicle hovering below 0.5 m and slower than 0.5 m/s (for example just after liftoff) was treated as on the ground, reset and dropped; baro noise on the pad could turn a stop into an RTH. | Fixed 2026-11-20 (feature/review-fixes): "on the ground" is decided by mission mode only (before liftoff); waypoint `Running` always starts RTH. An abort at T0 on the pad now starts RTH (climb to 3 m, land). |
+| Low | main.cpp `checkForFailures` (mag timeout) | The magnetometer-timeout switch to RTH still uses its own trigger (mission mode Running), not `Safety::decideAbort`. | Unchanged behaviour. The failure policy (T9b) should route it through the abort decision. |
 | Low | `mission_waypoint.hpp:340-370` | Waypoint never enters `Finished` when it ends. Switching relies on `missionEnd_` alone. | Cosmetic since 2026-11-20 (the controllers no longer depend on mode edges). |
 | Low | main.cpp:619 | `missionIndex` is set on a discarded local copy. | Telemetry `missionIndex` is always 0. |
 | Low | main.cpp:588-600 | No phase for the RTH Ascent tick or for RTH `Idle` before the first mission (reads `Completed`). Waypoint Init and Startup report `Hover`. | The ground display can mislead. |

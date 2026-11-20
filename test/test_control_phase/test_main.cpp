@@ -8,6 +8,8 @@
 #include "safety/control_phase.hpp"
 #include "safety/mission_abort.hpp"
 
+#include <initializer_list>
+
 using namespace VCTR::Safety;
 
 void setUp() {}
@@ -93,55 +95,42 @@ static void test_tracker_reset_triggers() {
   TEST_ASSERT_TRUE(s.resetTvc);
 }
 
-static AbortAction abortFor(ActiveMission m, MissionModeIn mode, float alt, float speed, bool running = true) {
+static AbortAction abortFor(ActiveMission m, MissionModeIn mode, bool running = true) {
   AbortInput in;
   in.vehicleRunning = running;
   in.active = m;
   in.mode = mode;
-  in.altitude_m = alt;
-  in.speed_mps = speed;
   return decideAbort(in);
 }
 
 static void test_abort_decision() {
-  // Vehicle not Running: ignored, whatever the mission says.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, 50, 5, false) == AbortAction::Ignore);
-  // Countdown: always reset, even if the estimate is off (no ground check needed).
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Initialisation, 3, 2) ==
-                   AbortAction::ResetAndStop);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Startup, 0, 0) == AbortAction::ResetAndStop);
-  // Nothing running.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Idle, 0, 0) == AbortAction::ResetAndStop);
-  // In flight: hover, ascent, bellyflop, freefall -> RTH.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, 1.0f, 0.1f) == AbortAction::StartRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, 60, 7) == AbortAction::StartRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Bellyflop, MissionModeIn::Running, 120, 1) == AbortAction::StartRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Bellyflop, MissionModeIn::Finished, 119, 3) == AbortAction::StartRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Freefall, MissionModeIn::Running, 80, 15) == AbortAction::StartRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Freefall, MissionModeIn::Finished, 70, 20) == AbortAction::StartRth);
-  // Low but moving (lift-off through 0.3 m at 1 m/s): in flight.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, 0.3f, 1.0f) == AbortAction::StartRth);
-  // Ground check holds in a "flying" mission: reset (never lifted off).
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, 0.1f, 0.1f) ==
-                   AbortAction::ResetAndStop);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Bellyflop, MissionModeIn::Running, 0.2f, 0.0f) ==
-                   AbortAction::ResetAndStop);
-  // RTH running: keep; RTH landed: reset.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Rth, MissionModeIn::Running, 20, 1) == AbortAction::KeepRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Rth, MissionModeIn::Running, 0.1f, 0.0f) == AbortAction::KeepRth);
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Rth, MissionModeIn::Finished, 0, 0) == AbortAction::ResetAndStop);
+  // Not Running: nothing to abort.
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running, false) == AbortAction::Ignore);
+  // Before liftoff: countdown, Idle mission, RTH finished -> reset and stop.
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Initialisation) == AbortAction::ResetAndStop);
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Startup) == AbortAction::ResetAndStop);
+  for (ActiveMission m : kMissions)
+    TEST_ASSERT_TRUE(abortFor(m, MissionModeIn::Idle) == AbortAction::ResetAndStop);
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Rth, MissionModeIn::Finished) == AbortAction::ResetAndStop);
+  // In flight: waypoint Running / Finished, bellyflop, freefall (any non-Idle mode) -> RTH.
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Running) == AbortAction::StartRth);
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Waypoint, MissionModeIn::Finished) == AbortAction::StartRth);
+  for (ActiveMission m : {ActiveMission::Bellyflop, ActiveMission::Freefall, ActiveMission::Other})
+    for (MissionModeIn mode : kModes)
+      if (mode != MissionModeIn::Idle)
+        TEST_ASSERT_TRUE(abortFor(m, mode) == AbortAction::StartRth);
+  // RTH running keeps running.
+  TEST_ASSERT_TRUE(abortFor(ActiveMission::Rth, MissionModeIn::Running) == AbortAction::KeepRth);
 }
 
-static void test_ground_check_bounds_and_nan() {
-  TEST_ASSERT_TRUE(groundCheck(0.0f, 0.0f));
-  TEST_ASSERT_TRUE(groundCheck(-0.5f, 0.0f)); // baro noise below the start point
-  TEST_ASSERT_TRUE(groundCheck(0.49f, 0.49f));
-  TEST_ASSERT_FALSE(groundCheck(0.5f, 0.0f));
-  TEST_ASSERT_FALSE(groundCheck(0.0f, 0.5f));
-  TEST_ASSERT_FALSE(groundCheck(NAN, 0.0f));
-  TEST_ASSERT_FALSE(groundCheck(0.0f, NAN));
-  // NaN estimate in a flying mission -> RTH, never a silent reset.
-  TEST_ASSERT_TRUE(abortFor(ActiveMission::Freefall, MissionModeIn::Running, NAN, NAN) == AbortAction::StartRth);
+static void test_abort_decision_has_no_state_input() {
+  // Review 2026-11-20: the decision depends on mission and mode only. The input carries no altitude or speed, so
+  // a low and slow vehicle right after liftoff (0.3 m, 0.2 m/s) cannot be classed "on the ground" and dropped.
+  AbortInput in;
+  in.vehicleRunning = true;
+  in.active = ActiveMission::Waypoint;
+  in.mode = MissionModeIn::Running;
+  TEST_ASSERT_TRUE(decideAbort(in) == AbortAction::StartRth);
 }
 
 int main(int, char **) {
@@ -150,6 +139,6 @@ int main(int, char **) {
   RUN_TEST(test_table_named_phases);
   RUN_TEST(test_tracker_reset_triggers);
   RUN_TEST(test_abort_decision);
-  RUN_TEST(test_ground_check_bounds_and_nan);
+  RUN_TEST(test_abort_decision_has_no_state_input);
   return UNITY_END();
 }

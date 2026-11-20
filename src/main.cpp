@@ -891,16 +891,16 @@ public:
 
     case TelecommandType::Telecommand_MissionAbort: {
       // User decision 2026-11-20: an abort means "stop and return home" (a failsafe is a latched Failure and is
-      // not handled here). In flight: RTH hot start from any phase. On the ground (countdown, nothing running, RTH
-      // landed, or the ground check: altitude < 0.5 m and speed < 0.5 m/s): reset and stop, nothing restarts.
+      // not handled here). In flight: RTH hot start from any phase. On the ground = before liftoff, by mission mode
+      // only (countdown, nothing running, RTH landed; no altitude/speed check): reset and stop, nothing restarts.
       // Decision: Safety::decideAbort (src/safety/mission_abort.hpp), docs/project/missions.md section 6.2.
       const auto pos = posEstSubr.getItem().data;
       Safety::AbortInput in;
       in.vehicleRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
       in.active = activeMissionKind();
       in.mode = modeIn(mission_->getMissionState().missionMode);
-      in.altitude_m = pos(5);
-      in.speed_mps = sqrtf(pos(0) * pos(0) + pos(1) * pos(1) + pos(2) * pos(2));
+      const float altitude = pos(5); // logged only
+      const float speed = sqrtf(pos(0) * pos(0) + pos(1) * pos(1) + pos(2) * pos(2));
       const Safety::AbortAction action = Safety::decideAbort(in);
 
       switch (action) {
@@ -926,7 +926,7 @@ public:
       }
 
       LOG_MSG("Mission abort telecommand: %s (alt %.2f m, speed %.2f m/s)\n", Safety::toString(action),
-              double(in.altitude_m), double(in.speed_mps));
+              double(altitude), double(speed));
     } break;
 
     case TelecommandType::Telecommand_ZeroEstimators: {

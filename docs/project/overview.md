@@ -36,7 +36,7 @@ MissionWaypoint ──► MissionBellyflop ──► MissionFreefall ──► M
  3. 120 m   ascent at 7 m/s       or ≥150°/s rate)        stop altitude 20 m      land at {0,0,·}
 ```
 
-Any mission ending without a successor, a `MissionAbort` in flight (from any phase, including the bellyflop and freefall), or a magnetometer timeout in flight switches to **RTH**, the universal fallback. A `MissionAbort` on the ground (countdown, or the ground check: altitude < 0.5 m and speed < 0.5 m/s) resets and stops instead. Waypoint arguments, phase logic and the abort rules: [missions.md](missions.md) 6.2.
+Any mission ending without a successor, a `MissionAbort` in flight (from any phase, including the bellyflop and freefall), or a magnetometer timeout in flight switches to **RTH**, the universal fallback. A `MissionAbort` on the ground (before liftoff, by mission mode only: countdown, Idle mission, RTH landed) resets and stops instead; the waypoint mission after the countdown always counts as in flight. Waypoint arguments, phase logic and the abort rules: [missions.md](missions.md) 6.2.
 
 ## Guidance, navigation and control
 

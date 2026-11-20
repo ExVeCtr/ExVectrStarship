@@ -162,9 +162,6 @@ struct Vehicle {
   Mode lastMode = Mode::Idle;
   bool tvcOn = false;
   int tvcResets = 0;
-  // Estimated state seen by the abort ground check.
-  float altitude = 0;
-  float speed = 0;
 
   Vehicle() {
     wp.next = &bf;
@@ -229,8 +226,6 @@ struct Vehicle {
     in.vehicleRunning = true;
     in.active = kindOf(active);
     in.mode = modeOf(active->mode);
-    in.altitude_m = altitude;
-    in.speed_mps = speed;
     const AbortAction a = decideAbort(in);
     switch (a) {
     case AbortAction::StartRth:
@@ -554,7 +549,6 @@ static void test_abort_running_goes_to_rth_and_ends() {
   v.missionBegin(-15 * S);
   v.runFor(20 * S); // waypoint Running
   TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
-  v.altitude = 10; // in flight
   v.missionAbort();
   TEST_ASSERT_TRUE(v.active == &v.rth);
   v.runFor(60 * S);
@@ -663,20 +657,14 @@ static void test_abort_in_flight_starts_rth_from_every_phase() {
     v.missionBegin(-15 * S);
     if (phase == 0) {
       v.runFor(17 * S); // waypoint Running, hover
-      v.altitude = 1.0f;
     } else if (phase == 1) {
       v.runFor(40 * S); // still waypoint Running (ends after 30 s Running = 45 s from begin)
-      v.altitude = 60.0f;
-      v.speed = 7.0f;
     } else if (phase == 2) {
       runUntilActive(v, &v.bf);
       v.runFor(300 * MS);
-      v.altitude = 120.0f;
     } else {
       runUntilActive(v, &v.ff);
       v.runFor(2 * S);
-      v.altitude = 80.0f;
-      v.speed = 15.0f;
     }
     const int resetsBefore = v.tvcResets;
     const int ffBegins = v.ff.begins;
@@ -694,23 +682,22 @@ static void test_abort_in_flight_starts_rth_from_every_phase() {
   }
 }
 
-static void test_abort_on_ground_after_t0_resets() {
-  // Waypoint Running but the ground check holds (abort right at T0, vehicle not lifted off): reset and stop.
+static void test_abort_low_and_slow_after_liftoff_starts_rth() {
+  // Review 2026-11-20: waypoint Running right after liftoff (in the real case 0.3 m, 0.2 m/s). The removed ground
+  // check would have reset the mission and cut the motors; now it starts RTH, which runs and lands.
   Vehicle v;
   v.runFor(2 * S);
   v.missionBegin(-15 * S);
   v.runFor(15 * S + 300 * MS);
   TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
-  v.altitude = 0.1f;
-  v.speed = 0.2f;
-  TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::ResetAndStop);
-  const int sw = v.switches;
+  TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::StartRth);
+  TEST_ASSERT_TRUE(v.active == &v.rth);
+  v.runFor(100 * MS);
+  TEST_ASSERT_TRUE(v.tvcOn);
   v.runFor(60 * S);
-  TEST_ASSERT_EQUAL(sw, v.switches);
-  TEST_ASSERT_TRUE(v.wp.mode == Mode::Idle);
-  TEST_ASSERT_FALSE(v.anyActuator());
-  TEST_ASSERT_FALSE(v.tvcOn);
-  TEST_ASSERT_EQUAL(0, v.rth.begins);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_FALSE(v.chain.pending());
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
 }
 
 static void test_abort_during_rth_keeps_rth() {
@@ -719,7 +706,6 @@ static void test_abort_during_rth_keeps_rth() {
   v.missionBegin(-15 * S);
   runUntilActive(v, &v.rth);
   v.runFor(3 * S);
-  v.altitude = 20.0f;
   const int sw = v.switches;
   TEST_ASSERT_TRUE(v.missionAbort() == AbortAction::KeepRth);
   TEST_ASSERT_EQUAL(sw, v.switches);
@@ -747,7 +733,7 @@ int main(int, char **) {
   RUN_TEST(test_bellyflop_first_and_later_runs_identical);
   RUN_TEST(test_tvc_reset_on_every_enable);
   RUN_TEST(test_abort_in_flight_starts_rth_from_every_phase);
-  RUN_TEST(test_abort_on_ground_after_t0_resets);
+  RUN_TEST(test_abort_low_and_slow_after_liftoff_starts_rth);
   RUN_TEST(test_abort_during_rth_keeps_rth);
   return UNITY_END();
 }

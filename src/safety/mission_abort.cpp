@@ -3,19 +3,12 @@
 namespace VCTR {
 namespace Safety {
 
-bool groundCheck(float altitude_m, float speed_mps) {
-  // NaN compares false: an invalid estimate never counts as "on the ground", so an abort then starts RTH.
-  return altitude_m < kGroundAltitudeMax_m && speed_mps < kGroundSpeedMax_mps;
-}
-
 AbortAction decideAbort(const AbortInput &in) {
   if (!in.vehicleRunning)
     return AbortAction::Ignore;
 
   if (in.mode == MissionModeIn::Idle)
     return AbortAction::ResetAndStop; // nothing is running (reset mission, or never begun)
-
-  const bool onGround = groundCheck(in.altitude_m, in.speed_mps);
 
   switch (in.active) {
   case ActiveMission::Rth:
@@ -25,13 +18,14 @@ AbortAction decideAbort(const AbortInput &in) {
 
   case ActiveMission::Waypoint:
     if (in.mode == MissionModeIn::Initialisation || in.mode == MissionModeIn::Startup)
-      return AbortAction::ResetAndStop; // countdown
-    return onGround ? AbortAction::ResetAndStop : AbortAction::StartRth;
+      return AbortAction::ResetAndStop; // countdown, before liftoff
+    return AbortAction::StartRth;       // Running (any phase after the countdown) or Finished: in flight
 
   case ActiveMission::Bellyflop:
   case ActiveMission::Freefall:
   case ActiveMission::Other:
-    return onGround ? AbortAction::ResetAndStop : AbortAction::StartRth;
+    // Running, or Finished for at most one safety tick before the chain switches on: always in flight.
+    return AbortAction::StartRth;
   }
   return AbortAction::StartRth;
 }
