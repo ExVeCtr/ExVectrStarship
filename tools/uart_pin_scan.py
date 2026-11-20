@@ -232,6 +232,7 @@ def decode_capture(pin, cpu_hz, start_level, deltas):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--quick", action="store_true", help="targeted re-check: listen 460800 only, 1 s edges, TX on pin 17 and bit-bang pad 31 only")
     ap.add_argument("--no-restore", action="store_true", help="leave the scan firmware on the Teensy")
     ap.add_argument("--listen-ms", type=int, default=4000)
     ap.add_argument("--tx-ms", type=int, default=3000)
@@ -267,7 +268,7 @@ def main():
         print("\n== Phase 1: LISTEN (inputs only) ==")
         found = None
         all_rows = {}
-        for baud in (460800, 115200, 74880):
+        for baud in ((460800,) if args.quick else (460800, 115200, 74880)):
             lines = sc.cmd("L %d %d" % (baud, args.listen_ms), "LISTEN done", args.listen_ms / 1000 + 5)
             rows = parse_rx(lines)
             all_rows[baud] = rows
@@ -283,7 +284,8 @@ def main():
         report["listen"] = all_rows
 
         print("\n== Edge activity scan of all pads (inputs, no pull) ==")
-        lines = sc.cmd("E 500", "EDGE done", 34 * 0.6 + 5)
+        ems = 1000 if args.quick else 500
+        lines = sc.cmd("E %d" % ems, "EDGE done", 34 * (ems / 1000 + 0.1) + 5)
         edges = {}
         for _, ln in lines:
             m = re.match(r"EDGE pin=(\d+) edges=(\d+) high_pct=(\d+)", ln)
@@ -310,7 +312,9 @@ def main():
 
         # (3b) phase 2: transmit
         print("\n== Phase 2: TRANSMIT node-1 heartbeats on candidate UART TX pins ==")
-        cands = [p for p in sorted(UART_TX.values()) if p not in SERVO_PINS]
+        cands = [p for p in sorted(UART_TX.values()) if p not in SERVO_PINS and p != 20]
+        if args.quick:
+            cands = [17]
         print("  candidates (servo/ESC pins %s are never driven): %s" % (sorted(SERVO_PINS), cands))
         results = {}
         if not nw.samples:
@@ -334,10 +338,10 @@ def main():
         # open-drain only (pulled low or released, never driven high) by bit-banging.
         KNOWN_BOARD = {3, 5, 6, 11, 12, 13, 15, 18, 19, 20}
         uart_rx = set(UART_RX.values())
-        nonuart_found = [p for p, d in report["capture"].items() if d.get("srcs") and 3 in d["srcs"] and p not in uart_rx]
+        nonuart_found = [p for p, d in report["capture"].items() if d.get("srcs") and 3 in d["srcs"] and p not in uart_rx] or ([31] if args.quick else [])
         bb = {}
         if nonuart_found:
-            idle = [p for p, (e, hp) in edges.items() if e == 0 and hp == 100 and p not in KNOWN_BOARD and p not in SERVO_PINS
+            idle = [31] if args.quick else [p for p, (e, hp) in edges.items() if e == 0 and hp == 100 and p not in KNOWN_BOARD and p not in SERVO_PINS
                     and p not in UART_TX.values() and p not in uart_rx]
             print("\n  node 3 TX decoded on non-UART-RX pad(s) %s. Bit-bang (open-drain) candidates: %s" % (nonuart_found, idle))
             for pin in [p for p in idle if p == 31]:
