@@ -53,6 +53,7 @@ TC_BY_NAME = {  # name: (type, paramInt, default paramFloat)
     "Arm": (5, 0xA5, 0.0),
     "Disarm": (5, 0, 0.0),
     "SimulationMode": (6, 0xA9, 0.0),
+    "MissionAbort": (9, 0, 0.0),
     "MissionBegin": (7, -20, 0.0),  # paramInt = initial mission time (s), < -10 runs Init and Startup
     "ZeroEstimators": (10, 0x2E, 10.0),
 }

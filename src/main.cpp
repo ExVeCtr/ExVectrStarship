@@ -138,6 +138,7 @@ struct LegacyCal {
   DSP::ValueCov<float, 3> calib;
   Math::Matrix<float, 3, 3> transform;
   bool keyPresent = false;
+  bool pendingSave = false; ///< the RAM image holds a value that the EEPROM does not (cleared by a verified Save)
 };
 LegacyCal gyroLegacy, accLegacy, magLegacy;
 
@@ -187,29 +188,35 @@ void publishActiveCalibration() {
   }
 }
 
-/// Writes legacy key values (offset b, matrix C) to the RAM image and applies them (cal = C T (raw - b)). RAM only
-/// until Save. Returns false if the RAM image write failed (the transform is applied anyway).
+/// Applies legacy key values (offset b, matrix C) (cal = C T (raw - b)) and, if writeImage, writes them to the RAM
+/// image (persisted by the next Save). The record is marked RAM_ONLY either way. Returns false if the RAM image
+/// write failed (the transform is applied anyway).
 static bool applyLegacyCalibration(LegacyCal &l, uint32_t key, DSP::TopicCoordTransform<float> &topic,
-                                   Comms::SensorCalibration &record, const double offset[3], const double C[9]) {
+                                   Comms::SensorCalibration &record, const double offset[3], const double C[9],
+                                   bool writeImage = true) {
   for (size_t r = 0; r < 3; r++) {
     l.calib.val(r) = static_cast<float>(offset[r]);
     for (size_t c = 0; c < 3; c++)
       l.calib.cov(r, c) = static_cast<float>(C[3 * r + c]);
   }
-  const bool written = memoryManager.writeItem(l.calib, key);
+  const bool written = writeImage ? memoryManager.writeItem(l.calib, key) : true;
   l.keyPresent = written || l.keyPresent;
+  if (writeImage && written)
+    l.pendingSave = true;
   applySensorCalibration(topic, record, l.calib.cov * l.transform, l.calib.val,
                          static_cast<uint8_t>(CAL_SRC_RAM_ONLY | (record.source & (CAL_SRC_TRANSFORM_EEPROM | CAL_SRC_CALIB_EEPROM |
                                                                                     CAL_SRC_MEMORY_CLEARED))));
   return written;
 }
 
-/// Gyro: only the bias changes (key 100 .val, in the raw sensor frame); C stays.
-static void applyGyroBias(const double bias[3]) {
+/// Gyro: only the bias changes (key 100 .val, in the raw sensor frame); C stays. The automatic run per boot or
+/// countdown applies the bias to the transform only (persist = false: a Save must not write a per-boot value); the
+/// manual CalibApply of a gyro candidate persists it with the next Save.
+static void applyGyroBias(const double bias[3], bool persist) {
   const double C[9] = {gyroLegacy.calib.cov(0, 0), gyroLegacy.calib.cov(0, 1), gyroLegacy.calib.cov(0, 2),
                        gyroLegacy.calib.cov(1, 0), gyroLegacy.calib.cov(1, 1), gyroLegacy.calib.cov(1, 2),
                        gyroLegacy.calib.cov(2, 0), gyroLegacy.calib.cov(2, 1), gyroLegacy.calib.cov(2, 2)};
-  applyLegacyCalibration(gyroLegacy, MEMORY_KEY_GYROCALIB, gyroTransformTopic, gyroCalApplied, bias, C);
+  applyLegacyCalibration(gyroLegacy, MEMORY_KEY_GYROCALIB, gyroTransformTopic, gyroCalApplied, bias, C, persist);
   publishActiveCalibration();
 }
 
@@ -540,7 +547,7 @@ public:
     countdownGyroRun_ = false;
     if (r.result == DSP::Calib::CalResult::Pass) {
       const float oldB[3] = {gyroLegacy.calib.val(0), gyroLegacy.calib.val(1), gyroLegacy.calib.val(2)};
-      applyGyroBias(r.bias);
+      applyGyroBias(r.bias, false);
       gyroRunState = Calibration::GyroRunState::Ok;
       calibLiveStill.haveAccel = r.nAccel > 0;
       calibLiveStill.haveMag = r.nMag > 0;
@@ -559,6 +566,15 @@ public:
                    "passes (ZeroEstimators, vehicle still)\n",
                    DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks);
     }
+    // Margins against the motion limits (for tuning them after the first bench sessions).
+    Core::printM("Calibration: worst 1 s block: gyro std %.3f deg/s p2p %.3f deg/s (limits %.2f, %.2f), accel axis std %.3f "
+                 "|a| std %.3f m/s^2 (limit 0.05), %lu short blocks\n",
+                 r.worst.gyroStd * RAD_TO_DEG, r.worst.gyroP2P * RAD_TO_DEG, 0.25, 1.0, r.worst.accelAxisStd,
+                 r.worst.accelNormStd, (unsigned long)r.worst.shortBlocks);
+    Core::printM("Calibration: quietest of %lu blocks: gyro std %.3f deg/s p2p %.3f deg/s, accel axis std %.3f |a| std %.3f "
+                 "m/s^2\n",
+                 (unsigned long)r.worst.blocks, r.worst.minGyroStd * RAD_TO_DEG, r.worst.minGyroP2P * RAD_TO_DEG,
+                 r.worst.minAccelAxisStd, r.worst.minAccelNormStd);
 
     if (countdown)
       checkCalibrationsAtCountdownEnd();
@@ -888,6 +904,7 @@ public:
     cancelCountdownGyroRun();
     calibrationService.cancelGyroRun();
     publishActiveCalibration();
+    calibrationService.setGyroBiasTrusted(gyroRunState == Calibration::GyroRunState::Ok);
     if (calibrationService.start(sensor, verify, now) == Calibration::StartResult::Started) {
       starshipTVC.enableActuators(false);
       vehicleMode_ = VehicleMode::VehicleMode_SensorCalib;
@@ -934,7 +951,7 @@ public:
       break;
     case Calibration::Sensor::Gyro: {
       const auto &r = calibrationService.gyroResult();
-      applyGyroBias(r.bias);
+      applyGyroBias(r.bias, true);
       gyroRunState = Calibration::GyroRunState::Ok;
       calibLiveStill.haveAccel = r.nAccel > 0;
       calibLiveStill.haveMag = r.nMag > 0;
@@ -967,10 +984,15 @@ public:
       return;
     }
     if (saveCalibrationMemory()) {
+      // Only records whose value went into the RAM image are now in EEPROM. The per-boot automatic gyro bias is not
+      // written to the image, so its source keeps RAM_ONLY until the next boot.
       Comms::SensorCalibration *recs[3] = {&gyroCalApplied, &accCalApplied, &magCalApplied};
-      for (auto *rec : recs) {
-        if (rec->source & CAL_SRC_RAM_ONLY)
-          rec->source = static_cast<uint8_t>((rec->source & ~CAL_SRC_RAM_ONLY) | CAL_SRC_CALIB_EEPROM);
+      LegacyCal *legs[3] = {&gyroLegacy, &accLegacy, &magLegacy};
+      for (int i = 0; i < 3; i++) {
+        if (legs[i]->pendingSave) {
+          recs[i]->source = static_cast<uint8_t>((recs[i]->source & ~CAL_SRC_RAM_ONLY) | CAL_SRC_CALIB_EEPROM);
+          legs[i]->pendingSave = false;
+        }
       }
       calibrationService.markSaved();
       Core::printM("Calibration: saved to EEPROM and verified by read-back\n");

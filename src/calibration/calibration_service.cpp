@@ -152,9 +152,20 @@ StartResult CalibrationService::start(Sensor s, bool verify, int64_t nowNs) {
   switch (s) {
   case Sensor::Accel:
     poses_.reset();
-    still_.reset();
-    if (active_[0].valid)
-      still_.setGyroBias(active_[0].offset); // stillness of the CALIBRATED rate
+    {
+      DSP::Calib::StillnessConfig sc;
+      if (gyroBiasTrusted_ && active_[0].valid) {
+        // stillness of the CALIBRATED rate: |w - bias| < 0.02 rad/s (the default rule)
+      } else {
+        const DSP::Calib::GyroBiasConfig gc; // bias-free: the limits of the gyro run's 1 s blocks
+        sc.maxGyroNorm = 0;
+        sc.maxGyroStd = gc.maxBlockStd;
+        sc.maxGyroP2P = gc.maxBlockP2P;
+      }
+      still_ = DSP::Calib::StillnessDetector(sc);
+      if (active_[0].valid)
+        still_.setGyroBias(active_[0].offset);
+    }
     accelRes_ = DSP::Calib::AccelFitResult();
     noteHead_ = noteCount_ = 0;
     stillNow_ = false;
@@ -415,7 +426,13 @@ void CalibrationService::tick(int64_t nowNs) {
              (unsigned)magFit_.storedCount(), magFit_.coverage().fractionAtLeast(2) * 100);
       }
     } else {
-      logf("Gyro: %.0f %% of the still window", gyro_.progress() * 100);
+      const auto &b = gyro_.lastBlock();
+      if (b.valid)
+        logf("Gyro: %.0f %% of the still window, last 1 s block %s: gyro std %.3f p2p %.3f deg/s, accel std %.3f m/s^2",
+             gyro_.progress() * 100, b.accepted ? "ok" : "REJECTED (motion)", b.gyroStd * kRadToDeg,
+             b.gyroP2P * kRadToDeg, b.accelAxisStd);
+      else
+        logf("Gyro: %.0f %% of the still window", gyro_.progress() * 100);
     }
   }
 }

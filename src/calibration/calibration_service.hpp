@@ -87,6 +87,11 @@ public:
   /// The applied calibration of a sensor (verify checks it; for Accel and Mag the stillness uses the gyro bias).
   void setActive(Sensor s, const double offset[3], const double M[9]);
 
+  /// Whether the active gyro offset was measured in this power cycle (a successful gyro run). Only a trusted bias is used
+  /// for the pose stillness check |w - bias|; otherwise (a stale stored bias, a failed boot run) stillness uses the
+  /// bias-free gyro std and peak-to-peak limits of the gyro run, so poses can still be captured.
+  void setGyroBiasTrusted(bool trusted) { gyroBiasTrusted_ = trusted; }
+
   // ---- Raw samples (cheap; the callers skip them when the matching wants*() is false) ----
   bool wantsGyro() const { return gyro_.collecting() || accelSession(); }
   bool wantsAccel() const { return gyro_.collecting() || accelSession(); }
@@ -163,6 +168,7 @@ private:
   DSP::Calib::PoseCollector poses_;
   DSP::Calib::MagSphereFit magFit_;
   DSP::Calib::GyroBiasCollector gyro_;
+  bool gyroBiasTrusted_ = false;
   bool gyroAuto_ = false;
   bool gyroDone_ = false;
   DSP::Calib::AccelFitResult accelRes_;

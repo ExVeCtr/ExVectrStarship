@@ -202,6 +202,25 @@ static void test_accel_session_twelve_poses_fit_and_legacy_conversion() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Saved), uint8_t(svc.state(Sensor::Accel)));
 }
 
+static void test_stale_gyro_bias_does_not_block_pose_capture() {
+  // Active gyro offset 0.03 rad/s off the truth (a stale stored value after a failed boot run).
+  for (int trusted = 0; trusted < 2; trusted++) {
+    CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+    Sim sim;
+    sim.gyroBias[0] = sim.gyroBias[1] = sim.gyroBias[2] = 0.03;
+    const double I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const double stale[3] = {0, 0, 0};
+    svc.setActive(Sensor::Gyro, stale, I);
+    svc.setGyroBiasTrusted(trusted != 0);
+    svc.start(Sensor::Accel, false, sim.t);
+    captureTwelvePoses(svc, sim, 3);
+    if (trusted)
+      TEST_ASSERT_EQUAL_size_t(0, svc.poseCount()); // |w - bias| = 0.052 rad/s > 0.02: never still (by design)
+    else
+      TEST_ASSERT_EQUAL_size_t(3, svc.poseCount()); // bias-free stillness: std and peak-to-peak only
+  }
+}
+
 static void test_accel_too_few_poses_fails_and_discard() {
   CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
   Sim sim;
@@ -361,6 +380,7 @@ int main(int, char **) {
   RUN_TEST(test_gyro_auto_run_recovers_bias);
   RUN_TEST(test_gyro_auto_run_gives_up_with_motion_and_cancel);
   RUN_TEST(test_accel_session_twelve_poses_fit_and_legacy_conversion);
+  RUN_TEST(test_stale_gyro_bias_does_not_block_pose_capture);
   RUN_TEST(test_accel_too_few_poses_fails_and_discard);
   RUN_TEST(test_duplicate_pose_not_stored);
   RUN_TEST(test_mag_session_recovers_centre);
