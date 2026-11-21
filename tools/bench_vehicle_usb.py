@@ -164,9 +164,14 @@ class Vehicle:
                                             p.failure_bits, round(p.t_ns * 1e-9, 3)])
                 elif cls is xp.Pose:
                     self.st.update(pos=list(p.pos), vel=list(p.vel), q=list(p.q))
-                    if self.csvw:
+                    if self.csvw:  # full pose: pos(3), vel(3), q(4), omega(3)
                         self.csvw.writerow([round(t, 3), "POSE", *[round(v, 4) for v in p.pos],
-                                            *[round(v, 4) for v in p.vel], *[round(v, 4) for v in p.q[:2]]])
+                                            *[round(v, 4) for v in p.vel], *[round(v, 5) for v in p.q],
+                                            *[round(v, 4) for v in p.omega]])
+                elif cls is xp.Actuators:
+                    if self.csvw:  # thrust (N), tvc deflection x/y (rad), flaps (rad)
+                        self.csvw.writerow([round(t, 3), "ACT", round(p.thrust, 3), *[round(v, 4) for v in p.tvc],
+                                            *[round(v, 3) for v in p.flaps]])
                 elif cls is xp.Mission:
                     sq = list(getattr(p, "setpoint_q", [float("nan")] * 4))  # attitude setpoint, 0 = none
                     self.st.update(sq=sq)
@@ -221,7 +226,7 @@ class Vehicle:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--flash", help="hex file to flash first")
-    ap.add_argument("--csv", help="write every VEHICLE_STATUS and POSE to this CSV")
+    ap.add_argument("--csv", help="write every VEHICLE_STATUS, POSE (pos, vel, q, omega), ACTUATORS and MISSION to this CSV")
     ap.add_argument("steps", nargs="*")
     a = ap.parse_args()
     ok = True
