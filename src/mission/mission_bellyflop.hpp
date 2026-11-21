@@ -14,6 +14,7 @@
 #include "ExVectrMath.hpp"
 #include "mission_abstract.hpp"
 #include "telemetry.hpp"
+#include "../safety/bellyflop_kick.hpp"
 
 namespace VCTR {
 
@@ -24,42 +25,24 @@ private:
   CTRL::ControlAttitudeTvc &controlTvc_;
   CTRL::ControlMappingAccToAtt &controlMapping_;
 
-  int64_t transitionTimeLimit_ = 0;
-  float angleThreshold_Rad_ = 0;
-  float angVelThreshold_RadPs_ = 0;
-
   int64_t transitionStartTime_ = 0;
+
+  float kickTarget_[4] = {1, 0, 0, 0}; // pitch-over target, body -> world
+  bool kickActive_ = false;
 
 public:
   /**
-   * @brief Constructor for the MissionBellyflop class.
-   * @param controlTvc Reference to the attitude control used to put the vehicle
-   * in belly down attitude.
-   * @param controlMapping USed to revert back to original config once finished.
-   * @param transitionTimeLimit If the transition takes longer than this, then
-   * consider it finished.
-   * @param angleThreshold_Rad Once the vehicle is within this angle of the
-   * belly down position, then we consider the transition finished.
-   * @param angVelThreshold_RadPs If the vehicle rotation is greater then this,
-   * then we consider the transition fast enough and we good.
+   * @brief Bellyflop transition: the powered kick (docs/project/missions.md section 3). Timing, trigger thresholds,
+   * pitch-over target and thrust limit are the named constants in src/safety/bellyflop_kick.hpp.
+   * @param controlTvc TVC attitude controller; the mission writes the pitch-over setpoint into it directly.
+   * @param controlMapping Its attitude setpoint topic is resubscribed in resetMission().
    */
-  MissionBellyflop(
-      Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic,
-      CTRL::ControlAttitudeTvc &controlTvc,
-      CTRL::ControlMappingAccToAtt &controlMapping, int64_t transitionTimeLimit,
-      float angleThreshold_Rad, float angVelThreshold_RadPs)
-      : Task_Periodic("Mission Freefall", 0.01 * Core::SECONDS),
-        controlTvc_(controlTvc), controlMapping_(controlMapping) {
+  MissionBellyflop(Core::Topic<Core::Timestamped<Math::Vector<float, 7>>> &attTopic,
+                   CTRL::ControlAttitudeTvc &controlTvc, CTRL::ControlMappingAccToAtt &controlMapping)
+      : Task_Periodic("Mission Bellyflop", 0.01 * Core::SECONDS), controlTvc_(controlTvc),
+        controlMapping_(controlMapping) {
     Core::getSystemScheduler().addTask(*this);
-    // Subscribe to the topics
-    attSubr_.subscribe(attTopic); // Subscribe to the attitude topic to get the
-                                  // current attitude of the vehicle
-    transitionTimeLimit_ = transitionTimeLimit; // Set the transition time limit
-    angleThreshold_Rad_ =
-        angleThreshold_Rad; // Set the angle threshold in radians
-    angVelThreshold_RadPs_ =
-        angVelThreshold_RadPs; // Set the angular velocity threshold in radians
-                               // per second
+    attSubr_.subscribe(attTopic); // attitude estimate [w(3), q(4)]
 
     disableKinematicSafety_ = true; // Disable the kinematic safety measures
 
@@ -80,71 +63,78 @@ public:
   void beginMission(int64_t startTime) override {
     missionState_.missionMode = MissionMode::MissionMode_Running;
     missionTime_.setTime(startTime); // Set the mission time to the start time
-    actuatorsEnabled_ = true;        // Disable actuators
+    actuatorsEnabled_ = true;        // TVC actuators on: motors stay on for the kick
     missionEnd_ = false;             // Set the mission end to false
-    LOG_MSG("Started mission bellyflop transition\n"); // Log the mission start
     setPaused(false); // Unpause the task to start the mission
     controlTvc_.unsubscribeAttitudeSetpoint();
-    transitionStartTime_ =
-        Core::NowNs(); // Set the time when the transition started
+    transitionStartTime_ = Core::NowNs(); // Set the time when the transition started
+    // Pitch-over target from the attitude now (heading kept, pure pitch about body +Y, Safety::kickTargetAttitude),
+    // written to the TVC controller at once so its next run already uses it.
+    float q0[4];
+    const auto &att = attSubr_.getItem().data;
+    for (int i = 0; i < 4; i++)
+      q0[i] = att(3 + i);
+    Safety::kickTargetAttitude(q0, Safety::kKickPitchAngleRad, kickTarget_);
+    kickActive_ = true;
+    writeKickSetpoint();
+    LOG_MSG("Started bellyflop kick, target q %.3f %.3f %.3f %.3f\n", kickTarget_[0], kickTarget_[1], kickTarget_[2],
+            kickTarget_[3]);
   };
 
   void resetMission() override {
     clearMissionState();
     actuatorsEnabled_ = false; // Disable actuators
     missionEnd_ = true;        // Set the mission end to true
+    kickActive_ = false;
     LOG_MSG("Reset mission bellyflop transition.\n"); // Log the mission reset
     setPaused(true); // Pause the task to stop the mission
     controlTvc_.subscribeAttitudeSetpoint(controlMapping_.getAttitudeTopic());
   }
 
+  /// The powered kick is running (mission Running, before an end trigger). Telemetry: setpoint_q source.
+  bool kickActive() const { return kickActive_; }
+
+  /// The kick's attitude setpoint (body -> world, [w,x,y,z]); valid while kickActive().
+  void kickSetpoint(float out[4]) const {
+    for (int i = 0; i < 4; i++)
+      out[i] = kickTarget_[i];
+  }
+
   void taskThread() override {
-    auto attSet = Math::Quat_F(Math::Vector_F({0, 1, 0}), -90 * DEGREES);
-    controlTvc_.setAttitudeStateSetpoint(
-        {0, 0, 0, attSet(0), attSet(1), attSet(2), attSet(3)});
+    writeKickSetpoint();
 
-    Math::Quat_F attIs = attSubr_.getItem().data.block<4, 1>(3, 0);
-    auto velIs = attSubr_.getItem().data.block<3, 1>(0, 0);
+    float qIs[4];
+    const auto &att = attSubr_.getItem().data;
+    for (int i = 0; i < 4; i++)
+      qIs[i] = att(3 + i);
+    const float pitchRate = att(1); // body +Y rate
+    const float remaining = Safety::kickRemainingAngle(qIs, kickTarget_);
+    const int64_t elapsed = Core::NowNs() - transitionStartTime_;
 
-    auto xAxis = attIs.conjugate().rotate(Math::Vector_F{1, 0, 0});
-    auto angle = xAxis.getAngleTo(Math::Vector_F{0, 0, -1});
+    const Safety::KickEnd trigger = Safety::kickEndTrigger(elapsed, remaining, pitchRate);
+    if (trigger == Safety::KickEnd::None)
+      return;
 
-    LOG_MSG("Bellyflop debug: att: %.2f %.2f %.2f %.2f, xAxis: %.2f %.2f %.2f, "
-            "angle: %.2f deg, angVel: "
-            "%.2f deg/s\n",
-            attIs(0), attIs(1), attIs(2), attIs(3), xAxis(0), xAxis(1),
-            xAxis(2), angle / DEGREES, velIs(1) / DEGREES);
-
-    bool stopTrigger = false;
-    auto angleTrigger = angle < angleThreshold_Rad_;
-    auto angVelTrigger = abs(velIs(1)) > angVelThreshold_RadPs_;
-    auto timeTrigger =
-        Core::NowNs() - transitionStartTime_ > transitionTimeLimit_;
-    if (angleTrigger) {
-      LOG_MSG("Bellyflop Transition finished. Trigger was angle\n");
-      stopTrigger = true;
-    } else if (angVelTrigger) {
-      LOG_MSG("Bellyflop Transition finished. Trigger was angular velocity\n");
-      stopTrigger = true;
-    } else if (timeTrigger) {
-      LOG_MSG("Bellyflop Transition finished. Trigger was time limit\n");
-      stopTrigger = true;
-    }
-    if (stopTrigger) {
-      controlTvc_.subscribeAttitudeSetpoint(controlMapping_.getAttitudeTopic());
-      missionState_.missionMode = MissionMode::MissionMode_Finished;
-      missionEnd_ = true;
-      LOG_MSG(
-          "Transition finished. State: %.2f deg, angular velocity: %.2f deg/s, "
-          "Time since start: %.2f s\n",
-          angle / DEGREES, velIs(1) / DEGREES,
-          double(Core::NowNs() - transitionStartTime_) /
-              Core::SECONDS); // Log the transition finished
-      setPaused(true);        // Pause the task to stop these calculations
-    }
+    // End of the kick: motors to zero at once. The TVC controller is disabled here (its next run, <= 20 ms,
+    // publishes the neutral command); the phase table confirms "off" on the next 10 Hz safety tick (mode
+    // Finished) and the chain then switches to freefall (TVC actuators off, flap attitude control on). The TVC
+    // attitude setpoint stays on the kick target until resetMission() resubscribes it to the mapping.
+    controlTvc_.enableControl(false);
+    kickActive_ = false;
+    missionState_.missionMode = MissionMode::MissionMode_Finished;
+    missionEnd_ = true;
+    setPaused(true);
+    static const char *const kNames[] = {"none", "angle", "rate", "time limit"};
+    LOG_MSG("Bellyflop kick finished (%s): remaining %.1f deg, pitch rate %.1f deg/s, %.3f s\n",
+            kNames[uint8_t(trigger)], double(remaining / DEGREES), double(pitchRate / DEGREES),
+            double(elapsed) / Core::SECONDS);
   }
 
 private:
+  void writeKickSetpoint() {
+    controlTvc_.setAttitudeStateSetpoint({0, 0, 0, kickTarget_[0], kickTarget_[1], kickTarget_[2], kickTarget_[3]});
+  }
+
 };
 
 } // namespace VCTR

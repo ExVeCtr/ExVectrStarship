@@ -91,7 +91,7 @@ struct FakeMission {
         if (legacyTaskInit)
           mode = Mode::Idle; // old MissionBellyflop::taskInit; the fixed taskInit does not touch the mode
       }
-      if (now - runningSince > 1 * S) {
+      if (now - runningSince > kKickTimeLimitNs) { // kick time limit (MissionBellyflop, Safety::kickEndTrigger)
         mode = Mode::Finished;
         ended = true;
         paused = true;
@@ -251,7 +251,7 @@ struct Vehicle {
       return;
     }
     const ControlPhaseStep st =
-        ctl.update(kindOf(active), modeOf(active->mode), active->actuators, switches != lastSwitchSeen);
+        ctl.update(kindOf(active), modeOf(active->mode), active->actuators, switches != lastSwitchSeen, now);
     lastSwitchSeen = switches;
     if (st.resetTvc)
       tvcResets++;
@@ -617,7 +617,7 @@ static void test_root_cause_bellyflop_first_run_differs_legacy() {
 
 static void test_bellyflop_first_and_later_runs_identical() {
   // Fixed taskInit + phase table: the first bellyflop after boot and a later one report Running and see exactly the
-  // same controller phase sequence (TVC set off during bellyflop and freefall).
+  // same controller phase sequence (2026-11-21: TVC set on during the bellyflop kick, off in freefall).
   Vehicle v;
   v.runFor(2 * S);
   const UnpoweredTrace a = flyToRth(v);
@@ -630,21 +630,27 @@ static void test_bellyflop_first_and_later_runs_identical() {
   TEST_ASSERT_TRUE(a.ticks > 5);
   TEST_ASSERT_EQUAL(a.ticks, b.ticks);
   TEST_ASSERT_EQUAL_UINT64(a.bits, b.bits);
-  TEST_ASSERT_EQUAL_UINT64(0, a.bits);
+  // The trace records the safety ticks 200 ms .. 1000 ms into the bellyflop: all on (the kick ends just after its
+  // 1 s limit in the model), every later bellyflop/freefall tick is off.
+  const int kickTicks = int(kKickTimeLimitNs / (100 * MS)) - 1;
+  TEST_ASSERT_EQUAL_UINT64((uint64_t(1) << kickTicks) - 1, a.bits);
 }
 
 static void test_tvc_reset_on_every_enable() {
-  // Full chain: the TVC set is reset when the waypoint mission goes Running and again when RTH starts after
-  // freefall (enabled after being off for the whole bellyflop and freefall).
+  // Full chain: the TVC set is reset when the waypoint mission goes Running, at the waypoint -> bellyflop switch
+  // (kick, stays on, mission switched) and when RTH starts after freefall (enabled after being off).
   Vehicle v;
   v.runFor(2 * S);
   v.missionBegin(-15 * S);
   runUntilActive(v, &v.bf);
-  TEST_ASSERT_EQUAL(1, v.tvcResets);
+  TEST_ASSERT_TRUE(v.tvcOn); // kick
+  TEST_ASSERT_EQUAL(2, v.tvcResets);
+  runUntilActive(v, &v.ff);
+  TEST_ASSERT_FALSE(v.tvcOn); // freefall: motors off
   runUntilActive(v, &v.rth);
   v.runFor(200 * MS);
   TEST_ASSERT_TRUE(v.tvcOn);
-  TEST_ASSERT_EQUAL(2, v.tvcResets);
+  TEST_ASSERT_EQUAL(3, v.tvcResets);
   v.runFor(60 * S);
   TEST_ASSERT_FALSE(v.tvcOn); // RTH finished
 }

@@ -54,6 +54,7 @@ private:
   float tvcAngleLimit_Rad_;
   float servoAngleLimit_Rad_;
   float tvcThrustLimit_N_;
+  float thrustCap_N_ = 1.0e9f; // phase-specific cap (thrustCap())
   float tvcFactor_;
 
   float tvcFinOffsetXP_Rad_ = 0.0f;
@@ -113,6 +114,13 @@ public:
   bool isActuatorsEnabled() const { return enableActuators_; }
 
   void motorPowerLimit(float limit) { motorPowerLimit_ = limit; }
+
+  /**
+   * Phase-specific thrust cap in N (controller phase table, src/safety/control_phase.hpp: the bellyflop kick
+   * limit). The commanded thrust vector is scaled down to min(cap, tvcThrustLimit_N); the motor output scale is
+   * unchanged (relative to tvcThrustLimit_N). Non-finite or negative values are treated as 0.
+   */
+  void thrustCap(float capN) { thrustCap_N_ = (capN >= 0.0f) ? capN : 0.0f; }
 
   /**
    * @brief Returns the topic to which the actual thrust vector is published. In

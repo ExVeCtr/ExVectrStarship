@@ -282,10 +282,9 @@ MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(),
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(),
                                     positionTopicSwitch.getTopic(),
                                     VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
+// Kick timing, triggers, target and thrust limit: src/safety/bellyflop_kick.hpp.
 MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(),
-                                  controlAttitudeTvc, controlMappingAccToAtt,
-                                  1 * Core::SECONDS, 50 * DEGREES,
-                                  150 * DEGREES);
+                                  controlAttitudeTvc, controlMappingAccToAtt);
 
 /**
  * This class takes care of enabling, disabling and setting the actuators for
@@ -466,13 +465,14 @@ public:
     lastSwitchSeen_ = missionSwitchCount_;
     const Safety::ControlPhaseStep st = controlPhase_.update(
         activeMissionKind(), modeIn(mission_->getMissionState().missionMode), mission_->getActuatorsEnabled(),
-        switched);
+        switched, Core::NowNs());
     if (st.resetTvc) {
       controlPositionStandard.resetControlState();
       controlAttitudeTvc.resetControlState();
     }
     controlPositionStandard.enableControl(st.phase.tvcEnabled);
     controlAttitudeTvc.enableControl(st.phase.tvcEnabled);
+    starshipTVC.thrustCap(st.phase.tvcThrustCapN); // kick thrust limit in the bellyflop, none otherwise
     bellyflopFlaps_ = st.phase.bellyflopFlaps;
     if (st.changed || st.resetTvc) {
       LOG_MSG("Control phase: TVC controllers %s%s, bellyflop flap control %s\n", st.phase.tvcEnabled ? "on" : "off",
@@ -502,6 +502,7 @@ public:
     controlAttitudeTvc.enableControl(false);
     controlPositionStandard.enableControl(false);
     controlPhase_.reset();
+    starshipTVC.thrustCap(Safety::kNoTvcThrustCapN);
     lastSwitchSeen_ = missionSwitchCount_;
     bellyflopFlaps_ = false;
     starshipFlaps.enableActuators(false);
@@ -1487,6 +1488,10 @@ public:
         in.tvcQ[i] = tq(3 + i);
         in.qIs[i] = s.att[3 + i];
       }
+      // Bellyflop kick: the mission writes the TVC setpoint directly (not via the mapping topic).
+      in.tvcOverride = vt.getCurrentMission() == &missionBellyflop && missionBellyflop.kickActive();
+      if (in.tvcOverride)
+        missionBellyflop.kickSetpoint(in.tvcOverrideQ);
       Comms::attitudeSetpoint(in, s.setpointQ);
     }
 

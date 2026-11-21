@@ -73,11 +73,11 @@ void StarshipTVC::taskThread() {
   bool enableActuators =
       enableActuators_; // copy to local variable so we can enalbe for testing
 
-  if (thrustMagnitude > tvcThrustLimit_N_) {
-    thrustMagnitude =
-        tvcThrustLimit_N_; // Limit the thrust magnitude to the thrust limit
-    tvcVector = tvcVector.normalize() *
-                tvcThrustLimit_N_; // Scale the vector to the thrust limit
+  const float thrustLimit =
+      thrustCap_N_ < tvcThrustLimit_N_ ? thrustCap_N_ : tvcThrustLimit_N_; // phase cap (bellyflop kick)
+  if (thrustMagnitude > thrustLimit) {
+    thrustMagnitude = thrustLimit; // Limit the thrust magnitude to the thrust limit
+    tvcVector = tvcVector.normalize() * thrustLimit; // Scale the vector to the thrust limit
   }
 
   auto tvcAngle = tvcVector.getAngleTo(Math::Vector<float, 3>({0, 0, 1}));
