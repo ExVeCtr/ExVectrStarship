@@ -163,7 +163,7 @@ struct HoverResult {
 template <class S> HoverResult runHover(S &s, float seconds) {
   s.setState(attOf(Quat_F(1, 0, 0, 0)), Vector<float, 6>{0, 0, 0, 0, 0, 10});
   s.setFlaps(90 * kDeg, 90 * kDeg, 90 * kDeg, 90 * kDeg);
-  s.setThrust(Vector_F{0, 0, 1.2f * kG}, true);
+  s.setThrust(Vector_F{0, 0, 1.1f * kG}, true);
   Csv csv(s.name(), "hover");
   int n = int(seconds / s.dt() + 0.5f);
   for (int i = 0; i < n; i++) {
@@ -343,10 +343,10 @@ struct VaneResult {
 template <class S> VaneResult runVaneStep(S &s) {
   s.setState(attOf(Quat_F(1, 0, 0, 0)), Vector<float, 6>{0, 0, 0, 0, 0, 10});
   s.setFlaps(90 * kDeg, 90 * kDeg, 90 * kDeg, 90 * kDeg);
-  s.setThrust(Vector_F{0, 0, 1.2f * kG}, true);
+  s.setThrust(Vector_F{0, 0, 1.1f * kG}, true);
   for (int i = 0; i < int(0.5f / s.dt()); i++)
     s.step();
-  const float a = 3 * kDeg, T = 1.2f * kG;
+  const float a = 3 * kDeg, T = 1.1f * kG;
   s.setThrust(Vector_F{sinf(a) * T, 0, cosf(a) * T}, true);
   VaneResult r{-1, 0};
   Csv csv(s.name(), "vane_step");
@@ -927,6 +927,22 @@ static void test_flip_and_kick() {
          ro.tUpright, ro.minTilt, ro.peakRate, ro.tiltEnd, rn.tUpright, rn.minTilt, rn.peakRate, rn.tiltEnd);
 }
 
+// Review 2026-11-21 (test 6): the powered kick at the 11 N cap with the 1.1 kg ship, vertical, flaps retracted: the
+// altitude change over the 1 s kick stays small (the kick is not meant to fly, owner).
+static void test_kick_cap_altitude_change_1p1_kg() {
+  NewSim s;
+  TEST_ASSERT_EQUAL_FLOAT(1.1f, s.m.params().mass_kg);
+  s.setState(attOf(Quat_F(1, 0, 0, 0)), Vector<float, 6>{0, 0, 0, 0, 0, 10});
+  s.setFlaps(90 * kDeg, 90 * kDeg, 90 * kDeg, 90 * kDeg);
+  s.setThrust(Vector_F{0, 0, 11.0f}, true);
+  const float z0 = 10.0f;
+  for (int i = 0; i < int(1.0f / s.dt() + 0.5f); i++)
+    s.step();
+  const float dz = s.pos()(5) - z0;
+  printf("SIMAERO kick cap 11 N, 1.1 kg, vertical, 1 s: altitude change %+.3f m (a bit of climb, no sinking)\n", dz);
+  TEST_ASSERT_TRUE(dz > -0.05f && dz < 0.3f);
+}
+
 static void test_closed_loop_flap_hold() {
   float vn = gNewTerminal > 0 ? gNewTerminal : 6.4f;
   float vo = gOldTerminal > 0 ? gOldTerminal : 15.0f;
@@ -1287,6 +1303,7 @@ int main(int, char **) {
   RUN_TEST(test_vane_step);
   RUN_TEST(test_align_from_small_tilt);
   RUN_TEST(test_flip_and_kick);
+  RUN_TEST(test_kick_cap_altitude_change_1p1_kg);
   RUN_TEST(test_closed_loop_flap_hold);
   RUN_TEST(test_sim_fault_reproduction_tl_stuck);
   RUN_TEST(test_wind_frame);

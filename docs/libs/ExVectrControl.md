@@ -59,7 +59,7 @@
 - The result is the minimal rotation tilting body +Z toward `a`, with zero yaw intent. Tilt limit `velocityLimit_Rad_ = 35°` (no setter). An accel along +Z gives the identity.
 
 ### `ControlAttitudeTvc` (`control_attitude_tvc.hpp/.cpp`)
-- **Constructor:** `(mass_kg=1, thrustLimit_N=20, tvcAngleLimit_Rad=15°)`. Main passes `(1.2, 14, 45°/15 = 3°)`.
+- **Constructor:** `(mass_kg=1, thrustLimit_N=20, tvcAngleLimit_Rad=15°)`. Main passes `(1.1, 14, 45°/15 = 3°)`.
 - **Inputs:**
   - `subscribeAttitudeMeasurement(Topic<Timestamped<Vector<7>>>)` with `[ω_body, q]`.
   - `subscribeAttitudeSetpoint(Topic<Vector<7>>)` with `[ω_sp, q_sp]`. `unsubscribeAttitudeSetpoint()` and `setAttitudeStateSetpoint(v7)` exist for direct override, used by `MissionBellyflop`.

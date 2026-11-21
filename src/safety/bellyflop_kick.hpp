@@ -44,9 +44,11 @@ constexpr float kKickEndRemainingAngleRad = 15.0f * kKickDeg;
 /// early-end trigger; bench peak with the current gains 135 deg/s).
 constexpr float kKickEndPitchRateRadPs = 250.0f * kKickDeg;
 
-/// Thrust limit during the kick, N (new, 2026-11-21). About the vehicle weight (1.1 kg * 9.81 = 10.8 N), so the
-/// kick does not climb while vertical; the full motor limit is 14 N (TVC_THRUST_LIMIT_N). The torque comes from
-/// the 3 deg vane deflection, so the pitch acceleration scales with this value.
+/// Thrust limit during the kick, N (2026-11-21, confirmed 11 N by the owner). The kick is NOT meant to fly: it only
+/// gives the rotation impulse that gets the ship roughly into the right attitude faster, then the flaps take over. It
+/// is not tuned to hold or gain height (11 N is close to the 10.8 N weight at 1.1 kg, so it neither climbs nor sinks
+/// much in the short kick); the full motor limit is 14 N (TVC_THRUST_LIMIT_N). The torque comes from the 3 deg vane
+/// deflection, so the pitch acceleration scales with this value.
 constexpr float kKickThrustLimitN = 11.0f;
 
 /// Defence in depth in the 10 Hz safety task (ControlPhaseTracker): if the bellyflop mission is still active this

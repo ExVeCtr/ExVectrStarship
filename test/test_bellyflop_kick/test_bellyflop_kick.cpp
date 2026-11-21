@@ -7,6 +7,7 @@
 #include <unity.h>
 
 #include "safety/bellyflop_kick.hpp"
+#include "starship_hardware.h"
 
 using namespace VCTR::Safety;
 
@@ -136,6 +137,29 @@ static void test_remaining_angle() {
   TEST_ASSERT_TRUE(isnan(kickRemainingAngle(bad, t)));
 }
 
+// Owner decision 2026-11-21: the vehicle mass is 1.1 kg (the measured value; a 1.2 kg change was reverted) and the kick
+// cap stays 11 N. The kick is not meant to fly: it must merely not throw the ship off while it pitches over.
+static void test_mass_and_kick_cap_at_1p1_kg() {
+  TEST_ASSERT_EQUAL_FLOAT(1.1f, VEHICLE_MASS_KG);
+  const float weight = VEHICLE_MASS_KG * 9.81f; // 10.79 N
+  TEST_ASSERT_EQUAL_FLOAT(11.0f, kKickThrustLimitN);
+  // Net vertical acceleration of a vertical kick at the cap: +0.19 m/s^2, so at most 0.1 m of climb in the 1 s limit.
+  const float aNet = (kKickThrustLimitN - weight) / VEHICLE_MASS_KG;
+  TEST_ASSERT_TRUE(aNet > 0.0f && aNet < 0.5f);
+  const float t = float(kKickTimeLimitNs) * 1e-9f;
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 0.095f, 0.5f * aNet * t * t);
+}
+
+// MissionFreefall::calculateStoppingDistance (stopDist = 0.5 Vz^2 / (T/m - g), private): with 14 N and 1.1 kg the
+// trigger altitude is 0.171 Vz^2 + 20 m. Same formula here, fed with the vehicle constants.
+static void test_freefall_trigger_at_1p1_kg() {
+  const float aSum = TVC_THRUST_LIMIT_N / VEHICLE_MASS_KG - 9.81f;
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.917f, aSum);
+  const float coeff = 0.5f / aSum;
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.171f, coeff);
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 88.4f, coeff * 20.0f * 20.0f + 20.0f); // at 20 m/s down
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_constants_sane);
@@ -144,5 +168,7 @@ int main(int, char **) {
   RUN_TEST(test_target_keeps_heading);
   RUN_TEST(test_target_degenerate_heading);
   RUN_TEST(test_remaining_angle);
+  RUN_TEST(test_mass_and_kick_cap_at_1p1_kg);
+  RUN_TEST(test_freefall_trigger_at_1p1_kg);
   return UNITY_END();
 }
