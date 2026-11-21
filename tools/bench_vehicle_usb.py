@@ -8,6 +8,9 @@ Run with the ground-station venv python (needs pyserial and the exvectr_gs packa
 Steps (run in order):
   wait <s>                          watch for <s> seconds
   tc <type> <paramInt> [paramFloat] send one legacy telecommand (port 0x7F, 8 bytes <BBhf, subsystem 0)
+  tcs <type> <subsystem> <paramInt> send one legacy telecommand with a subsystem (calibration: CalibStart = type 0,
+                                    CalibApply = 1, Save = 3; subsystem 0 gyro, 1 accel, 2 mag; paramInt 1 calibrate,
+                                    2 verify, 0 stop and fit, -1 discard)
   tc <Name> [paramFloat]            by name with its validation value: SystemReset, Arm, Disarm, SimulationMode,
                                     MissionBegin (paramFloat = start time s, default -20), ZeroEstimators
   sh <command>                      run a shell command (for example `exgs tc send ...`, which then goes over the
@@ -125,12 +128,12 @@ class Vehicle:
             self.write(hdr + payload)
             time.sleep(1.0)
 
-    def tc(self, type_, param_int, param_float):
-        payload = struct.pack("<BBhf", type_, 0, param_int, param_float)
+    def tc(self, type_, param_int, param_float, subsystem=0):
+        payload = struct.pack("<BBhf", type_, subsystem, param_int, param_float)
         self.write(build_data_frame(0, 1, TC_PORT, self.seq, payload, TC_QOS, False, 3))
         self.seq = (self.seq + 1) & 0xFF
-        print("%7.2f  >> TC type=%d paramInt=0x%X paramFloat=%g" % (self.now(), type_, param_int & 0xFFFF,
-                                                                      param_float), flush=True)
+        print("%7.2f  >> TC type=%d subsystem=%d paramInt=0x%X paramFloat=%g" % (
+            self.now(), type_, subsystem, param_int & 0xFFFF, param_float), flush=True)
 
     def now(self):
         return time.time() - self.t0
@@ -177,6 +180,16 @@ class Vehicle:
                     self.st.update(sq=sq)
                     if self.csvw:
                         self.csvw.writerow([round(t, 3), "MIS", p.phase, *[round(v, 4) for v in sq]])
+                elif cls is xp.Calibration:  # applied calibration, printed when it changes
+                    key = (p.gyro_source, p.accel_source, p.mag_source, tuple(round(v, 6) for v in p.gyro_offset),
+                           tuple(round(v, 6) for v in p.accel_offset), tuple(round(v, 8) for v in p.mag_offset))
+                    if key != getattr(self, "_calkey", None):
+                        self._calkey = key
+                        self.cal = p
+                        print("%7.2f  CAL src g/a/m=0x%02X/0x%02X/0x%02X gyro_b=[%.5f %.5f %.5f] rad/s accel_b=[%.4f %.4f "
+                              "%.4f] mag_b=[%.3e %.3e %.3e] T gyro_bias_est=[%.5f %.5f %.5f]" % (
+                                  t, p.gyro_source, p.accel_source, p.mag_source, *p.gyro_offset, *p.accel_offset,
+                                  *p.mag_offset, *p.gyro_bias_est), flush=True)
                 elif cls is xp.LogText:
                     txt = p.text.decode(errors="replace") if isinstance(p.text, bytes) else str(p.text)
                     print("%7.2f  LOG %s" % (t, txt.strip()), flush=True)
@@ -253,6 +266,8 @@ def main():
                     cmd = step[3:]
                     r = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=60)
                     print("%7.2f  $ %s -> %s" % (v.now(), cmd, (r.stdout + r.stderr).strip()[:200]), flush=True)
+                elif w[0] == "tcs":
+                    v.tc(int(w[1], 0), int(w[3], 0), 0.0, subsystem=int(w[2], 0))
                 elif w[0] == "tc":
                     if w[1] in TC_BY_NAME:
                         t, pi, pf = TC_BY_NAME[w[1]]

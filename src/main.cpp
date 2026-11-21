@@ -16,9 +16,6 @@
 #include "ExVectrCore/scheduler2.hpp"
 #include "ExVectrCore/task_types.hpp"
 #include "ExVectrDSP/body_simulator.hpp"
-#include "ExVectrDSP/calibrator_gyroscope.hpp"
-#include "ExVectrDSP/calibrator_magnetometer.hpp"
-#include "ExVectrDSP/calibrator_manager.hpp"
 #include "ExVectrDSP/imu_attitude_cf.hpp"
 #include "ExVectrDSP/imu_attitude_ekf.hpp"
 #include "ExVectrDSP/imu_gps_position_kf.hpp"
@@ -30,6 +27,10 @@
 #include "ExVectrSensor/Sensors/mpu9250.hpp"
 #include "ExVectrSensor/Sensors/qmc5883.hpp"
 #include "board_v_1_0.h"
+#include "calibration/calibration_math.hpp"
+#include "calibration/calibration_service.hpp"
+#include "calibration/calibration_task.hpp"
+#include "calibration/calibration_validity.hpp"
 #include "comms/vehicle_comms.hpp"
 #include "memory_keys.hpp"
 #include "starship_flaps.hpp"
@@ -109,11 +110,9 @@ DSP::TopicCoordTransform<float> magTransformTopic;
 // Copy of what the three transforms above apply (cal = matrix * (raw - offset)), kept only for the CALIBRATION
 // telemetry. Every setTransform goes through applySensorCalibration so the copy cannot diverge.
 Comms::SensorCalibration gyroCalApplied, accCalApplied, magCalApplied;
-bool magCalPendingSave = false; // CalibApply wrote key 101 to the RAM image, not yet saved to EEPROM
 
 constexpr uint8_t CAL_SRC_CALIB_EEPROM = Packets::Calibration::kGyroSourceCalibEeprom;
 constexpr uint8_t CAL_SRC_TRANSFORM_EEPROM = Packets::Calibration::kGyroSourceTransformEeprom;
-constexpr uint8_t CAL_SRC_OFFSET_OVERRIDE = Packets::Calibration::kGyroSourceOffsetOverride;
 constexpr uint8_t CAL_SRC_RAM_ONLY = Packets::Calibration::kGyroSourceRamOnly;
 constexpr uint8_t CAL_SRC_MEMORY_CLEARED = Packets::Calibration::kGyroSourceMemoryCleared;
 
@@ -132,17 +131,108 @@ void applySensorCalibration(DSP::TopicCoordTransform<float> &transform,
   record.source = source;
 }
 
+// ---- Sensor calibration (docs/project/calibration.md, src/calibration/) ----
+// What the legacy EEPROM keys hold for each sensor (key 10x calibration, key 20x mounting) and whether the key was found
+// in memory at boot (not created as a default). The applied transform is M = calib.cov * transform, offset = calib.val.
+struct LegacyCal {
+  DSP::ValueCov<float, 3> calib;
+  Math::Matrix<float, 3, 3> transform;
+  bool keyPresent = false;
+};
+LegacyCal gyroLegacy, accLegacy, magLegacy;
+
+// Session engine and its raw-sample task. The mag sample buffer (7.2 KB) and the engine live in RAM2 (DMAMEM).
+DMAMEM float calibMagBuffer[Calibration::CalibrationService::kMagBufferCapacity][3];
+DMAMEM Calibration::CalibrationService calibrationService(calibMagBuffer,
+                                                          Calibration::CalibrationService::kMagBufferCapacity);
+Calibration::CalibrationTask calibrationTask(calibrationService);
+
+// Validity inputs that change at run time: the gyro run result of this power cycle and the last still-window sample.
+Calibration::GyroRunState gyroRunState = Calibration::GyroRunState::NoRun;
+Calibration::LiveStill calibLiveStill;
+
+static Calibration::StoredCalibration storedFrom(const LegacyCal &l) {
+  Calibration::StoredCalibration s;
+  s.keyPresent = l.keyPresent;
+  for (size_t r = 0; r < 3; r++) {
+    s.offset[r] = l.calib.val(r);
+    for (size_t c = 0; c < 3; c++) {
+      s.C[3 * r + c] = l.calib.cov(r, c);
+      s.T[3 * r + c] = l.transform(r, c);
+    }
+  }
+  return s;
+}
+
+/// All three calibrations good to fly? (src/calibration/calibration_validity.hpp)
+Calibration::Validity currentCalibrationValidity() {
+  Calibration::ValidityInput in;
+  in.gyro = gyroRunState;
+  in.accel = storedFrom(accLegacy);
+  in.mag = storedFrom(magLegacy);
+  in.live = calibLiveStill;
+  return Calibration::calibrationsValid(in);
+}
+
+/// Tells the service what is applied now (offsets and M = C T), for the verify mode and the stillness bias.
+void publishActiveCalibration() {
+  const LegacyCal *all[3] = {&gyroLegacy, &accLegacy, &magLegacy};
+  const Calibration::Sensor sens[3] = {Calibration::Sensor::Gyro, Calibration::Sensor::Accel,
+                                       Calibration::Sensor::Mag};
+  for (int i = 0; i < 3; i++) {
+    const Calibration::StoredCalibration st = storedFrom(*all[i]);
+    double M[9];
+    Calibration::mat3Mul(st.C, st.T, M);
+    calibrationService.setActive(sens[i], st.offset, M);
+  }
+}
+
+/// Writes legacy key values (offset b, matrix C) to the RAM image and applies them (cal = C T (raw - b)). RAM only
+/// until Save. Returns false if the RAM image write failed (the transform is applied anyway).
+static bool applyLegacyCalibration(LegacyCal &l, uint32_t key, DSP::TopicCoordTransform<float> &topic,
+                                   Comms::SensorCalibration &record, const double offset[3], const double C[9]) {
+  for (size_t r = 0; r < 3; r++) {
+    l.calib.val(r) = static_cast<float>(offset[r]);
+    for (size_t c = 0; c < 3; c++)
+      l.calib.cov(r, c) = static_cast<float>(C[3 * r + c]);
+  }
+  const bool written = memoryManager.writeItem(l.calib, key);
+  l.keyPresent = written || l.keyPresent;
+  applySensorCalibration(topic, record, l.calib.cov * l.transform, l.calib.val,
+                         static_cast<uint8_t>(CAL_SRC_RAM_ONLY | (record.source & (CAL_SRC_TRANSFORM_EEPROM | CAL_SRC_CALIB_EEPROM |
+                                                                                    CAL_SRC_MEMORY_CLEARED))));
+  return written;
+}
+
+/// Gyro: only the bias changes (key 100 .val, in the raw sensor frame); C stays.
+static void applyGyroBias(const double bias[3]) {
+  const double C[9] = {gyroLegacy.calib.cov(0, 0), gyroLegacy.calib.cov(0, 1), gyroLegacy.calib.cov(0, 2),
+                       gyroLegacy.calib.cov(1, 0), gyroLegacy.calib.cov(1, 1), gyroLegacy.calib.cov(1, 2),
+                       gyroLegacy.calib.cov(2, 0), gyroLegacy.calib.cov(2, 1), gyroLegacy.calib.cov(2, 2)};
+  applyLegacyCalibration(gyroLegacy, MEMORY_KEY_GYROCALIB, gyroTransformTopic, gyroCalApplied, bias, C);
+  publishActiveCalibration();
+}
+
+/// Writes the RAM image to EEPROM and reads it back. True only if the EEPROM now equals the image.
+static bool saveCalibrationMemory() {
+  eeprom.transferFrom(internalMemory);
+  uint8_t a[64], b[64];
+  const size_t total = internalMemory.size();
+  for (size_t off = 0; off < total; off += sizeof(a)) {
+    const size_t n = (total - off) < sizeof(a) ? (total - off) : sizeof(a);
+    internalMemory.readMem(a, n, off);
+    eeprom.readMem(b, n, off);
+    if (memcmp(a, b, n) != 0)
+      return false;
+  }
+  return true;
+}
+
 DSP::IMUAttitudeEKFTask imuTask(1 * Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10 * Core::MILLISECONDS);
 
 DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
                                  TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
-
-// DSP::Calibrator_Magnetometer magCalibrator;
-// DSP::Calibrator_Gyroscope gyroCalibrator;
-// DSP::Calibrator_Manager<float> gyroCalibratorManager(gyroCalibrator,
-// gyroTransformTopic, internalMemory, 100); DSP::Calibrator_Manager<float>
-// magCalibratorManager(magCalibrator, magTransformTopic, internalMemory, 102);
 
 // Networking: VehicleComms (src/comms/), defined below the vehicle tasks it reads from.
 Core::Topic<Telecommand> telecommandTopic;
@@ -173,105 +263,6 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>>
     positionTopicSwitch;
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 2>>> groundTopicSwitch;
 
-class MagnetometerCalibrationTask : public Core::Task_Periodic {
-private:
-  Core::Buffer_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>, 10>
-      magSubr;
-
-  bool magCalibrationEnabled_ = false;
-
-  Math::Matrix<float, 4, 4> xTx_;
-  Math::Matrix<float, 4, 1> xTy_;
-
-  Math::Vector<float, 3> magBias_ = {0, 0, 0};
-  float magScale_ = 1;
-
-  float magneticFieldStrength_ = 50e-6;
-
-public:
-  MagnetometerCalibrationTask()
-      : Task_Periodic("Magnetometer Calibration", 0.1 * Core::SECONDS) {
-    Core::getSystemScheduler().addTask(*this);
-    // setPriority(500);
-    setPaused(true);
-  }
-
-  void beginCalibration() {
-    magCalibrationEnabled_ = true; // Set the magnetometer calibration to true
-    resetCalibration();
-    setPaused(false); // Start the task
-  }
-
-  void endCalibration() {
-    magCalibrationEnabled_ = false; // Set the magnetometer calibration to false
-    setPaused(true);                // Stop the task
-  }
-
-  Math::Vector<float, 3> getMagBias() const {
-    return magBias_; // Get the bias of the magnetometer in sensor frame.
-  }
-
-  const float getMagScale() const {
-    return magScale_; // Get the scale of the magnetometer in all axis.
-  }
-
-  void taskInit() override {
-    magSubr.subscribe(qmc.getMagTopic()); // Subscribe to the magnetometer topic
-    resetCalibration(); // Set the matricies to the starting values
-  }
-
-  void taskThread() override {
-    for (int i = 0; i < magSubr.size(); i++) {
-      updateCalib(
-          magSubr[i]
-              .data.val); // Update the calibration with the magnetometer data
-    }
-
-    if (magSubr.size() > 0) {
-      auto beta =
-          xTx_.inverse() *
-          xTy_; // Calculate the beta vector from the xTx and xTy matrices
-      magBias_ = {beta(0), beta(1),
-                  beta(2)};      // Get the bias from the beta vector
-      magBias_ = magBias_ * 0.5; // Scale the bias to the correct values
-
-      magScale_ = sqrt(beta(3) + magBias_(0) * magBias_(0) +
-                       magBias_(1) * magBias_(1) + magBias_(2) * magBias_(2)) /
-                  0.05; // Get the scale from the beta vector
-
-      LOG_MSG("Magnetometer bias: %.3f %.3f %.3f\n", magBias_(0), magBias_(1),
-              magBias_(2)); // Print the bias to the console
-      LOG_MSG("Magnetometer scale: %.3f\n",
-              magScale_); // Print the scale to the console
-    }
-
-    magSubr.clear();
-
-    if (!magCalibrationEnabled_) {
-      setPaused(true); // Pause the task if the calibration is not enabled
-    }
-  }
-
-  void updateCalib(const Math::Vector<float, 3> &magData) {
-    Math::Vector<float, 4> mag4 = {
-        magData(0), magData(1), magData(2),
-        1}; // Convert the magnetometer data to a 4D vector
-    xTx_ = xTx_ + mag4 * mag4.transpose(); // Update the xTx matrix with the
-    // magnetometer data
-
-    auto magSq =
-        magData(0) * magData(0) + magData(1) * magData(1) +
-        magData(2) * magData(2); // Convert the magnetometer data to a 4D vector
-    xTy_ =
-        xTy_ + mag4 * magSq; // Update the xTy matrix with the magnetometer data
-  }
-
-  void resetCalibration() {
-    xTx_ = 0;
-    xTy_ = 0;
-  }
-};
-MagnetometerCalibrationTask magCalibTask;
 
 MissionRTH defaultMission_(
     attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(),
@@ -331,6 +322,18 @@ private:
   bool missionZeroing_ = false;
   bool zeroingApplied_ = false;
 
+  // Sensor calibration policy (docs/project/calibration.md): all three calibrations must be good to fly. A warning
+  // line repeats every 10 s while one is not, Arm and MissionBegin are refused with the reason (rate-limited), and the
+  // countdown is aborted if the gyro run that closes it leaves one bad. SIMULATION-MODE EXEMPTION:
+  // Calibration::kCheckExemptInSimulation (the check is not required in simulation mode).
+  static constexpr int64_t CALIB_LOG_PERIOD = 10 * Core::SECONDS;
+  Safety::LogRateLimit calibWarnLog_{CALIB_LOG_PERIOD};
+  Safety::LogRateLimit calibArmLog_{CALIB_LOG_PERIOD};
+  Safety::LogRateLimit calibBeginLog_{CALIB_LOG_PERIOD};
+  Safety::LogRateLimit calibCmdLog_{1 * Core::SECONDS};
+  bool countdownGyroRun_ = false; ///< the active automatic gyro run closes the mission countdown
+  char lastCalibAbortReason_[96] = ""; ///< reason text of the last countdown abort for bad calibration (log only)
+
   size_t missionSelection_ = 0; // The index of the currently selected mission.
   Core::ListArray<MissionAbstract *> missionList_;
 
@@ -353,7 +356,7 @@ private:
   // Log rate limit of the auto-disarm messages (logging only, no effect on the
   // arm logic): once when the reason changes, then every DISARM_LOG_PERIOD.
   static constexpr int64_t DISARM_LOG_PERIOD = 5 * Core::SECONDS;
-  int lastDisarmReason_ = 0; // 0 none, 1 failure, 2 calib, 3 startup, 4 init
+  int lastDisarmReason_ = 0; // 0 none, 1 failure, 2 calib, 3 startup, 4 init, 5 calibration invalid
   int64_t lastDisarmLogNs_ = 0;
 
   /// True if the auto-disarm message for `reason` should be logged now.
@@ -483,6 +486,111 @@ public:
   }
 
   /**
+   * "On the ground: reset and stop" (Safety::AbortAction::ResetAndStop), shared by the MissionAbort telecommand and the
+   * calibration abort of the countdown: TVC actuators and motors off, everything disabled, the mission chain reset and
+   * the active mission reset to Idle, failures cleared (so the vehicle goes Startup -> Ready), nothing follows. An
+   * automatic gyro run that belonged to the countdown is cancelled.
+   */
+  void resetAndStopOnGround() {
+    starshipTVC.enableActuators(false); // Disable actuators
+    starshipTVC.enableMotors(false);
+    vehicleShutdownControl(true); // Disable everything
+    // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
+    // chain on the next tick. The mission stays the active one, in Idle.
+    missionChain_.reset();
+    mission_->resetMission();
+    clearFailures();
+    cancelCountdownGyroRun();
+  }
+
+  void cancelCountdownGyroRun() {
+    if (countdownGyroRun_) {
+      calibrationService.cancelGyroRun();
+      countdownGyroRun_ = false;
+    }
+  }
+
+  /// Starts the automatic gyro bias run for a zeroing window ending at windowEndNs (boot zero, ZeroEstimators,
+  /// countdown Initialisation): only if the window holds the 5 s still window plus the reserve (planGyroRun).
+  void startGyroRunForWindow(int64_t windowEndNs, bool countdown) {
+    const int64_t now = Core::NowNs();
+    const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs);
+    if (!plan.run) {
+      LOG_MSG("Gyro bias run skipped: the zeroing window is shorter than %.0f s\n",
+              double(Calibration::kGyroRunMinWindowNs) / Core::SECONDS);
+      return;
+    }
+    if (calibrationService.startGyroRun(now, plan.deadlineNs)) {
+      countdownGyroRun_ = countdown;
+      Core::printM("Calibration: gyro bias run started (window %.1f s, keep the vehicle still)\n",
+                   double(plan.deadlineNs - now) / Core::SECONDS);
+    }
+  }
+
+  /**
+   * An automatic gyro run finished. A pass applies the measured bias (RAM image and transform; the EKF is still in
+   * zeroing mode for the last second of the window, deadline = end - 1 s), makes the gyro valid for this power cycle
+   * and records the still-window accel/mag means for the live check. A failure leaves the previous bias applied and the
+   * gyro invalid. A run that closed the countdown then re-checks ALL THREE calibrations and aborts on the ground if one
+   * is bad.
+   */
+  void onGyroRunDone(const Calibration::GyroRunDone &done) {
+    const auto &r = done.result;
+    const bool countdown = countdownGyroRun_;
+    countdownGyroRun_ = false;
+    if (r.result == DSP::Calib::CalResult::Pass) {
+      const float oldB[3] = {gyroLegacy.calib.val(0), gyroLegacy.calib.val(1), gyroLegacy.calib.val(2)};
+      applyGyroBias(r.bias);
+      gyroRunState = Calibration::GyroRunState::Ok;
+      calibLiveStill.haveAccel = r.nAccel > 0;
+      calibLiveStill.haveMag = r.nMag > 0;
+      for (int k = 0; k < 3; k++) {
+        calibLiveStill.accelRaw[k] = r.accelMean[k];
+        calibLiveStill.magRaw[k] = r.magMean[k];
+      }
+      Core::printM("Calibration: gyro bias run PASS, bias %.3f %.3f %.3f deg/s (was %.3f %.3f %.3f), noise %.3f %.3f %.3f deg/s, "
+                   "IMU %.1f C\n",
+                   r.bias[0] * RAD_TO_DEG, r.bias[1] * RAD_TO_DEG, r.bias[2] * RAD_TO_DEG, double(oldB[0]) * RAD_TO_DEG,
+                   double(oldB[1]) * RAD_TO_DEG, double(oldB[2]) * RAD_TO_DEG, r.noiseStd[0] * RAD_TO_DEG,
+                   r.noiseStd[1] * RAD_TO_DEG, r.noiseStd[2] * RAD_TO_DEG, r.tempMean);
+    } else {
+      gyroRunState = Calibration::GyroRunState::Failed;
+      Core::printW("Calibration: gyro bias run FAILED (%s, %lu restarts, checks 0x%x): gyro calibration invalid until a run "
+                   "passes (ZeroEstimators, vehicle still)\n",
+                   DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks);
+    }
+
+    if (countdown)
+      checkCalibrationsAtCountdownEnd();
+  }
+
+  /// Gyro run of the countdown finished: all three must be good, else the mission is aborted before liftoff.
+  void checkCalibrationsAtCountdownEnd() {
+    const Calibration::Validity v = currentCalibrationValidity();
+    // The countdown phases are "on the ground" (Safety::decideAbort): reset and stop, as for MissionAbort there.
+    const MissionMode mm = mission_->getMissionState().missionMode;
+    const bool inCountdown = vehicleMode_ == VehicleMode::VehicleMode_Running &&
+                             mission_ == &missionWaypointTask &&
+                             (mm == MissionMode::MissionMode_Initialisation || mm == MissionMode::MissionMode_Startup);
+    char reason[96];
+    Calibration::describe(v, reason, sizeof(reason));
+    switch (Calibration::decideCountdownEnd(Calibration::checkRequired(simulationMode_), v, inCountdown)) {
+    case Calibration::CountdownAction::Continue:
+      if (Calibration::checkRequired(simulationMode_))
+        Core::printM("Calibration: all three calibrations checked at the end of the gyro run, countdown continues\n");
+      break;
+    case Calibration::CountdownAction::BadButNotInCountdown:
+      Core::printW("Calibration invalid (%s) but the countdown is no longer running: no abort needed\n", reason);
+      break;
+    case Calibration::CountdownAction::Abort:
+      snprintf(lastCalibAbortReason_, sizeof(lastCalibAbortReason_), "%s", reason);
+      Core::printW("MISSION ABORTED before liftoff: calibration invalid (%s). Reset and stop.\n", reason);
+      resetAndStopOnGround();
+      break;
+    }
+  }
+
+  /**
    * SystemReset (user decision 2026-11-20): the mission state becomes the state after boot, in simulation and in
    * real mode alike. No chain step is pending, every mission object is reset (Idle, mission time 0, setpoint
    * zero, actuators off, bellyflop paused with the TVC attitude setpoint back on the acc-to-att mapping), the
@@ -559,6 +667,8 @@ public:
       LOG_MSG("Estimator zeroing complete, valid zero recorded\n");
     }
 
+    calibrationHousekeeping();
+
     if (!systemsInitialised()) {
       starshipTVC.enableActuators(false); // Disable actuators
       vehicleShutdownControl(true);       // Disable everything
@@ -574,6 +684,7 @@ public:
       zeroing_.startAuto(Core::NowNs());
       LOG_MSG("Automatic estimator zeroing started (%.0f s), keep the vehicle still\n",
               double(Safety::EstimatorZeroing::kDefaultDurationS));
+      startGyroRunForWindow(zeroing_.endNs(), false);
     }
 
     if (mission_ == &defaultMission_) {
@@ -711,6 +822,210 @@ public:
     applyControlPhase();
   }
 
+  // ---- Sensor calibration commands (legacy telecommands, docs/project/calibration.md) ----
+
+  /// Preconditions of every calibration command (design section 3.3): initialised, disarmed, motors off, mode
+  /// Startup/Ready/SensorCalib, mission Idle or Finished, not in simulation mode. Logs the refusal (1/s).
+  bool calibrationCommandAllowed(const char *what) {
+    Calibration::CommandContext c;
+    c.initialised = allSystemsInitialised_;
+    c.armed = vehicleArmed_;
+    c.motorsEnabled = starshipTVC.isMotorsEnabled();
+    c.modeAllowed = vehicleMode_ == VehicleMode::VehicleMode_Startup || vehicleMode_ == VehicleMode::VehicleMode_Ready ||
+                    vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
+    const MissionMode mm = mission_->getMissionState().missionMode;
+    c.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
+    c.simulation = simulationMode_;
+    const Calibration::CommandResult r = Calibration::checkCommand(c);
+    if (r == Calibration::CommandResult::Ok)
+      return true;
+    if (calibCmdLog_.due(Core::NowNs()))
+      Core::printW("Calibration %s refused: %s\n", what, Calibration::toString(r));
+    return false;
+  }
+
+  static bool calibrationSensor(Subsystem sub, Calibration::Sensor &out) {
+    switch (sub) {
+    case Subsystem::Subsystem_Gyro: out = Calibration::Sensor::Gyro; return true;
+    case Subsystem::Subsystem_Accel: out = Calibration::Sensor::Accel; return true;
+    case Subsystem::Subsystem_Magneto: out = Calibration::Sensor::Mag; return true;
+    default: return false;
+    }
+  }
+
+  /**
+   * CalibStart: subsystem 0 gyro, 1 accel, 2 mag. paramInt 1 (or any value > 2) calibrate, 2 verify the active
+   * calibration, -1 discard a candidate (also ends a collection), 0 or any other value <= 0 stop and fit.
+   */
+  void handleCalibStart(const Telecommand &tc) {
+    Calibration::Sensor sensor;
+    if (!calibrationSensor(tc.subsystem, sensor))
+      return;
+    if (!calibrationCommandAllowed("command"))
+      return;
+    const int64_t now = Core::NowNs();
+
+    if (tc.paramInt == -1) {
+      calibrationService.discard(sensor);
+      return;
+    }
+    if (tc.paramInt <= 0) {
+      if (!calibrationService.stop(sensor, now))
+        Core::printW("Calibration stop ignored: %s is not collecting\n", Calibration::toString(sensor));
+      return;
+    }
+
+    const bool verify = tc.paramInt == 2;
+    if (calibrationService.anyBusy()) {
+      Core::printW("Calibration start refused: another calibration is running, stop or discard it first\n");
+      return;
+    }
+    // The vehicle will be handled or rotated: an active zeroing window is aborted, and whatever zero exists is no
+    // longer trusted (the automatic zero runs again when the session ends).
+    if (zeroing_.abort())
+      Core::printM("Estimator zeroing aborted by calibration start\n");
+    zeroing_.invalidate();
+    cancelCountdownGyroRun();
+    calibrationService.cancelGyroRun();
+    publishActiveCalibration();
+    if (calibrationService.start(sensor, verify, now) == Calibration::StartResult::Started) {
+      starshipTVC.enableActuators(false);
+      vehicleMode_ = VehicleMode::VehicleMode_SensorCalib;
+      applyEstimatorZeroing();
+    }
+  }
+
+  /// CalibApply: only a candidate with verdict PASS or WARN (owner decision D6). Writes the legacy keys (RAM image),
+  /// applies the transform, invalidates the estimator zero (the automatic zero runs again before Ready).
+  void handleCalibApply(const Telecommand &tc) {
+    Calibration::Sensor sensor;
+    if (!calibrationSensor(tc.subsystem, sensor))
+      return;
+    if (!calibrationCommandAllowed("apply"))
+      return;
+    if (!calibrationService.applicable(sensor)) {
+      Core::printW("Calibration apply refused: no passing candidate for %s (state %s, result %s)\n",
+                   Calibration::toString(sensor), Calibration::toString(calibrationService.state(sensor)),
+                   DSP::Calib::toString(calibrationService.result(sensor)));
+      return;
+    }
+
+    // Estimator inputs are about to change: an active zeroing window is void.
+    if (zeroing_.abort())
+      Core::printM("Estimator zeroing aborted by calibration apply\n");
+    calibrationService.cancelGyroRun();
+    countdownGyroRun_ = false;
+
+    double offset[3], C[9];
+    bool written = true;
+    switch (sensor) {
+    case Calibration::Sensor::Accel: {
+      const Calibration::StoredCalibration st = storedFrom(accLegacy);
+      if (!Calibration::accelCandidateToLegacy(calibrationService.accelResult(), st.T, offset, C)) {
+        Core::printW("Calibration apply refused: accel mounting matrix is singular\n");
+        return;
+      }
+      written = applyLegacyCalibration(accLegacy, MEMORY_KEY_ACCCALIB, accTransformTopic, accCalApplied, offset, C);
+      break;
+    }
+    case Calibration::Sensor::Mag:
+      Calibration::magCandidateToLegacy(calibrationService.magResult(), offset, C);
+      written = applyLegacyCalibration(magLegacy, MEMORY_KEY_MAGCALIB, magTransformTopic, magCalApplied, offset, C);
+      break;
+    case Calibration::Sensor::Gyro: {
+      const auto &r = calibrationService.gyroResult();
+      applyGyroBias(r.bias);
+      gyroRunState = Calibration::GyroRunState::Ok;
+      calibLiveStill.haveAccel = r.nAccel > 0;
+      calibLiveStill.haveMag = r.nMag > 0;
+      for (int k = 0; k < 3; k++) {
+        calibLiveStill.accelRaw[k] = r.accelMean[k];
+        calibLiveStill.magRaw[k] = r.magMean[k];
+      }
+      break;
+    }
+    }
+    publishActiveCalibration();
+    calibrationService.markApplied(sensor);
+    zeroing_.invalidate();
+    if (vehicleMode_ == VehicleMode::VehicleMode_Ready)
+      vehicleMode_ = VehicleMode::VehicleMode_Startup; // a new zero before Ready
+    Core::printM("Calibration: %s calibration applied (RAM only until Save)%s; the estimator zero is invalid, the automatic "
+                 "zero runs next: keep the vehicle still\n",
+                 Calibration::toString(sensor), written ? "" : ", RAM image write FAILED");
+  }
+
+  /// Save (any of gyro, accel, magneto): RAM image -> EEPROM, read back and compared.
+  void handleCalibSave(const Telecommand &tc) {
+    Calibration::Sensor sensor;
+    if (!calibrationSensor(tc.subsystem, sensor))
+      return;
+    if (!calibrationCommandAllowed("save"))
+      return;
+    if (calibrationService.anyBusy()) {
+      Core::printW("Calibration save refused: a calibration is still running\n");
+      return;
+    }
+    if (saveCalibrationMemory()) {
+      Comms::SensorCalibration *recs[3] = {&gyroCalApplied, &accCalApplied, &magCalApplied};
+      for (auto *rec : recs) {
+        if (rec->source & CAL_SRC_RAM_ONLY)
+          rec->source = static_cast<uint8_t>((rec->source & ~CAL_SRC_RAM_ONLY) | CAL_SRC_CALIB_EEPROM);
+      }
+      calibrationService.markSaved();
+      Core::printM("Calibration: saved to EEPROM and verified by read-back\n");
+    } else {
+      Core::printW("Calibration: EEPROM save FAILED (read-back differs), the values stay in RAM only\n");
+    }
+  }
+
+  /// MissionBegin gate: all three calibrations good, and a countdown long enough for the gyro run (not required in
+  /// simulation mode). Logs the refusal every 10 s.
+  bool missionBeginCalibrationOk(int16_t paramInt) {
+    if (!Calibration::checkRequired(simulationMode_))
+      return true;
+    const Calibration::Validity v = currentCalibrationValidity();
+    if (!v.allOk()) {
+      if (calibBeginLog_.due(Core::NowNs())) {
+        char why[128];
+        Calibration::describe(v, why, sizeof(why));
+        Core::printW("Mission begin refused: calibration invalid (%s)\n", why);
+      }
+      return false;
+    }
+    if (!Calibration::countdownLongEnough(paramInt)) {
+      if (calibBeginLog_.due(Core::NowNs()))
+        Core::printW("Mission begin refused: countdown too short (%d s), the gyro calibration needs the Initialisation "
+                     "phase of at least 8 s: use a start time of %d s or earlier\n",
+                     int(paramInt), int(Calibration::kMinCountdownParamInt));
+      return false;
+    }
+    return true;
+  }
+
+  /// Per-tick calibration upkeep: results of the automatic gyro run, the end of a calibration session (back to
+  /// Startup), and the warning line while a calibration is invalid.
+  void calibrationHousekeeping() {
+    Calibration::GyroRunDone done;
+    if (calibrationService.takeGyroRunDone(done))
+      onGyroRunDone(done);
+
+    if (vehicleMode_ == VehicleMode::VehicleMode_SensorCalib && !calibrationService.anyBusy()) {
+      vehicleMode_ = VehicleMode::VehicleMode_Startup; // the automatic zero runs before Ready
+      Core::printM("Calibration session ended, back to Startup (automatic zero runs)\n");
+    }
+
+    if (allSystemsInitialised_ && Calibration::checkRequired(simulationMode_) && !calibrationService.gyroRunActive() &&
+        !calibrationService.anyBusy() && !zeroing_.active()) {
+      const Calibration::Validity v = currentCalibrationValidity();
+      if (!v.allOk() && calibWarnLog_.due(Core::NowNs())) {
+        char why[128];
+        Calibration::describe(v, why, sizeof(why));
+        Core::printW("WARNING calibration invalid, Arm and MissionBegin are refused (repeats every 10 s): %s\n", why);
+      }
+    }
+  }
+
   void handleTelecommands() {
     if (!telecommandSubr.isDataNew())
       return; // No new telecommand data
@@ -719,98 +1034,15 @@ public:
 
     switch (telecommand.type) {
     case TelecommandType::Telecommand_CalibStart:
-      if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
-        if (telecommand.paramInt > 0) {
-          // The vehicle is rotated during the mag calibration: a zero taken now would be invalid.
-          if (zeroing_.abort()) {
-            LOG_MSG("Estimator zeroing aborted by mag calibration: zero invalid, auto zero runs again in Startup\n");
-          }
-          magCalibTask.beginCalibration();    // Start the mag calibration
-          starshipTVC.enableActuators(false); // Disable actuators
-
-          vehicleMode_ = VehicleMode::VehicleMode_SensorCalib;
-          LOG_MSG("Mag calibration started\n"); // Log the mag calibration start
-        } else {
-          magCalibTask.endCalibration(); // End the mag calibration
-          vehicleMode_ =
-              VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to
-          // startup
-          LOG_MSG("Mag calibration Ended\n"); // Log the mag calibration start
-        }
-      }
+      handleCalibStart(telecommand);
       break;
 
     case TelecommandType::Telecommand_CalibApply:
-      if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
-        LOG_MSG("Applying magnetometer calibration\n"); // Log the mag
-        // calibration apply
-
-        auto magScale = 1 / magCalibTask.getMagScale();
-        DSP::ValueCov<float, 3> magTransform;
-        magTransform.val =
-            magCalibTask.getMagBias(); // Get the mag bias from the mag
-        // calibration task
-        magTransform.cov = {magScale, 0, 0, 0, magScale, 0, 0, 0, magScale};
-
-        LOG_MSG("Saving this magnetometer bias: %.3f %.3f %.3f\n",
-                magTransform.val(0), magTransform.val(1),
-                magTransform.val(2)); // Print the bias to the console
-
-        const bool magCalWritten =
-            memoryManager.writeItem(magTransform, MEMORY_KEY_MAGCALIB);
-        if (magCalWritten) { // Save the mag transform matrix to
-          // memory
-          // memoryManager.writeItem(magTransformTopic.getOutputTopic().getTransformMatrix(),
-          // MEMORY_KEY_MAGTRANSFORM); // Save the mag transform matrix to
-          // memory
-          LOG_MSG("Magnetometer calib saved to memory\n"); // Log the mag
-          // transform
-          // matrix save
-        } else {
-          LOG_MSG("Magnetometer calib not saved to memory\n"); // Log the mag
-          // transform
-          // matrix not
-          // saved
-        }
-
-        Math::Matrix<float, 3, 3> sensorToBody_ = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        const bool magTransformFound = memoryManager.readItem(
-            sensorToBody_,
-            MEMORY_KEY_MAGTRANSFORM); // Read the mag transform matrix
-        if (!magTransformFound) {
-          // from memory
-          LOG_MSG("Magnetometer transform matrix not found in memory. Using "
-                  "identity matrix.\n"); // Log the mag transform matrix not
-          // found in memory
-        } else {
-          LOG_MSG(
-              "Magnetometer transform matrix found in memory. Using it.\n"); // Log the mag transform matrix found in memory
-        }
-
-        magCalPendingSave = magCalWritten;
-        applySensorCalibration(
-            magTransformTopic, magCalApplied, magTransform.cov * sensorToBody_,
-            magTransform.val,
-            static_cast<uint8_t>(
-                CAL_SRC_RAM_ONLY |
-                (magTransformFound ? CAL_SRC_TRANSFORM_EEPROM : 0) |
-                (magCalApplied.source & CAL_SRC_MEMORY_CLEARED)));
-
-        LOG_MSG("Mag calibration applied\n"); // Log the mag calibration apply
-      }
+      handleCalibApply(telecommand);
       break;
 
     case TelecommandType::Telecommand_Save:
-      if (telecommand.subsystem == Subsystem::Subsystem_Magneto) {
-        LOG_MSG("Saving EEPROM Memory!\n");
-        eeprom.transferFrom(
-            internalMemory); // Transfer the internal memory to the EEPROM
-        if (magCalPendingSave) { // telemetry flags: the applied mag calib is now in EEPROM
-          magCalApplied.source = static_cast<uint8_t>(
-              (magCalApplied.source & ~CAL_SRC_RAM_ONLY) | CAL_SRC_CALIB_EEPROM);
-          magCalPendingSave = false;
-        }
-      }
+      handleCalibSave(telecommand);
       break;
 
     case TelecommandType::Telecommand_SystemReset:
@@ -841,6 +1073,8 @@ public:
         if (zeroing_.abort()) {
           LOG_MSG("Estimator zeroing aborted by system reset: zero invalid, auto zero runs again\n");
         }
+        calibrationService.cancelGyroRun(); // the run belonged to the aborted window or countdown
+        countdownGyroRun_ = false;
         applyEstimatorZeroing();
 
         starshipTVC.enableMotors(false);      // Disable motors
@@ -858,6 +1092,19 @@ public:
           if (zeroBlockedLog_.due(Core::NowNs()))
             LOG_MSG("Arm refused: estimator zeroing active\n");
           break;
+        }
+
+        // All three calibrations must be good to fly (not required in simulation mode).
+        if (Calibration::checkRequired(simulationMode_)) {
+          const Calibration::Validity v = currentCalibrationValidity();
+          if (!v.allOk()) {
+            if (calibArmLog_.due(Core::NowNs())) {
+              char why[128];
+              Calibration::describe(v, why, sizeof(why));
+              Core::printW("Arm refused: calibration invalid (%s)\n", why);
+            }
+            break;
+          }
         }
 
         vehicleArmed_ = true;
@@ -891,6 +1138,8 @@ public:
       if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !zeroing_.missionBeginAllowed()) {
         if (zeroBlockedLog_.due(Core::NowNs()))
           LOG_MSG("Mission begin refused: estimator zeroing active\n");
+      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !missionBeginCalibrationOk(telecommand.paramInt)) {
+        // refused: reason logged by missionBeginCalibrationOk
       } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
         int64_t startTime =
             int64_t(telecommand.paramInt) *
@@ -906,6 +1155,11 @@ public:
         // will do the mission
 
         LOG_MSG("Mission begin telecommand\n"); // Log the mission begin
+
+        // The countdown's Initialisation phase (mission time < -10 s) is a zeroing window: run the gyro bias run in it
+        // (also in simulation mode, the sensors are real there; the validity check itself is exempt in simulation).
+        if (telecommand.paramInt < -int(Calibration::kCountdownInitialisationEndS))
+          startGyroRunForWindow(Calibration::countdownWindowEndNs(Core::NowNs(), telecommand.paramInt), true);
 
         if (!simulationMode_) {
           starshipTVC.enableMotors(true); // Enable actuators
@@ -938,14 +1192,7 @@ public:
         switchMissionTo(&defaultMission_);
         break;
       case Safety::AbortAction::ResetAndStop:
-        starshipTVC.enableActuators(false); // Disable actuators
-        starshipTVC.enableMotors(false);
-        vehicleShutdownControl(true); // Disable everything
-        // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
-        // chain on the next tick. The mission stays the active one, in Idle.
-        missionChain_.reset();
-        mission_->resetMission();
-        clearFailures();
+        resetAndStopOnGround(); // shared with the calibration abort of the countdown
         break;
       case Safety::AbortAction::KeepRth:
       case Safety::AbortAction::Ignore:
@@ -975,6 +1222,7 @@ public:
         LOG_MSG("Estimator zeroing %s (%.1f s), keep the vehicle still\n", Safety::toString(result),
                 double(zeroing_.endNs() - now) / Core::SECONDS);
         applyEstimatorZeroing();
+        startGyroRunForWindow(zeroing_.endNs(), false);
       } else if (zeroRefusedLog_.due(now)) {
         LOG_MSG("ZeroEstimators refused: %s (%lu refused since boot)\n", Safety::toString(result),
                 (unsigned long)zeroing_.refusedCount());
@@ -1294,6 +1542,21 @@ public:
         LOG_MSG("Vehicle disarmed due to sensor initialisation.\n");
     } else {
       lastDisarmReason_ = 0; // next auto-disarm is logged immediately
+    }
+
+    // Invariant "armed implies calibrations good" (not in simulation mode), enforced on the ground only: nothing can
+    // make a calibration invalid in flight (runs and sessions need a disarmed vehicle on the ground).
+    if (vehicleArmed_ && vehicleMode_ == VehicleMode::VehicleMode_Ready &&
+        Calibration::checkRequired(simulationMode_)) {
+      const Calibration::Validity v = currentCalibrationValidity();
+      if (!v.allOk()) {
+        vehicleArmed_ = false;
+        if (disarmLogDue(5)) {
+          char why[128];
+          Calibration::describe(v, why, sizeof(why));
+          Core::printW("Vehicle disarmed: calibration invalid (%s)\n", why);
+        }
+      }
     }
 
     // LOG_MSG("Vehicle armed: %d\n", vehicleArmed_); // Log the vehicle armed
@@ -1971,6 +2234,7 @@ void initialiseMemory() {
     memoryManager.writeItem(magCalibData, MEMORY_KEY_MAGCALIB);
   } else {
     magSrc |= CAL_SRC_CALIB_EEPROM;
+    magLegacy.keyPresent = true;
   }
 
   if (!memoryManager.readItem(gyroCalibData, MEMORY_KEY_GYROCALIB)) {
@@ -1982,6 +2246,7 @@ void initialiseMemory() {
     memoryManager.writeItem(gyroCalibData, MEMORY_KEY_GYROCALIB);
   } else {
     gyroSrc |= CAL_SRC_CALIB_EEPROM;
+    gyroLegacy.keyPresent = true;
     LOG_MSG("Gyro calibration data found: %.3f, %.3f, %.3f\n",
             gyroCalibData.val(0) * RAD_TO_DEG,
             gyroCalibData.val(1) * RAD_TO_DEG,
@@ -1997,6 +2262,7 @@ void initialiseMemory() {
     memoryManager.writeItem(accCalibData, MEMORY_KEY_ACCCALIB);
   } else {
     accSrc |= CAL_SRC_CALIB_EEPROM;
+    accLegacy.keyPresent = true;
   }
 
   if (!memoryManager.readItem(magTransform, MEMORY_KEY_MAGTRANSFORM)) {
@@ -2026,10 +2292,8 @@ void initialiseMemory() {
     accSrc |= CAL_SRC_TRANSFORM_EEPROM;
   }
 
-  gyroCalibData.val(0) = 0.92 * DEG_TO_RAD;
-  gyroCalibData.val(1) = 2.0 * DEG_TO_RAD;
-  gyroCalibData.val(2) = 0.6 * DEG_TO_RAD;
-  gyroSrc |= CAL_SRC_OFFSET_OVERRIDE;
+  // No hard-coded gyro bias any more: the boot offset is key 100 (the last bias a run stored) until the automatic gyro
+  // run of the boot zeroing window applies a fresh one (CalibrationService, VehicleSafetyAndControlTask).
 
   /*accCalibData.val = {0.4278, 0.560, 2.0725};
   accCalibData.val(0) /= 0.9984;
@@ -2050,6 +2314,15 @@ void initialiseMemory() {
   applySensorCalibration(magTransformTopic, magCalApplied,
                          magCalibData.cov * magTransform, magCalibData.val,
                          magSrc);
+
+  // What the calibration service and the validity check work from.
+  gyroLegacy.calib = gyroCalibData;
+  gyroLegacy.transform = gyroTransform;
+  accLegacy.calib = accCalibData;
+  accLegacy.transform = accTransform;
+  magLegacy.calib = magCalibData;
+  magLegacy.transform = magTransform;
+  publishActiveCalibration();
 
   // Sync the internal memory with the EEPROM. This wont write anything if we
   // ended up only reading.
@@ -2106,6 +2379,10 @@ void initialiseMemory() {
 }
 
 void initialiseTopicConnections() {
+  // Calibration service: raw driver topics (before the calibration transforms), only fed while a session or run needs them.
+  calibrationTask.connect(mpuDriver.getGyroTopic(), mpuDriver.getAccelTopic(), qmc.getMagTopic(),
+                          mpuDriver.getThermoTopic());
+
   gyroTransformTopic.setInputTopic(mpuDriver.getGyroTopic());
   accTransformTopic.setInputTopic(mpuDriver.getAccelTopic());
   magTransformTopic.setInputTopic(qmc.getMagTopic());

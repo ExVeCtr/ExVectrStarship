@@ -227,6 +227,25 @@ static void test_command_preconditions() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CommandResult::NotOnGround), uint8_t(checkCommand(x)));
 }
 
+static void test_countdown_end_decision() {
+  Validity good;
+  good.gyro = good.accel = good.mag = Reason::Ok;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(decideCountdownEnd(true, good, true)));
+  Validity bad = good;
+  bad.accel = Reason::OutOfRange;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  bad = good;
+  bad.gyro = Reason::RunFailed; // the run that closes the countdown failed
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  bad = good;
+  bad.mag = Reason::LiveCheck;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  // mission already reset / no longer in the countdown: nothing to abort
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::BadButNotInCountdown), uint8_t(decideCountdownEnd(true, bad, false)));
+  // simulation exemption: never aborts
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(decideCountdownEnd(checkRequired(true), bad, true)));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_simulation_exemption_constant);
@@ -240,5 +259,6 @@ int main(int, char **) {
   RUN_TEST(test_gyro_run_planning);
   RUN_TEST(test_countdown_rule);
   RUN_TEST(test_command_preconditions);
+  RUN_TEST(test_countdown_end_decision);
   return UNITY_END();
 }

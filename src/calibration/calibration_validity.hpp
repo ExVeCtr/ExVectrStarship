@@ -150,6 +150,20 @@ Reason checkAccelParams(const StoredCalibration &s);
 Reason checkMagParams(const StoredCalibration &s);
 Validity calibrationsValid(const ValidityInput &in);
 
+/// What to do when the gyro run that closes the mission countdown has finished (owner decision D7): re-check ALL THREE
+/// calibrations; if one is bad the mission is aborted before liftoff (reset and stop) with the reason in the log.
+enum class CountdownAction : uint8_t {
+  Continue = 0,   ///< check not required (simulation mode) or all three good
+  Abort,          ///< a calibration is bad and the countdown is still running: reset and stop
+  BadButNotInCountdown, ///< a calibration is bad but the mission is no longer in its countdown (nothing to abort)
+};
+
+inline CountdownAction decideCountdownEnd(bool checkRequired, const Validity &v, bool inCountdown) {
+  if (!checkRequired || v.allOk())
+    return CountdownAction::Continue;
+  return inCountdown ? CountdownAction::Abort : CountdownAction::BadButNotInCountdown;
+}
+
 /// "gyro: ok, accel: offset out of range, mag: default" into buf (always terminated). Returns the length.
 size_t describe(const Validity &v, char *buf, size_t n);
 
