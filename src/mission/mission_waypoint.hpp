@@ -23,7 +23,18 @@ namespace VCTR {
  * is used for example is emergencies to have the vehicle in a safe state.
  */
 class MissionWaypoint : public MissionAbstract, public Core::Task_Periodic {
+public:
+  /// How the last run ended (read by the mission chain decision, Safety::MissionChain, owner decision 2026-11-21).
+  enum class EndReason : uint8_t {
+    None = 0,      ///< not ended since the last begin/reset
+    Completed,     ///< the last waypoint was reached (and its loiter time held)
+    Cancelled,     ///< a waypoint with cancelIfNotReachable (the hover check) was not reached in its time limit
+    LastTimedOut,  ///< the last waypoint (no cancel flag) was not reached in its time limit
+  };
+
 private:
+  EndReason endReason_ = EndReason::None;
+
   struct Waypoint {
     Math::Vector<float, 3>
         position;     // The position of the waypoint to travel to.
@@ -149,6 +160,9 @@ public:
 
   bool missionEnd() override { return missionEnd_; }
 
+  /// How the last run ended; None while running and after a reset.
+  EndReason endReason() const { return endReason_; }
+
   void taskInit() override {
     missionState_.missionMode =
         MissionMode::MissionMode_Idle; // Set the mission mode to idle
@@ -168,6 +182,7 @@ public:
     missionEnd_ = false;             // Set the mission end to false
     currentWaypointIndex_ = 0;       // Reset the waypoint index
     currentVelocity_ = 0;            // Reset the current velocity to 0
+    endReason_ = EndReason::None;
     waypointStartTime_ =
         Core::NowNs(); // Set the time when the waypoint was started
     lastUpdateTimestamp_ = Core::NowNs();    // Reset the last update timestamp
@@ -178,6 +193,7 @@ public:
     clearMissionState();
     actuatorsEnabled_ = false; // Disable actuators
     missionEnd_ = true;        // Set the mission end to true
+    endReason_ = EndReason::None;
     currentWaypointIndex_ = 0; // Reset the waypoint index
     positionSetpoint_ = {0, 0, 0, 0,
                          0, 0}; // Set the setpoint to the current position and
@@ -369,6 +385,7 @@ private:
         } else {
           LOG_MSG("Waypoint mission finished\n"); // Log the mission finished
           missionEnd_ = true;                     // Set the mission end to true
+          endReason_ = EndReason::Completed;
         }
       }
     } else {
@@ -398,6 +415,7 @@ private:
               "Waypoint not reachable. Mission cancelled\n"); // Log the mission
                                                               // cancelled
           missionEnd_ = true; // Set the mission end to true
+          endReason_ = EndReason::Cancelled; // the chain goes to RTH, never to the bellyflop
         } else if (currentWaypointIndex_ <
                    waypoints_.size() - 1) { // If we are at the last waypoint,
                                             // we go to idle mode
@@ -415,6 +433,7 @@ private:
                                                                       // mission
                                                                       // finished
           missionEnd_ = true; // Set the mission end to true
+          endReason_ = EndReason::LastTimedOut;
         }
       }
     }

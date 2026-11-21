@@ -13,6 +13,7 @@
 // Also modelled (2026-11-20, feature/bellyflop-abort-gnss): the controller phase table (Safety::ControlPhaseTracker,
 // applied after the chain step like main.cpp) next to the legacy mode-edge enable, the bellyflop init order (legacy:
 // taskInit on the first unpaused tick overwrites Running with Idle), and MissionAbort through Safety::decideAbort.
+#include <math.h>
 #include <unity.h>
 
 #include "safety/control_phase.hpp"
@@ -40,10 +41,13 @@ struct FakeMission {
   bool taskInitDone = false; // bellyflop only: paused at construction, its taskInit runs on the first unpaused tick
   bool paused = true;        // bellyflop only: unpaused by begin, paused by reset and when finished
   bool legacyTaskInit = false; // bellyflop only: model the old taskInit that set mode Idle (fixed 2026-11-20)
+  int64_t cancelAfter = 0;     // waypoint only: > 0 = the hover check (cancel-flag waypoint) fails after this time
+  bool cancelled = false;      // waypoint only: MissionWaypoint::endReason() == Cancelled
 
   explicit FakeMission(Kind k) : kind(k) {}
 
   void reset() {
+    cancelled = false;
     paused = true;
     mode = Mode::Idle;
     ended = true;
@@ -122,6 +126,10 @@ struct FakeMission {
       }
       break;
     case Mode::Running:
+      if (kind == Kind::Waypoint && cancelAfter > 0 && now - runningSince > cancelAfter && !ended) {
+        ended = true; // "Waypoint not reachable. Mission cancelled" (ends in Running)
+        cancelled = true;
+      }
       if (kind == Kind::Waypoint && now - runningSince > 30 * S)
         ended = true; // waypoint ends in Running
       if (kind == Kind::Bellyflop && now - runningSince > 1 * S) {
@@ -153,6 +161,8 @@ struct Vehicle {
   int64_t now = 0;
   int switches = 0;
   int rthEndedTicks = 0;
+  float altitude = 120.0f; // position estimate z seen by the safety task (default: apogee reached)
+  ChainRedirect lastRedirect = ChainRedirect::None;
 
   // Controller phase: table (current) or the legacy mode-edge enable (shared lastMode, Running edge enables with
   // the mission's actuator flag, every other edge disables), for the root-cause comparison.
@@ -264,7 +274,13 @@ struct Vehicle {
     in.activeIdle = active->mode == Mode::Idle;
     in.activeEnded = active->ended;
     in.nextIsDefaultOrNone = active->next == nullptr || active->next == &rth;
-    switch (chain.step(in)) {
+    in.nextIsBellyflop = active->next == &bf;
+    in.activeCancelled = active == &wp && wp.cancelled;
+    in.altitudeM = altitude;
+    const ChainStep st = chain.step(in);
+    if (chain.redirect() != ChainRedirect::None)
+      lastRedirect = chain.redirect();
+    switch (st) {
     case ChainStep::RthEnded:
       rthEndedTicks++;
       break;
@@ -719,6 +735,119 @@ static void test_abort_during_rth_keeps_rth() {
   TEST_ASSERT_TRUE(v.rth.mode == Mode::Running);
 }
 
+// --- RTH instead of the bellyflop (owner decisions 2026-11-21) -------------------------------------------------
+
+static void test_kick_gate_step_rules() {
+  TEST_ASSERT_EQUAL_FLOAT(90.0f, kMinKickAltitudeM);
+  MissionChain c;
+  ChainInput in;
+  in.activeEnded = true;
+  in.nextIsBellyflop = true;
+  c.begin();
+  // Hover check failed (cancel flag): RTH, at any altitude.
+  in.activeCancelled = true;
+  in.altitudeM = 2.0f;
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+  TEST_ASSERT_EQUAL(ChainRedirect::CancelledWaypoint, c.redirect());
+  in.altitudeM = 120.0f;
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+  TEST_ASSERT_EQUAL(ChainRedirect::CancelledWaypoint, c.redirect());
+  in.nextIsBellyflop = false; // also when the next mission is not the bellyflop
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+  in.nextIsBellyflop = true;
+  in.activeCancelled = false;
+  // Altitude gate for the bellyflop.
+  const float lows[] = {-1.0f, 0.0f, 2.0f, 50.0f, 89.99f};
+  for (float a : lows) {
+    in.altitudeM = a;
+    TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+    TEST_ASSERT_EQUAL(ChainRedirect::BelowKickAltitude, c.redirect());
+  }
+  in.altitudeM = NAN;
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+  TEST_ASSERT_EQUAL(ChainRedirect::BelowKickAltitude, c.redirect());
+  const float highs[] = {90.0f, 117.0f, 120.0f, 150.0f};
+  for (float a : highs) {
+    in.altitudeM = a;
+    TEST_ASSERT_EQUAL(ChainStep::SwitchToNext, c.step(in));
+    TEST_ASSERT_EQUAL(ChainRedirect::None, c.redirect());
+  }
+  // The gate only concerns the bellyflop: bellyflop -> freefall and freefall -> RTH are unchanged at low altitude.
+  in.nextIsBellyflop = false;
+  in.altitudeM = 10.0f;
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToNext, c.step(in));
+  in.nextIsDefaultOrNone = true;
+  TEST_ASSERT_EQUAL(ChainStep::SwitchToDefault, c.step(in));
+  TEST_ASSERT_EQUAL(ChainRedirect::None, c.redirect());
+  TEST_ASSERT_TRUE(c.pending());
+}
+
+static void test_hover_check_failure_goes_to_rth() {
+  // Owner wind test 2026-11-21: hover check failed 3 m from the waypoint at about 2 m height.
+  Vehicle v;
+  v.wp.cancelAfter = 10 * S;
+  v.altitude = 2.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(200 * S);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_EQUAL(0, v.ff.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_EQUAL(ChainRedirect::CancelledWaypoint, v.lastRedirect);
+  TEST_ASSERT_TRUE(v.active == &v.rth);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_FALSE(v.chain.pending());
+  TEST_ASSERT_FALSE(v.anyActuator());
+}
+
+static void test_ascent_timeout_low_goes_to_rth() {
+  // The waypoint mission ends without the cancel flag (ascent waypoint time limit) at 50 m: no kick, RTH.
+  Vehicle v;
+  v.altitude = 50.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(200 * S);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_EQUAL(0, v.ff.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_EQUAL(ChainRedirect::BelowKickAltitude, v.lastRedirect);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_FALSE(v.chain.pending());
+}
+
+static void test_ascent_end_at_apogee_goes_to_bellyflop() {
+  // Normal flight (apogee about 120 m) and an ascent timeout at 120 m: the chain is unchanged.
+  Vehicle v;
+  v.altitude = 120.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  runUntilActive(v, &v.bf);
+  TEST_ASSERT_EQUAL(1, v.bf.begins);
+  v.runFor(200 * S);
+  TEST_ASSERT_EQUAL(1, v.ff.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_EQUAL(ChainRedirect::None, v.lastRedirect);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+}
+
+static void test_abort_low_unchanged_by_kick_gate() {
+  // RTH after an abort is unchanged: the abort path does not go through the chain step.
+  Vehicle v;
+  v.altitude = 50.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(20 * S);
+  TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
+  TEST_ASSERT_EQUAL(AbortAction::StartRth, v.missionAbort());
+  TEST_ASSERT_TRUE(v.active == &v.rth);
+  v.runFor(60 * S);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_EQUAL(ChainRedirect::None, v.lastRedirect);
+  TEST_ASSERT_FALSE(v.chain.pending());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_step_rules);
@@ -742,5 +871,10 @@ int main(int, char **) {
   RUN_TEST(test_abort_in_flight_starts_rth_from_every_phase);
   RUN_TEST(test_abort_low_and_slow_after_liftoff_starts_rth);
   RUN_TEST(test_abort_during_rth_keeps_rth);
+  RUN_TEST(test_kick_gate_step_rules);
+  RUN_TEST(test_hover_check_failure_goes_to_rth);
+  RUN_TEST(test_ascent_timeout_low_goes_to_rth);
+  RUN_TEST(test_ascent_end_at_apogee_goes_to_bellyflop);
+  RUN_TEST(test_abort_low_unchanged_by_kick_gate);
   return UNITY_END();
 }

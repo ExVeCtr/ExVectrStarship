@@ -831,6 +831,11 @@ public:
     chainIn.activeEnded = mission_->missionEnd();
     chainIn.nextIsDefaultOrNone =
         (mission_->nextMission() == &defaultMission_ || mission_->nextMission() == nullptr);
+    // RTH instead of the bellyflop after a failed hover check or below kMinKickAltitudeM (owner 2026-11-21).
+    chainIn.nextIsBellyflop = (mission_->nextMission() == &missionBellyflop);
+    chainIn.activeCancelled =
+        (mission_ == &missionWaypointTask && missionWaypointTask.endReason() == MissionWaypoint::EndReason::Cancelled);
+    chainIn.altitudeM = posEstSubr.getItem().data(5);
     const bool chainWasPending = missionChain_.pending();
 
     switch (missionChain_.step(chainIn)) {
@@ -845,7 +850,13 @@ public:
       break;
 
     case Safety::ChainStep::SwitchToDefault:
-      LOG_MSG("Mission ended. Switching to default mission.\n");
+      if (missionChain_.redirect() != Safety::ChainRedirect::None) {
+        LOG_MSG("Mission ended: RTH instead of the next mission (%s, altitude %.1f m, minimum %.0f m)\n",
+                Safety::toString(missionChain_.redirect()), double(chainIn.altitudeM),
+                double(Safety::kMinKickAltitudeM));
+      } else {
+        LOG_MSG("Mission ended. Switching to default mission.\n");
+      }
       missionSelection_ = 0; // Set the mission selection to the default mission
       switchMissionTo(&defaultMission_); // Switch to the default mission
       break;

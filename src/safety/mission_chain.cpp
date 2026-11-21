@@ -4,6 +4,7 @@ namespace VCTR {
 namespace Safety {
 
 ChainStep MissionChain::step(const ChainInput &in) {
+  redirect_ = ChainRedirect::None;
   if (in.activeIsDefault && in.activeEnded) {
     pending_ = false;
     return ChainStep::RthEnded;
@@ -19,7 +20,28 @@ ChainStep MissionChain::step(const ChainInput &in) {
     pending_ = false;
     return ChainStep::None;
   }
+  // Owner decisions 2026-11-21 (header): RTH instead of the next mission.
+  if (in.activeCancelled) {
+    redirect_ = ChainRedirect::CancelledWaypoint;
+    return ChainStep::SwitchToDefault;
+  }
+  if (in.nextIsBellyflop && !in.nextIsDefaultOrNone && !(in.altitudeM >= kMinKickAltitudeM)) { // NaN: no kick
+    redirect_ = ChainRedirect::BelowKickAltitude;
+    return ChainStep::SwitchToDefault;
+  }
   return in.nextIsDefaultOrNone ? ChainStep::SwitchToDefault : ChainStep::SwitchToNext;
+}
+
+const char *toString(ChainRedirect r) {
+  switch (r) {
+  case ChainRedirect::None:
+    return "none";
+  case ChainRedirect::CancelledWaypoint:
+    return "hover check (cancel-flag waypoint) failed";
+  case ChainRedirect::BelowKickAltitude:
+    return "below the minimum bellyflop altitude";
+  }
+  return "?";
 }
 
 const char *toString(ChainStep s) {

@@ -27,12 +27,32 @@
  * - The RTH-end shutdown (RthEnded) is reported whenever the default mission (RTH) is active and ended, pending or
  *   not: it is also the steady state after boot and after a SystemReset (RTH Idle, missionEnd() true), and it only
  *   switches things off.
+ * - RTH instead of the next mission (owner decisions 2026-11-21, X6 of the flight executive design applied to the
+ *   current chain; redirect() tells which rule fired):
+ *   (a) the active mission ended because a waypoint with the cancel flag (the hover check) was not reached in its
+ *       time limit: SwitchToDefault (RTH hot start), whatever the next mission is. Before, the chain went on to the
+ *       bellyflop and pitched the vehicle over at about 1 m.
+ *   (b) the next mission is the bellyflop (powered kick) and the altitude (position estimate, NWU z above the
+ *       position reference) is below kMinKickAltitudeM, or not finite: SwitchToDefault. Covers every reason the
+ *       waypoint mission can end low, for example the ascent waypoint's time limit at 50 m. The normal flight
+ *       reaches the 120 m apogee (waypoint threshold 3 m) and is unchanged.
  */
 
 #include <stdint.h>
 
 namespace VCTR {
 namespace Safety {
+
+/// Lowest altitude (m above the position reference, NWU z) at which the chain may start the bellyflop (powered kick).
+/// Below it the chain goes to RTH instead (owner decision 2026-11-21). The normal apogee is about 120 m.
+constexpr float kMinKickAltitudeM = 90.0f;
+
+/// Why step() returned SwitchToDefault instead of the configured next mission (None: no redirect).
+enum class ChainRedirect : uint8_t {
+  None = 0,
+  CancelledWaypoint, ///< rule (a): a cancel-flag waypoint (hover check) failed
+  BelowKickAltitude, ///< rule (b): bellyflop next, but altitude < kMinKickAltitudeM (or not finite)
+};
 
 /// What VehicleSafetyAndControlTask does with the chain this tick.
 enum class ChainStep : uint8_t {
@@ -48,6 +68,9 @@ struct ChainInput {
   bool activeIdle = false;          ///< the active mission is in mode Idle (reset or never begun)
   bool activeEnded = false;         ///< active->missionEnd()
   bool nextIsDefaultOrNone = false; ///< active->nextMission() is the default mission or nullptr
+  bool nextIsBellyflop = false;     ///< active->nextMission() is the bellyflop (powered kick) mission
+  bool activeCancelled = false;     ///< the active mission ended because a cancel-flag waypoint failed (hover check)
+  float altitudeM = 0.0f;           ///< position estimate z, m above the position reference (NWU)
 };
 
 class MissionChain {
@@ -64,12 +87,17 @@ public:
   /// Decides this tick's step. Clears pending() when the chain ends (RthEnded) or an Idle mission cancels it.
   ChainStep step(const ChainInput &in);
 
+  /// Why the last step() returned SwitchToDefault instead of the next mission (None otherwise).
+  ChainRedirect redirect() const { return redirect_; }
+
 private:
   bool pending_ = false;
+  ChainRedirect redirect_ = ChainRedirect::None;
 };
 
 /// Short text for logs.
 const char *toString(ChainStep s);
+const char *toString(ChainRedirect r);
 
 } // namespace Safety
 } // namespace VCTR
