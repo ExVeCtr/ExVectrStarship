@@ -178,6 +178,23 @@ static void test_system_reset_aborts_window_and_invalidates_zero() {
   TEST_ASSERT_TRUE(z.readyAllowed());
 }
 
+static void test_invalidate_after_calibration_apply() {
+  EstimatorZeroing z;
+  z.startAuto(0);
+  TEST_ASSERT_TRUE(z.update(10 * S));
+  TEST_ASSERT_TRUE(z.readyAllowed());
+  TEST_ASSERT_TRUE(z.invalidate());          // a calibration was applied: the zero no longer matches the inputs
+  TEST_ASSERT_FALSE(z.zeroedSinceBoot());
+  TEST_ASSERT_FALSE(z.readyAllowed());
+  TEST_ASSERT_TRUE(z.shouldStartAutoZero(true, true)); // Startup: the automatic zero runs again
+  TEST_ASSERT_FALSE(z.invalidate());         // nothing left to clear
+  z.startAuto(20 * S);
+  z.invalidate();                            // an active window is left alone
+  TEST_ASSERT_TRUE(z.active());
+  TEST_ASSERT_TRUE(z.update(30 * S));
+  TEST_ASSERT_TRUE(z.readyAllowed());
+}
+
 static void test_log_rate_limit() {
   LogRateLimit l(1 * S);
   TEST_ASSERT_TRUE(l.due(0));
@@ -196,6 +213,7 @@ int main(int, char **) {
   RUN_TEST(test_arm_and_mission_begin_refused_while_zeroing);
   RUN_TEST(test_ready_requires_prior_zero_and_boot_auto_zero);
   RUN_TEST(test_system_reset_aborts_window_and_invalidates_zero);
+  RUN_TEST(test_invalidate_after_calibration_apply);
   RUN_TEST(test_log_rate_limit);
   return UNITY_END();
 }

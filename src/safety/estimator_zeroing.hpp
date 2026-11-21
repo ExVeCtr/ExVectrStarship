@@ -90,6 +90,16 @@ public:
   /// Returns true if a window was aborted.
   bool abort();
 
+  /// A sensor calibration was applied (accel, mag or gyro): the estimators hold a zero taken with the old inputs.
+  /// Clears the valid-zero record so Ready (and a mission) needs a new complete window; the automatic zero then runs
+  /// again in Startup. A window that is active is NOT touched (callers abort() it first; calibration is only applied
+  /// on the ground). Returns true if a valid zero was cleared.
+  bool invalidate() {
+    const bool was = zeroed_;
+    zeroed_ = false;
+    return was;
+  }
+
   bool active() const { return active_; }
   bool zeroedSinceBoot() const { return zeroed_; }
   int64_t endNs() const { return endNs_; }
