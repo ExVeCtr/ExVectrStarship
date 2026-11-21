@@ -26,6 +26,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ExVectrDSP/calibration/accel_ellipsoid_fit.hpp"
+
 namespace VCTR {
 namespace Calibration {
 
@@ -34,7 +36,7 @@ constexpr double kGravity = 9.81;                 ///< m/s^2 (= AccelFitConfig::
 constexpr double kAccelLiveTolerance = 0.25;      ///< |a_cal| = g +- this in a still window, m/s^2
 constexpr double kMagRef = 0.05;                  ///< calibrated |B| in driver units (= MagFitConfig::rRef)
 constexpr double kMagLiveToleranceRatio = 0.30;   ///< |B_cal| = kMagRef * (1 +- this) in a still window
-constexpr double kAccelOffsetMax = 1.5;           ///< |b_k| m/s^2 (= AccelFitConfig::maxOffset)
+constexpr double kAccelOffsetMax = DSP::Calib::kAccelOffsetLimit; ///< |b_k| m/s^2 (= AccelFitConfig::maxOffset, 2.5)
 constexpr double kAccelDiagMin = 0.95;            ///< sensor-frame A: diagonal in [min, max] (= scale limits)
 constexpr double kAccelDiagMax = 1.05;
 constexpr double kAccelOffDiagMax = 0.02;         ///< |A_jk|, j != k (= AccelFitConfig::maxOffDiag)

@@ -96,11 +96,91 @@ static void test_noisy_recovery_pass() {
   const AccelFitResult r = fitAccel(poses, 12);
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
   for (int k = 0; k < 3; k++)
-    TEST_ASSERT_DOUBLE_WITHIN(0.02, b[k], r.offset[k]); // < 1 % of the 1.5 m/s^2 range and of g
+    TEST_ASSERT_DOUBLE_WITHIN(0.02, b[k], r.offset[k]); // < 1 % of the offset range and of g
   for (int k = 0; k < 9; k++)
     TEST_ASSERT_DOUBLE_WITHIN(3e-3, kA[k], r.A[k]); // 12 poses with 0.005 m/s^2 noise each: about 0.1-0.3 %
   TEST_ASSERT_TRUE(r.residualRms < 0.01);
   TEST_ASSERT_TRUE(r.iterations > 0 && r.iterations <= 50);
+}
+
+static void test_offset_limit_boundary() {
+  // 2.4 m/s^2 z offset is accepted (limit 2.5, owner decision 2026-11-21); it only warns (above warnOffset 0.8).
+  static const double b[3] = {0.1, 0.1, 2.4};
+  double Ainv[9];
+  TEST_ASSERT_TRUE(invert3(kA, Ainv));
+  Rng rng(9);
+  double u[12][3], poses[12][3];
+  twelvePoses(u, rng, 10.0);
+  for (int i = 0; i < 12; i++) {
+    const double v[3] = {9.81 * u[i][0], 9.81 * u[i][1], 9.81 * u[i][2]};
+    rawFromTrue(Ainv, b, v, poses[i]);
+  }
+  TEST_ASSERT_EQUAL_DOUBLE(2.5, kAccelOffsetLimit);
+  TEST_ASSERT_EQUAL_DOUBLE(2.5, AccelFitConfig().maxOffset);
+  const AccelFitResult r = fitAccel(poses, 12);
+  TEST_ASSERT_TRUE((r.checks & kAccelCheckOffset) != 0);
+  TEST_ASSERT_TRUE((r.checks & kAccelCheckOffsetNominal) == 0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Warn), uint8_t(r.result));
+}
+
+static void test_coverage_mask_and_text() {
+  const double g = 9.81;
+  const double all[6][3] = {{g, 0, 0}, {-g, 0, 0}, {0, g, 0}, {0, -g, 0}, {0, 0, g}, {0, 0, -g}};
+  char txt[32];
+  TEST_ASSERT_EQUAL_UINT8(0x3F, accelCoverageMask(all, 6, 25.0 * M_PI / 180));
+  TEST_ASSERT_EQUAL(6, accelCoverageCount(0x3F));
+  accelMissingText(0x3F, txt, sizeof(txt));
+  TEST_ASSERT_EQUAL_STRING("", txt);
+  // one missing (-Z)
+  uint8_t m = accelCoverageMask(all, 5, 25.0 * M_PI / 180);
+  TEST_ASSERT_EQUAL_UINT8(0x1F, m);
+  TEST_ASSERT_EQUAL(5, accelCoverageCount(m));
+  accelMissingText(m, txt, sizeof(txt));
+  TEST_ASSERT_EQUAL_STRING("-Z", txt);
+  // several missing: only +Z and -X present
+  const double few[2][3] = {{0, 0, g}, {-g, 0, 0}};
+  m = accelCoverageMask(few, 2, 25.0 * M_PI / 180);
+  TEST_ASSERT_EQUAL_UINT8(0x12, m);
+  accelMissingText(m, txt, sizeof(txt));
+  TEST_ASSERT_EQUAL_STRING("+X, +Y, -Y, -Z", txt);
+  accelMissingText(0, txt, sizeof(txt));
+  TEST_ASSERT_EQUAL_STRING("+X, -X, +Y, -Y, +Z, -Z", txt);
+  char tiny[5];
+  accelMissingText(0, tiny, sizeof(tiny)); // truncates at whole entries, stays terminated
+  TEST_ASSERT_EQUAL_STRING("+X", tiny);
+  TEST_ASSERT_EQUAL_UINT8(0, accelCoverageMask(all, 0, 25.0 * M_PI / 180));
+  // agrees with the fit's coverage check
+  TEST_ASSERT_TRUE(accelPoseCoverage(all, 6, 25.0 * M_PI / 180));
+  TEST_ASSERT_FALSE(accelPoseCoverage(all, 5, 25.0 * M_PI / 180));
+}
+
+static void test_coverage_angle_boundary() {
+  const double lim = 25.0 * M_PI / 180;
+  for (int axis = 0; axis < 3; axis++) {
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+      const int bit = 2 * axis + (sgn > 0 ? 0 : 1);
+      // tilted from the axis by 24 and 26 degrees (towards the next axis)
+      for (int pass = 0; pass < 2; pass++) {
+        const double a = (pass == 0 ? 24.0 : 26.0) * M_PI / 180;
+        double p[1][3] = {{0, 0, 0}};
+        p[0][axis] = sgn * 9.81 * cos(a);
+        p[0][(axis + 1) % 3] = 9.81 * sin(a);
+        const uint8_t m = accelCoverageMask(p, 1, lim);
+        if (pass == 0)
+          TEST_ASSERT_TRUE((m & (1u << bit)) != 0);
+        else
+          TEST_ASSERT_TRUE((m & (1u << bit)) == 0);
+      }
+    }
+  }
+}
+
+static void test_coverage_complete_needs_nine_poses() {
+  TEST_ASSERT_FALSE(accelCoverageComplete(8, 0x3F, 9));
+  TEST_ASSERT_TRUE(accelCoverageComplete(9, 0x3F, 9));
+  TEST_ASSERT_TRUE(accelCoverageComplete(12, 0x3F, 9));
+  TEST_ASSERT_FALSE(accelCoverageComplete(12, 0x3E, 9));
+  TEST_ASSERT_FALSE(accelCoverageComplete(6, 0x3F, 9)); // the six faces alone are not enough poses
 }
 
 static void test_diagonal_fallback() {
@@ -159,8 +239,8 @@ static void test_non_finite() {
 }
 
 static void test_range_and_residual_failures() {
-  // Offset 2.2 m/s^2 in z (beyond 1.5): FAIL_RANGE although the fit is perfect.
-  static const double b[3] = {0.1, 0.1, 2.2};
+  // Offset 2.7 m/s^2 in z (beyond 2.5): FAIL_RANGE although the fit is perfect.
+  static const double b[3] = {0.1, 0.1, 2.7};
   double Ainv[9];
   TEST_ASSERT_TRUE(invert3(kA, Ainv));
   Rng rng(8);
@@ -172,7 +252,7 @@ static void test_range_and_residual_failures() {
   }
   AccelFitResult r = fitAccel(poses, 12);
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailRange), uint8_t(r.result));
-  TEST_ASSERT_DOUBLE_WITHIN(1e-6, 2.2, r.offset[2]);
+  TEST_ASSERT_DOUBLE_WITHIN(1e-6, 2.7, r.offset[2]);
 
   // One bad pose (vehicle moved, 0.3 m/s^2 off): FAIL_RESIDUAL.
   static const double b2[3] = {0.1, 0.1, 0.2};
@@ -211,6 +291,10 @@ int main() {
   RUN_TEST(test_linalg);
   RUN_TEST(test_exact_recovery);
   RUN_TEST(test_noisy_recovery_pass);
+  RUN_TEST(test_offset_limit_boundary);
+  RUN_TEST(test_coverage_mask_and_text);
+  RUN_TEST(test_coverage_angle_boundary);
+  RUN_TEST(test_coverage_complete_needs_nine_poses);
   RUN_TEST(test_diagonal_fallback);
   RUN_TEST(test_too_few_and_coverage);
   RUN_TEST(test_degenerate_faces_only);

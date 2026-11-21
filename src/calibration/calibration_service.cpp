@@ -42,6 +42,7 @@ const char *toString(State s) {
 CalibrationService::CalibrationService(float (*magBuffer)[3], size_t magCapacity, const ServiceConfig &cfg)
     : cfg_(cfg), magFit_(magBuffer, magCapacity) {
   poses_.reset();
+  coverageHintGiven_ = false;
 }
 
 void CalibrationService::logf(const char *fmt, ...) {
@@ -102,6 +103,16 @@ void CalibrationService::addAccel(int64_t tNs, const double a[3]) {
       n.ev = ev;
       n.count = static_cast<uint8_t>(poses_.count());
       n.angleDeg = static_cast<float>(poses_.lastNearestAngle() * kRadToDeg);
+      n.coverage = 0;
+      n.complete = false;
+      if (ev == PoseEvent::Captured || ev == PoseEvent::Full) {
+        DSP::Calib::AccelFitConfig fc;
+        n.coverage = DSP::Calib::accelCoverageMask(poses_.means(), poses_.count(), fc.coverageAngleRad);
+        if (!coverageHintGiven_ && DSP::Calib::accelCoverageComplete(poses_.count(), n.coverage, fc.minPosesFull)) {
+          coverageHintGiven_ = true;
+          n.complete = true;
+        }
+      }
       noteCount_++;
     }
   }
@@ -158,6 +169,7 @@ StartResult CalibrationService::start(Sensor s, bool verify, int64_t nowNs) {
   switch (s) {
   case Sensor::Accel:
     poses_.reset();
+    coverageHintGiven_ = false;
     {
       DSP::Calib::StillnessConfig sc;
       if (gyroBiasTrusted_ && active_[0].valid) {
@@ -333,11 +345,17 @@ void CalibrationService::runAccelFit(int64_t nowNs) {
     state_[i] = State::Failed;
     logf("Accel candidate rejected: parameters not acceptable for arming (%s)", toString(accelParams));
   }
+  char missingTxt[40] = "";
+  if (accelRes_.result == DSP::Calib::CalResult::FailCoverage) {
+    char m[24];
+    DSP::Calib::accelMissingText(DSP::Calib::accelCoverageMask(poses_.means(), n, fc.coverageAngleRad), m, sizeof(m));
+    snprintf(missingTxt, sizeof(missingTxt), ", missing: %s", m);
+  }
   logf("Accel fit %s: %u poses%s, residual rms %.4f max %.4f m/s^2, offset %.3f %.3f %.3f m/s^2, scale %.3f..%.3f, "
-       "checks 0x%03x",
+       "checks 0x%03x%s",
        DSP::Calib::toString(accelRes_.result), (unsigned)accelRes_.nUsed, accelRes_.diagonal ? " (diagonal fit)" : "",
        accelRes_.residualRms, accelRes_.residualMax, accelRes_.offset[0], accelRes_.offset[1], accelRes_.offset[2],
-       accelRes_.scaleEig[0], accelRes_.scaleEig[2], (unsigned)accelRes_.checks);
+       accelRes_.scaleEig[0], accelRes_.scaleEig[2], (unsigned)accelRes_.checks, missingTxt);
   logf("%s", state_[i] == State::Review ? "Accel candidate ready: apply with CalibApply (then Save), or discard"
                                         : "Accel candidate rejected: discard, move to more different poses and repeat");
 }
@@ -382,6 +400,18 @@ void CalibrationService::runMagFit(int64_t nowNs) {
                                         : "Mag candidate rejected: discard, tumble through more directions and repeat");
 }
 
+void CalibrationService::logCaptured(uint8_t count, uint8_t coverage, bool complete) {
+  const int covered = DSP::Calib::accelCoverageCount(coverage);
+  char missing[24];
+  DSP::Calib::accelMissingText(coverage, missing, sizeof(missing));
+  if (covered >= 6)
+    logf("Accel: pose %u captured (6 of 6 directions covered)", (unsigned)count);
+  else
+    logf("Accel: pose %u captured (%d of 6 directions covered, missing: %s)", (unsigned)count, covered, missing);
+  if (complete)
+    logf("Accel: coverage complete with %u poses, you can stop and fit now", (unsigned)count);
+}
+
 void CalibrationService::drainPoseEvents() {
   while (noteCount_ > 0) {
     const PoseNote n = notes_[noteHead_];
@@ -389,12 +419,16 @@ void CalibrationService::drainPoseEvents() {
     noteCount_--;
     switch (n.ev) {
     case PoseEvent::Averaging: logf("%s", "Accel: still, measuring pose (hold 2 s)"); break;
-    case PoseEvent::Captured: logf("Accel: pose %u captured, move to the next one", (unsigned)n.count); break;
+    case PoseEvent::Captured: logCaptured(n.count, n.coverage, n.complete); break;
     case PoseEvent::Duplicate:
       logf("Accel: same orientation as an earlier pose (%.0f deg), not stored, turn it further", (double)n.angleDeg);
       break;
     case PoseEvent::Aborted: logf("%s", "Accel: moved during the measurement, pose dropped"); break;
-    case PoseEvent::Full: logf("Accel: all %u poses stored, stop and fit", (unsigned)n.count); break;
+    case PoseEvent::Full:
+      logf("Accel: all %u poses stored, stop and fit", (unsigned)n.count);
+      if (n.complete)
+        logf("Accel: coverage complete with %u poses, you can stop and fit now", (unsigned)n.count);
+      break;
     case PoseEvent::None: break;
     }
   }

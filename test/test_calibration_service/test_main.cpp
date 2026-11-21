@@ -162,6 +162,8 @@ static void test_accel_session_twelve_poses_fit_and_legacy_conversion() {
   captureTwelvePoses(svc, sim, 12);
   TEST_ASSERT_EQUAL_size_t(12, svc.poseCount());
   TEST_ASSERT_TRUE(log.has("pose 12 captured"));
+  TEST_ASSERT_TRUE(log.has("directions covered"));
+  TEST_ASSERT_TRUE(log.has("coverage complete with"));
 
   TEST_ASSERT_TRUE(svc.stop(Sensor::Accel, sim.t));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Fitting), uint8_t(svc.state(Sensor::Accel)));
@@ -223,6 +225,8 @@ static void test_stale_gyro_bias_does_not_block_pose_capture() {
 
 static void test_accel_too_few_poses_fails_and_discard() {
   CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  Log log;
+  svc.setLogSink(Log::sink, &log);
   Sim sim;
   sim.gyroBias[0] = sim.gyroBias[1] = sim.gyroBias[2] = 0;
   const double I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -235,6 +239,8 @@ static void test_accel_too_few_poses_fails_and_discard() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Failed), uint8_t(svc.state(Sensor::Accel)));
   TEST_ASSERT_FALSE(svc.applicable(Sensor::Accel));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(svc.result(Sensor::Accel)));
+  TEST_ASSERT_TRUE(log.has("missing: "));
+  TEST_ASSERT_FALSE(log.has("coverage complete"));
   svc.discard(Sensor::Accel);
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Idle), uint8_t(svc.state(Sensor::Accel)));
   TEST_ASSERT_FALSE(svc.stop(Sensor::Accel, sim.t)); // not collecting
@@ -483,9 +489,9 @@ static void test_accel_candidate_legacy_form_passes_check() {
   for (int i = 0; i < 9; i++)
     st.T[i] = T[i];
   TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(st)));
-  // an offset above the 1.5 m/s^2 limit of the arming check is not applicable
+  // an offset above the 2.5 m/s^2 limit of the arming check is not applicable
   VCTR::DSP::Calib::AccelFitResult bad = svc.accelResult();
-  bad.offset[2] = 1.8;
+  bad.offset[2] = 2.6;
   TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(accelCandidateParams(bad)));
 }
 

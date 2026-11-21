@@ -65,9 +65,12 @@ static void test_gyro_validity_per_power_cycle() {
 }
 
 static void test_bench_accel_offset_out_of_range() {
-  // The currently stored accel offset b_z = 2.14 is above the 1.5 m/s^2 limit: arming is refused until recalibrated.
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(checkAccelParams(benchAccel())));
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(benchAccel(1.4))));
+  // The limit is 2.5 m/s^2 (owner decision 2026-11-21, was 1.5): the stored bench offset b_z = 2.14 is now in range.
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(benchAccel())));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(benchAccel(2.49))));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(benchAccel(2.5))));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(checkAccelParams(benchAccel(2.51))));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(checkAccelParams(benchAccel(-2.51))));
 }
 
 static void test_accel_params() {

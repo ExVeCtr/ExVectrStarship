@@ -220,7 +220,7 @@ Pure code (no Arduino, no ExVectrCore), host-tested from the flight-software rep
 
 | Piece | What it does |
 |---|---|
-| `fitAccel` (`accel_ellipsoid_fit`) | 12-pose magnitude fit (9 parameters: offset `b`, symmetric `A`; Levenberg-Marquardt on pose means, `a_cal = A (x − b)`), diagonal fallback with 6-8 poses (at best `Warn`), verdict `CalResult` + check bits (poses, coverage, condition, residual rms/max, scale, off-diagonal, offset). |
+| `fitAccel` (`accel_ellipsoid_fit`) | 12-pose magnitude fit (9 parameters: offset `b`, symmetric `A`; Levenberg-Marquardt on pose means, `a_cal = A (x − b)`), diagonal fallback with 6-8 poses (at best `Warn`), verdict `CalResult` + check bits (poses, coverage, condition, residual rms/max, scale, off-diagonal, offset; offset limit `kAccelOffsetLimit` = 2.5 m/s²). Pure helpers `accelCoverageMask` (six sensor-frame directions +X,-X,+Y,-Y,+Z,-Z within 25° of +g), `accelPoseCoverage`, `accelCoverageCount`, `accelMissingText`, `accelCoverageComplete` (>= 9 poses and all six) are shared by the fit and the vehicle's operator hints. |
 | `MagSphereFit` | Hard-iron sphere fit (the former `MagnetometerCalibrationTask` maths in double, accumulated online) plus a direction-thinned sample buffer (caller-provided, 600 samples) for residual and 64-bin coverage; `b = centre`, `M = s·I`, `s = 0.05 / R`. |
 | `SphereCoverage` | 64 equal-area bins on a Fibonacci lattice (shared definition with the ground station). |
 | `StillnessDetector` | Still when the last windowBlocks 0.1 s blocks are inside the gyro and accel limits (calibrated-rate norm with a gyro bias, or bias-free std / peak-to-peak). |
