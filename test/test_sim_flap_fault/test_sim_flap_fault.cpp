@@ -20,6 +20,8 @@ static constexpr float kRate = 60 * kDeg / 0.2f; // StarshipFlaps modelled servo
 struct Servo {
   float cur = 0, target = 0;
   void step(SimFlapFaults &f, uint8_t i, bool sim, int64_t dtNs) {
+    if (f.takeReleased(i))
+      cur = target; // ServoAngleSimulator::snapToTarget
     const float limit = kRate * f.rateFactor(i, sim);
     float diff = target - cur, mx = limit * double(dtNs) / 1e9;
     if (fabs(diff) <= mx)
@@ -148,6 +150,44 @@ static void test_clear_and_mode_switch() {
   TEST_ASSERT_EQUAL_FLOAT(0.123f, f.effectiveAngle(0, true, 0.123f));
 }
 
+// Review 2026-11-21: finding 10 (SystemReset clears active and armed faults, so nothing fires at the next descent) and
+// finding 11 (the servo model drops its forced angle when a stuck fault is released).
+static void test_system_reset_clears_faults_and_servo_snaps_back() {
+  SimFlapFaults f;
+  Servo s;
+  s.target = 90 * kDeg;
+  s.cur = 90 * kDeg;
+  f.set(decideSimFault(16, 0, 0x57, 40 * kDeg, true), true); // TL stuck at 40 deg
+  f.set(decideSimFault(16, 0x11, 0x57, 42 * kDeg, true), true); // TR armed for the descent
+  f.set(decideSimFault(17, 2, 0x57, 0.3f, true), true);        // BL slow
+  s.step(f, 0, true, 2000000);
+  TEST_ASSERT_EQUAL_FLOAT(40 * kDeg, s.cur);
+  // SystemReset: the vehicle calls clear()
+  f.clear();
+  TEST_ASSERT_FALSE(f.any());
+  TEST_ASSERT_EQUAL(0, f.onDescentBegin(true)); // the armed fault of the previous run does not fire
+  TEST_ASSERT_FALSE(f.stuck(0) || f.stuck(1));
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, f.rateFactor(2, true));
+  // finding 11: the next update snaps the model angle to the commanded target instead of slewing back for 0.3 s
+  s.step(f, 0, true, 2000000);
+  TEST_ASSERT_EQUAL_FLOAT(90 * kDeg, s.cur);
+  // released once only, and only for the flap that was stuck
+  TEST_ASSERT_FALSE(f.takeReleased(0));
+  TEST_ASSERT_FALSE(f.takeReleased(1));
+  TEST_ASSERT_FALSE(f.takeReleased(2));
+  // a release by leaving simulation mode (clear while sim is already false) still snaps back
+  SimFlapFaults g;
+  Servo t;
+  t.target = 60 * kDeg;
+  t.cur = 60 * kDeg;
+  g.set(decideSimFault(16, 1, 0x57, 20 * kDeg, true), true);
+  t.step(g, 1, true, 2000000);
+  TEST_ASSERT_EQUAL_FLOAT(20 * kDeg, t.cur);
+  g.clear();
+  t.step(g, 1, false, 2000000);
+  TEST_ASSERT_EQUAL_FLOAT(60 * kDeg, t.cur);
+}
+
 static void test_armed_for_descent() {
   SimFlapFaults f;
   TEST_ASSERT_TRUE(f.set(decideSimFault(16, 0x10, 0x57, 42 * kDeg, true), true)); // TL armed
@@ -213,6 +253,7 @@ int main(int, char **) {
   RUN_TEST(test_capture_current_angle);
   RUN_TEST(test_slow_rate);
   RUN_TEST(test_clear_and_mode_switch);
+  RUN_TEST(test_system_reset_clears_faults_and_servo_snaps_back);
   RUN_TEST(test_armed_for_descent);
   RUN_TEST(test_non_simulation_is_inert_and_bit_identical);
   return UNITY_END();

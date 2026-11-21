@@ -90,8 +90,18 @@ bool SimFlapFaults::set(const SimFaultDecision &d, bool simActive) {
 }
 
 void SimFlapFaults::clear() {
-  for (auto &f : f_)
-    f = Flap();
+  for (uint8_t i = 0; i < 4; i++) {
+    if (f_[i].stuck)
+      released_[i] = true;
+    f_[i] = Flap();
+  }
+}
+
+bool SimFlapFaults::takeReleased(uint8_t flap) {
+  if (flap > 3 || !released_[flap])
+    return false;
+  released_[flap] = false;
+  return true;
 }
 
 int SimFlapFaults::onDescentBegin(bool simActive) {

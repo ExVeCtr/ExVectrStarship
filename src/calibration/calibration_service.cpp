@@ -72,7 +72,13 @@ bool CalibrationService::anyBusy() const {
 }
 
 bool CalibrationService::applicable(Sensor s) const {
-  return state_[idx(s)] == State::Review && DSP::Calib::acceptable(result_[idx(s)]);
+  if (!(state_[idx(s)] == State::Review && DSP::Calib::acceptable(result_[idx(s)])))
+    return false;
+  if (s == Sensor::Accel)
+    return accelCandidateParams(accelRes_) == Reason::Ok;
+  if (s == Sensor::Mag)
+    return magCandidateParams(magRes_) == Reason::Ok;
+  return true;
 }
 
 // ---- samples ----
@@ -235,8 +241,7 @@ void CalibrationService::markSaved() {
 bool CalibrationService::startGyroRun(int64_t nowNs, int64_t deadlineNs) {
   if (gyroSession() || accelSession() || magSession() || state_[0] == State::Fitting)
     return false;
-  gyroAuto_ = true;
-  gyroDone_ = false;
+  gyroAuto_ = true; // a pending (untaken) result stays in autoRes_ with gyroDone_ set
   gyro_.start(nowNs, deadlineNs);
   return true;
 }
@@ -250,17 +255,18 @@ bool CalibrationService::takeGyroRunDone(GyroRunDone &out) {
   if (!gyroDone_)
     return false;
   gyroDone_ = false;
-  out.result = gyroRes_;
+  out.result = autoRes_;
   return true;
 }
 
 void CalibrationService::finishGyroRun(int64_t nowNs) {
   (void)nowNs;
-  gyroRes_ = gyro_.result();
   if (gyroAuto_) {
+    autoRes_ = gyro_.result(); // never touches a manual candidate waiting in Review
     gyroDone_ = true;
     return;
   }
+  gyroRes_ = gyro_.result();
   // manual session
   const size_t i = 0;
   result_[i] = gyroRes_.result;
@@ -322,6 +328,11 @@ void CalibrationService::runAccelFit(int64_t nowNs) {
   accelRes_ = DSP::Calib::fitAccel(poses_.means(), n, fc);
   result_[i] = accelRes_.result;
   state_[i] = DSP::Calib::acceptable(accelRes_.result) ? State::Review : State::Failed;
+  const Reason accelParams = accelCandidateParams(accelRes_);
+  if (state_[i] == State::Review && accelParams != Reason::Ok) {
+    state_[i] = State::Failed;
+    logf("Accel candidate rejected: parameters not acceptable for arming (%s)", toString(accelParams));
+  }
   logf("Accel fit %s: %u poses%s, residual rms %.4f max %.4f m/s^2, offset %.3f %.3f %.3f m/s^2, scale %.3f..%.3f, "
        "checks 0x%03x",
        DSP::Calib::toString(accelRes_.result), (unsigned)accelRes_.nUsed, accelRes_.diagonal ? " (diagonal fit)" : "",
@@ -357,6 +368,11 @@ void CalibrationService::runMagFit(int64_t nowNs) {
   magRes_ = magFit_.evaluate();
   result_[i] = magRes_.result;
   state_[i] = DSP::Calib::acceptable(magRes_.result) ? State::Review : State::Failed;
+  const Reason magParams = magCandidateParams(magRes_);
+  if (state_[i] == State::Review && magParams != Reason::Ok) {
+    state_[i] = State::Failed;
+    logf("Mag candidate rejected: parameters not acceptable for arming (%s)", toString(magParams));
+  }
   logf("Mag fit %s: %u stored, coverage %.0f %%, residual rms %.2f %% max %.2f %%, centre %.4f %.4f %.4f, radius %.4f, "
        "checks 0x%02x",
        DSP::Calib::toString(magRes_.result), (unsigned)magRes_.nStored, magRes_.coverage * 100,
@@ -449,6 +465,23 @@ bool accelCandidateToLegacy(const DSP::Calib::AccelFitResult &fit, const double 
   for (int i = 0; i < 3; i++)
     offsetOut[i] = fit.offset[i];
   return true;
+}
+
+Reason accelCandidateParams(const DSP::Calib::AccelFitResult &fit) {
+  StoredCalibration st;
+  st.keyPresent = true;
+  for (int i = 0; i < 3; i++)
+    st.offset[i] = fit.offset[i];
+  for (int i = 0; i < 9; i++)
+    st.C[i] = fit.A[i]; // T = identity: C = T A T^-1 = A
+  return checkAccelParams(st);
+}
+
+Reason magCandidateParams(const DSP::Calib::MagFitResult &fit) {
+  StoredCalibration st;
+  st.keyPresent = true;
+  magCandidateToLegacy(fit, st.offset, st.C);
+  return checkMagParams(st);
 }
 
 void magCandidateToLegacy(const DSP::Calib::MagFitResult &fit, double offsetOut[3], double COut[9]) {

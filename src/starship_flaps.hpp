@@ -32,6 +32,8 @@ public:
   void update(int64_t deltaTime);
   /// Simulation-only fault injection (Safety::SimFlapFaults): overwrites the modelled angle (stuck servo).
   void forceAngle(float angleRad) { currentAngleRad_ = angleRad; }
+  /// Drops a forced angle: the modelled angle becomes the commanded target (fault released).
+  void snapToTarget() { currentAngleRad_ = targetAngleRad_; }
 };
 
 class StarshipFlaps : public Core::Task_Periodic {

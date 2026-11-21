@@ -375,6 +375,120 @@ static void test_manual_gyro_session_goes_to_review() {
     TEST_ASSERT_DOUBLE_WITHIN(0.0005, sim.gyroBias[k], svc.gyroResult().bias[k]);
 }
 
+// Review finding 5 and test 3: a finished run that was not taken is neither dropped nor overwritten by a new start.
+static void test_start_gyro_run_keeps_pending_result() {
+  CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  Sim sim;
+  TEST_ASSERT_TRUE(svc.startGyroRun(sim.t, sim.t + 9 * S));
+  sim.run(svc, 7.0); // finished, NOT taken
+  TEST_ASSERT_FALSE(svc.gyroRunActive());
+  const double firstBias = sim.gyroBias[0];
+  sim.gyroBias[0] = 0.040; // a different truth for the second run
+  TEST_ASSERT_TRUE(svc.startGyroRun(sim.t, sim.t + 9 * S)); // started while the first result is pending
+  TEST_ASSERT_TRUE(svc.gyroRunActive());
+  GyroRunDone done;
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done)); // the pending result of the first run is still delivered
+  TEST_ASSERT_DOUBLE_WITHIN(0.0005, firstBias, done.result.bias[0]);
+  TEST_ASSERT_FALSE(svc.takeGyroRunDone(done));
+  sim.run(svc, 7.0);
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done)); // and the second one arrives as its own result
+  TEST_ASSERT_DOUBLE_WITHIN(0.0005, 0.040, done.result.bias[0]);
+}
+
+// Test 3 (rest): start() while an automatic run collects cancels it; an automatic run neither starts nor disturbs a
+// manual gyro candidate waiting in Review.
+static void test_manual_candidate_survives_automatic_run() {
+  CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  Sim sim;
+  TEST_ASSERT_TRUE(svc.startGyroRun(sim.t, sim.t + 9 * S));
+  sim.run(svc, 1.0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(StartResult::Started), uint8_t(svc.start(Sensor::Gyro, false, sim.t)));
+  TEST_ASSERT_FALSE(svc.gyroRunActive()); // the automatic run was cancelled by the session
+  sim.run(svc, 8.0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Review), uint8_t(svc.state(Sensor::Gyro)));
+  const double candidate = svc.gyroResult().bias[0];
+  sim.gyroBias[0] = 0.050;
+  TEST_ASSERT_TRUE(svc.startGyroRun(sim.t, sim.t + 9 * S)); // allowed in Review (nothing is collecting)
+  sim.run(svc, 7.0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Review), uint8_t(svc.state(Sensor::Gyro)));
+  TEST_ASSERT_TRUE(svc.applicable(Sensor::Gyro));
+  TEST_ASSERT_EQUAL_DOUBLE(candidate, svc.gyroResult().bias[0]); // the manual candidate is untouched
+  GyroRunDone done;
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done));
+  TEST_ASSERT_DOUBLE_WITHIN(0.0005, 0.050, done.result.bias[0]);
+}
+
+// Review finding 8 and test 7: a candidate counts as applicable only if it also passes the arming range checks, so a
+// saved calibration is never rejected by Arm as "out of range".
+static void test_candidate_must_pass_arming_param_checks() {
+  // mag with a raw field radius of 1.5 (above the 1.00 limit of checkMagParams): the sphere fit itself passes
+  {
+    CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+    Log log;
+    svc.setLogSink(Log::sink, &log);
+    Rng rng(3);
+    int64_t t = 0;
+    const double c[3] = {0.012, -0.021, 0.008};
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(StartResult::Started), uint8_t(svc.start(Sensor::Mag, false, t)));
+    feedMagTumble(svc, rng, t, 100.0, c, 1.5);
+    TEST_ASSERT_TRUE(svc.stop(Sensor::Mag, t));
+    svc.tick(t);
+    TEST_ASSERT_TRUE(svc.magResult().result == CalResult::Pass || svc.magResult().result == CalResult::Warn);
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(magCandidateParams(svc.magResult())));
+    TEST_ASSERT_FALSE(svc.applicable(Sensor::Mag));
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Failed), uint8_t(svc.state(Sensor::Mag)));
+    TEST_ASSERT_TRUE(log.has("not acceptable for arming"));
+  }
+  // a good mag candidate (R = 0.31) is applicable and its legacy form passes checkMagParams
+  {
+    CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+    Rng rng(3);
+    int64_t t = 0;
+    const double c[3] = {0.012, -0.021, 0.008};
+    svc.start(Sensor::Mag, false, t);
+    feedMagTumble(svc, rng, t, 100.0, c, 0.31);
+    svc.stop(Sensor::Mag, t);
+    svc.tick(t);
+    TEST_ASSERT_TRUE(svc.applicable(Sensor::Mag));
+    double off[3], C[9];
+    magCandidateToLegacy(svc.magResult(), off, C);
+    StoredCalibration st;
+    st.keyPresent = true;
+    for (int i = 0; i < 3; i++)
+      st.offset[i] = off[i];
+    for (int i = 0; i < 9; i++)
+      st.C[i] = C[i];
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkMagParams(st)));
+  }
+}
+
+// Accel: the legacy form of an applicable candidate (any mounting matrix T) passes checkAccelParams.
+static void test_accel_candidate_legacy_form_passes_check() {
+  CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  Sim sim;
+  sim.gyroBias[0] = sim.gyroBias[1] = sim.gyroBias[2] = 0;
+  const double I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const double zero[3] = {0, 0, 0};
+  svc.setActive(Sensor::Gyro, zero, I);
+  svc.start(Sensor::Accel, false, sim.t);
+  captureTwelvePoses(svc, sim, 12);
+  svc.stop(Sensor::Accel, sim.t);
+  svc.tick(sim.t);
+  TEST_ASSERT_TRUE(svc.applicable(Sensor::Accel));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(accelCandidateParams(svc.accelResult())));
+  const double T[9] = {0, 0, -1, 1, 0, 0, 0, -1, 0}; // the vehicle's accel mounting
+  StoredCalibration st;
+  st.keyPresent = true;
+  TEST_ASSERT_TRUE(accelCandidateToLegacy(svc.accelResult(), T, st.offset, st.C));
+  for (int i = 0; i < 9; i++)
+    st.T[i] = T[i];
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkAccelParams(st)));
+  // an offset above the 1.5 m/s^2 limit of the arming check is not applicable
+  VCTR::DSP::Calib::AccelFitResult bad = svc.accelResult();
+  bad.offset[2] = 1.8;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(accelCandidateParams(bad)));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_gyro_auto_run_recovers_bias);
@@ -388,5 +502,9 @@ int main(int, char **) {
   RUN_TEST(test_accel_verify_mode);
   RUN_TEST(test_timeouts_start_fit);
   RUN_TEST(test_manual_gyro_session_goes_to_review);
+  RUN_TEST(test_start_gyro_run_keeps_pending_result);
+  RUN_TEST(test_manual_candidate_survives_automatic_run);
+  RUN_TEST(test_candidate_must_pass_arming_param_checks);
+  RUN_TEST(test_accel_candidate_legacy_form_passes_check);
   return UNITY_END();
 }

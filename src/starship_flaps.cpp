@@ -179,6 +179,8 @@ void StarshipFlaps::taskThread() {
       const bool simActive = simulationActive();
       ServoAngleSimulator *sims[4] = {&tlFlapSim_, &trFlapSim_, &blFlapSim_, &brFlapSim_};
       for (uint8_t i = 0; i < 4; i++) {
+        if (simFaults_.takeReleased(i))
+          sims[i]->snapToTarget(); // a released stuck fault must not leave its forced angle in the model
         sims[i]->setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS * simFaults_.rateFactor(i, simActive));
         sims[i]->update(deltaTime);
         const float modelAngle = sims[i]->getCurrentAngle();

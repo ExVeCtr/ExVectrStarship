@@ -16,9 +16,11 @@
  * The tolerances below are proposals from the design (not measured on this vehicle): tune them here after the first
  * calibration session.
  *
- * SIMULATION-MODE EXEMPTION (flight-safety item, documented as a sim/flight difference in overview.md): the check is
- * NOT required in simulation mode (kCheckExemptInSimulation). Everything else (the gyro run, the calibration itself)
- * behaves identically in both modes; only the refusal of Arm / MissionBegin and the countdown abort are skipped.
+ * NO SIMULATION EXEMPTION (owner decision 2026-11-21, safety.md rule 9): nothing in this file takes the simulation
+ * flag. In simulation the sensors and the stored calibration keys are real, so the same rules apply to Arm,
+ * MissionBegin, the countdown re-check and the armed-in-Ready disarm. The decisions are the pure functions
+ * decideArm, decideMissionBegin, mustDisarmInReady, decideCountdownEnd and gyroBiasMayApply below (host-tested in
+ * test/test_calibration_validity); main.cpp only gathers the inputs and acts on the verdict.
  */
 
 #include <stddef.h>
@@ -26,11 +28,6 @@
 
 namespace VCTR {
 namespace Calibration {
-
-// ---- Simulation exemption (the one place) ----
-constexpr bool kCheckExemptInSimulation = true;
-/// True if the all-calibrations-valid rule applies in the given mode.
-inline bool checkRequired(bool simulationMode) { return !(kCheckExemptInSimulation && simulationMode); }
 
 // ---- Tolerances (named constants, see the header comment) ----
 constexpr double kGravity = 9.81;                 ///< m/s^2 (= AccelFitConfig::gRef)
@@ -92,10 +89,9 @@ struct CommandContext {
   bool motorsEnabled = false;
   bool modeAllowed = false;        ///< vehicle mode Startup, Ready or SensorCalib
   bool missionIdleOrFinished = false;
-  bool simulation = false;
 };
 
-enum class CommandResult : uint8_t { Ok = 0, NotInitialised, Armed, MotorsEnabled, NotOnGround, Simulation };
+enum class CommandResult : uint8_t { Ok = 0, NotInitialised, Armed, MotorsEnabled, NotOnGround };
 
 CommandResult checkCommand(const CommandContext &ctx);
 const char *toString(CommandResult r);
@@ -153,15 +149,44 @@ Validity calibrationsValid(const ValidityInput &in);
 /// What to do when the gyro run that closes the mission countdown has finished (owner decision D7): re-check ALL THREE
 /// calibrations; if one is bad the mission is aborted before liftoff (reset and stop) with the reason in the log.
 enum class CountdownAction : uint8_t {
-  Continue = 0,   ///< check not required (simulation mode) or all three good
+  Continue = 0,   ///< all three good
   Abort,          ///< a calibration is bad and the countdown is still running: reset and stop
   BadButNotInCountdown, ///< a calibration is bad but the mission is no longer in its countdown (nothing to abort)
 };
 
-inline CountdownAction decideCountdownEnd(bool checkRequired, const Validity &v, bool inCountdown) {
-  if (!checkRequired || v.allOk())
+inline CountdownAction decideCountdownEnd(const Validity &v, bool inCountdown) {
+  if (v.allOk())
     return CountdownAction::Continue;
   return inCountdown ? CountdownAction::Abort : CountdownAction::BadButNotInCountdown;
+}
+
+// ---- Gates (identical in simulation and real mode: no simulation input exists) ----
+enum class GateRefusal : uint8_t { None = 0, CalibrationInvalid, CountdownTooShort };
+
+/// Arm (valid magic): all three calibrations must be good.
+inline GateRefusal decideArm(const Validity &v) {
+  return v.allOk() ? GateRefusal::None : GateRefusal::CalibrationInvalid;
+}
+
+/// MissionBegin from Ready: all three calibrations good, and a countdown (paramInt seconds, negative) long enough for
+/// the gyro run in the Initialisation phase (paramInt <= kMinCountdownParamInt). Validity is reported first.
+inline GateRefusal decideMissionBegin(const Validity &v, int16_t paramInt) {
+  if (!v.allOk())
+    return GateRefusal::CalibrationInvalid;
+  if (!countdownLongEnough(paramInt))
+    return GateRefusal::CountdownTooShort;
+  return GateRefusal::None;
+}
+
+/// Invariant "armed implies calibrations good", enforced on the ground only (mode Ready): true = disarm now.
+inline bool mustDisarmInReady(bool armed, bool modeReady, const Validity &v) {
+  return armed && modeReady && !v.allOk();
+}
+
+/// A passing automatic gyro run may change the applied bias only on the ground: in Startup, Ready or SensorCalib, or
+/// when it is the run of the countdown and the countdown is still running. Anything else is discarded (and logged).
+inline bool gyroBiasMayApply(bool groundMode, bool countdownRun, bool inCountdown) {
+  return groundMode || (countdownRun && inCountdown);
 }
 
 /// "gyro: ok, accel: offset out of range, mag: default" into buf (always terminated). Returns the length.

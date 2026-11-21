@@ -33,6 +33,7 @@
 #include "ExVectrDSP/calibration/mag_sphere_fit.hpp"
 #include "ExVectrDSP/calibration/pose_collector.hpp"
 #include "ExVectrDSP/calibration/stillness_detector.hpp"
+#include "calibration/calibration_validity.hpp"
 
 namespace VCTR {
 namespace Calibration {
@@ -114,7 +115,8 @@ public:
   void markSaved();
 
   // ---- Automatic gyro run (zeroing window, countdown) ----
-  /// Starts (or restarts) it with a deadline. Ignored (false) while a session collects.
+  /// Starts (or restarts) it with a deadline. Ignored (false) while a session collects. A finished run that was not
+  /// taken yet stays pending (it is neither dropped nor overwritten by the start).
   bool startGyroRun(int64_t nowNs, int64_t deadlineNs);
   void cancelGyroRun();
   bool gyroRunActive() const { return gyroAuto_ && gyro_.collecting(); }
@@ -130,7 +132,9 @@ public:
   bool anyBusy() const;     ///< any sensor Collecting or Fitting
   bool verifyMode(Sensor s) const { return verify_[idx(s)]; }
   DSP::Calib::CalResult result(Sensor s) const { return result_[idx(s)]; }
-  /// A candidate with Pass or Warn is waiting (D6: only those may be applied).
+  /// A candidate with Pass or Warn is waiting (D6: only those may be applied) and, for accel and mag, its legacy-key
+  /// parameters also pass checkAccelParams / checkMagParams (so an applied and saved candidate can never be rejected
+  /// by the arming check as "out of range").
   bool applicable(Sensor s) const;
   const DSP::Calib::AccelFitResult &accelResult() const { return accelRes_; }
   const DSP::Calib::MagFitResult &magResult() const { return magRes_; }
@@ -173,7 +177,8 @@ private:
   bool gyroDone_ = false;
   DSP::Calib::AccelFitResult accelRes_;
   DSP::Calib::MagFitResult magRes_;
-  DSP::Calib::GyroBiasResult gyroRes_;
+  DSP::Calib::GyroBiasResult gyroRes_;     ///< the manual session's result (the candidate)
+  DSP::Calib::GyroBiasResult autoRes_;     ///< the finished automatic run, until taken
 
   // mag decimation and verify statistics
   int64_t lastMagNs_ = 0;
@@ -201,6 +206,11 @@ bool accelCandidateToLegacy(const DSP::Calib::AccelFitResult &fit, const double 
                             double COut[9]);
 /// Mag: b = centre, C = s I.
 void magCandidateToLegacy(const DSP::Calib::MagFitResult &fit, double offsetOut[3], double COut[9]);
+
+/// The arming validity range check (checkAccelParams / checkMagParams) applied to a candidate. The accel check is
+/// independent of the mounting matrix T (A = T^-1 C T = fit.A), so T = identity is used.
+Reason accelCandidateParams(const DSP::Calib::AccelFitResult &fit);
+Reason magCandidateParams(const DSP::Calib::MagFitResult &fit);
 
 } // namespace Calibration
 } // namespace VCTR

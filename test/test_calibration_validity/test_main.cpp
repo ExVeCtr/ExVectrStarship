@@ -1,6 +1,6 @@
 // Host tests of src/calibration/calibration_validity.cpp: pio test -e native -f test_calibration_validity
 // The "all three calibrations must be good to fly" rule (gyro per power cycle, accel/mag stored values and the live
-// still-window check), the simulation exemption, the countdown and gyro-run planning, and the preconditions of the
+// still-window check), the gates for Arm / MissionBegin / armed-in-Ready (no simulation input exists, owner 2026-11-21), the countdown and gyro-run planning, and the preconditions of the
 // calibration commands. The bench values of docs/project/hardware-and-drivers.md 8a are used as the stored values.
 #include <math.h>
 #include <string.h>
@@ -53,12 +53,6 @@ static void rawWithNorm(const StoredCalibration &s, double n, double raw[3]) {
   const double k = n / pn;
   for (int i = 0; i < 3; i++)
     raw[i] = s.offset[i] + k * (probe[i] - s.offset[i]);
-}
-
-static void test_simulation_exemption_constant() {
-  TEST_ASSERT_TRUE(kCheckExemptInSimulation);
-  TEST_ASSERT_TRUE(checkRequired(false));
-  TEST_ASSERT_FALSE(checkRequired(true));
 }
 
 static void test_gyro_validity_per_power_cycle() {
@@ -207,10 +201,7 @@ static void test_command_preconditions() {
   c.modeAllowed = true;
   c.missionIdleOrFinished = true;
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CommandResult::Ok), uint8_t(checkCommand(c)));
-  CommandContext x = c;
-  x.simulation = true;
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CommandResult::Simulation), uint8_t(checkCommand(x)));
-  x = c;
+  CommandContext x = c; // no simulation precondition: calibration sessions work on the real sensors in simulation too
   x.initialised = false;
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CommandResult::NotInitialised), uint8_t(checkCommand(x)));
   x = c;
@@ -230,25 +221,136 @@ static void test_command_preconditions() {
 static void test_countdown_end_decision() {
   Validity good;
   good.gyro = good.accel = good.mag = Reason::Ok;
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(decideCountdownEnd(true, good, true)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(decideCountdownEnd(good, true)));
   Validity bad = good;
   bad.accel = Reason::OutOfRange;
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(bad, true)));
   bad = good;
   bad.gyro = Reason::RunFailed; // the run that closes the countdown failed
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(bad, true)));
   bad = good;
   bad.mag = Reason::LiveCheck;
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(true, bad, true)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(decideCountdownEnd(bad, true)));
   // mission already reset / no longer in the countdown: nothing to abort
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::BadButNotInCountdown), uint8_t(decideCountdownEnd(true, bad, false)));
-  // simulation exemption: never aborts
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(decideCountdownEnd(checkRequired(true), bad, true)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::BadButNotInCountdown), uint8_t(decideCountdownEnd(bad, false)));
+}
+
+static Validity goodValidity() {
+  Validity v;
+  v.gyro = v.accel = v.mag = Reason::Ok;
+  return v;
+}
+
+// Review test 1: the Arm / MissionBegin / armed-in-Ready decisions are pure and take NO simulation input (safety.md
+// rule 9), so real and simulation mode are identical by construction. Valid vs invalid, countdown under 18 s.
+static void test_arm_gate() {
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideArm(goodValidity())));
+  Validity bad = goodValidity();
+  bad.mag = Reason::Default;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideArm(bad)));
+  bad = goodValidity();
+  bad.gyro = Reason::NotCalibrated;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideArm(bad)));
+  // a default-constructed Validity (nothing calibrated, e.g. at boot) is invalid
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideArm(Validity())));
+}
+
+static void test_mission_begin_gate() {
+  const Validity good = goodValidity();
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -18)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -30)));
+  // the GS default MissionBegin -10 is refused with valid calibrations: the gyro run does not fit (also in simulation)
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, -10)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, -17)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, 0)));
+  Validity bad = good;
+  bad.accel = Reason::OutOfRange;
+  // invalid calibration is reported first, long or short countdown
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideMissionBegin(bad, -30)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideMissionBegin(bad, -10)));
+}
+
+static void test_disarm_in_ready_invariant() {
+  const Validity good = goodValidity();
+  Validity bad = good;
+  bad.gyro = Reason::RunFailed;
+  TEST_ASSERT_FALSE(mustDisarmInReady(true, true, good));
+  TEST_ASSERT_TRUE(mustDisarmInReady(true, true, bad));
+  TEST_ASSERT_FALSE(mustDisarmInReady(false, true, bad)); // not armed
+  TEST_ASSERT_FALSE(mustDisarmInReady(true, false, bad)); // not in Ready (never disarm in flight)
+}
+
+// Review finding 3 and test 2: a countdown flow model over the pure decisions. A passing gyro run changes the bias only on
+// the ground or while it is the countdown's run and the countdown still runs.
+static void test_gyro_bias_apply_rule() {
+  TEST_ASSERT_TRUE(gyroBiasMayApply(true, false, false));   // Startup/Ready/SensorCalib: manual or zeroing run
+  TEST_ASSERT_TRUE(gyroBiasMayApply(false, true, true));    // countdown run, countdown still running
+  TEST_ASSERT_FALSE(gyroBiasMayApply(false, true, false));  // countdown run delivered after T0 (Running, flight): discard
+  TEST_ASSERT_FALSE(gyroBiasMayApply(false, false, true));  // a non-countdown run during a mission: discard
+  TEST_ASSERT_FALSE(gyroBiasMayApply(false, false, false)); // starved task, run overlapping flight: discard
+}
+
+struct CountdownModel {
+  bool groundMode = false;  ///< Startup, Ready or SensorCalib
+  bool inCountdown = true;  ///< Running and the waypoint mission in Initialisation / Startup
+  bool countdownRun = true; ///< the finished run is the one of the countdown
+  bool applied = false;
+  CountdownAction action = CountdownAction::Continue;
+  bool checked = false;
+  /// What main.cpp onGyroRunDone does with a finished run: pass = run result, v = validity after applying.
+  void onRunDone(bool pass, const Validity &vAfterApply) {
+    applied = pass && gyroBiasMayApply(groundMode, countdownRun, inCountdown);
+    checked = countdownRun;
+    if (countdownRun)
+      action = decideCountdownEnd(vAfterApply, inCountdown);
+  }
+};
+
+static void test_countdown_flow_model() {
+  const Validity good = goodValidity();
+  Validity gyroFailed = good;
+  gyroFailed.gyro = Reason::RunFailed;
+  CountdownModel m;
+  m.onRunDone(true, good); // begin, run PASS, all good: applied, countdown continues
+  TEST_ASSERT_TRUE(m.applied);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Continue), uint8_t(m.action));
+
+  m = CountdownModel();
+  m.onRunDone(false, gyroFailed); // run FAIL: nothing applied, abort before liftoff
+  TEST_ASSERT_FALSE(m.applied);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(m.action));
+
+  // PASS but the accel live check fails -> abort (the caller passes the validity after applying)
+  Validity liveBad = good;
+  liveBad.accel = Reason::LiveCheck;
+  m = CountdownModel();
+  m.onRunDone(true, liveBad);
+  TEST_ASSERT_TRUE(m.applied);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::Abort), uint8_t(m.action));
+
+  // result delivered after T0 (Running, past Startup): not applied, no abort possible
+  m = CountdownModel();
+  m.inCountdown = false;
+  m.onRunDone(true, good);
+  TEST_ASSERT_FALSE(m.applied);
+  m = CountdownModel();
+  m.inCountdown = false;
+  m.onRunDone(false, gyroFailed);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CountdownAction::BadButNotInCountdown), uint8_t(m.action));
+
+  // SystemReset / MissionAbort during the run: the mission is Idle in Startup, the countdown flag was cleared. The
+  // (cancelled) run cannot deliver; if a result still arrives it is a ground run: applied, no countdown check.
+  m = CountdownModel();
+  m.groundMode = true;
+  m.inCountdown = false;
+  m.countdownRun = false;
+  m.onRunDone(true, good);
+  TEST_ASSERT_TRUE(m.applied);
+  TEST_ASSERT_FALSE(m.checked);
 }
 
 int main(int, char **) {
   UNITY_BEGIN();
-  RUN_TEST(test_simulation_exemption_constant);
   RUN_TEST(test_gyro_validity_per_power_cycle);
   RUN_TEST(test_bench_accel_offset_out_of_range);
   RUN_TEST(test_accel_params);
@@ -260,5 +362,10 @@ int main(int, char **) {
   RUN_TEST(test_countdown_rule);
   RUN_TEST(test_command_preconditions);
   RUN_TEST(test_countdown_end_decision);
+  RUN_TEST(test_arm_gate);
+  RUN_TEST(test_mission_begin_gate);
+  RUN_TEST(test_disarm_in_ready_invariant);
+  RUN_TEST(test_gyro_bias_apply_rule);
+  RUN_TEST(test_countdown_flow_model);
   return UNITY_END();
 }

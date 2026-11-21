@@ -63,8 +63,14 @@ public:
   /// an accepted one: a second guard behind decideSimFault.
   bool set(const SimFaultDecision &d, bool simActive);
 
-  /// Clears all active and armed faults. Called on every simulation mode switch and by SimFaultClear.
+  /// Clears all active and armed faults. Called on every simulation mode switch, by SimFaultClear and by SystemReset.
+  /// A flap that was stuck is marked released (takeReleased) so the servo model can drop its forced angle.
   void clear();
+
+  /// True once per flap that was stuck when clear() ran: the caller then snaps its servo model's angle to the commanded
+  /// target (the model otherwise keeps the stuck angle and slews back, which only distorts telemetry for 0.3 s). Valid
+  /// in and outside simulation, so a fault released by leaving simulation cannot leave a forced angle behind.
+  bool takeReleased(uint8_t flap);
 
   /// The bellyflop (descent) mission became active: armed faults take effect. Returns how many took effect.
   /// Does nothing (and drops the armed faults) when simActive is false.
@@ -91,6 +97,7 @@ private:
     float armAngle = 0;
   };
   Flap f_[4];
+  bool released_[4] = {false, false, false, false};
 };
 
 } // namespace Safety

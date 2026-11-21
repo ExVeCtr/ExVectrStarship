@@ -239,7 +239,7 @@ static bool saveCalibrationMemory() {
 DSP::IMUAttitudeEKFTask imuTask(1 * Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10 * Core::MILLISECONDS);
 
-DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
+DMAMEM DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
                                  TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 
 // Networking: VehicleComms (src/comms/), defined below the vehicle tasks it reads from.
@@ -332,8 +332,8 @@ private:
 
   // Sensor calibration policy (docs/project/calibration.md): all three calibrations must be good to fly. A warning
   // line repeats every 10 s while one is not, Arm and MissionBegin are refused with the reason (rate-limited), and the
-  // countdown is aborted if the gyro run that closes it leaves one bad. SIMULATION-MODE EXEMPTION:
-  // Calibration::kCheckExemptInSimulation (the check is not required in simulation mode).
+  // countdown is aborted if the gyro run that closes it leaves one bad. No simulation exemption (owner 2026-11-21):
+  // the sensors and stored keys are real in simulation, and none of these decisions reads the simulation flag.
   static constexpr int64_t CALIB_LOG_PERIOD = 10 * Core::SECONDS;
   Safety::LogRateLimit calibWarnLog_{CALIB_LOG_PERIOD};
   Safety::LogRateLimit calibArmLog_{CALIB_LOG_PERIOD};
@@ -528,19 +528,34 @@ public:
 
   /// Starts the automatic gyro bias run for a zeroing window ending at windowEndNs (boot zero, ZeroEstimators,
   /// countdown Initialisation): only if the window holds the 5 s still window plus the reserve (planGyroRun).
-  void startGyroRunForWindow(int64_t windowEndNs, bool countdown) {
+  /// Returns true if the run started.
+  bool startGyroRunForWindow(int64_t windowEndNs, bool countdown) {
     const int64_t now = Core::NowNs();
     const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs);
     if (!plan.run) {
       LOG_MSG("Gyro bias run skipped: the zeroing window is shorter than %.0f s\n",
               double(Calibration::kGyroRunMinWindowNs) / Core::SECONDS);
-      return;
+      return false;
     }
-    if (calibrationService.startGyroRun(now, plan.deadlineNs)) {
-      countdownGyroRun_ = countdown;
-      Core::printM("Calibration: gyro bias run started (window %.1f s, keep the vehicle still)\n",
-                   double(plan.deadlineNs - now) / Core::SECONDS);
+    // A finished run that was not taken yet is delivered first, with the flags of the run that produced it.
+    Calibration::GyroRunDone pending;
+    if (calibrationService.takeGyroRunDone(pending))
+      onGyroRunDone(pending);
+    if (!calibrationService.startGyroRun(now, plan.deadlineNs)) {
+      LOG_MSG("Gyro bias run NOT started: a calibration session is busy\n");
+      return false;
     }
+    countdownGyroRun_ = countdown;
+    Core::printM("Calibration: gyro bias run started (window %.1f s, keep the vehicle still)\n",
+                 double(plan.deadlineNs - now) / Core::SECONDS);
+    return true;
+  }
+
+  /// The waypoint mission's countdown phases (Initialisation, Startup) while the vehicle is Running.
+  bool inMissionCountdown() {
+    const MissionMode mm = mission_->getMissionState().missionMode;
+    return vehicleMode_ == VehicleMode::VehicleMode_Running && mission_ == &missionWaypointTask &&
+           (mm == MissionMode::MissionMode_Initialisation || mm == MissionMode::MissionMode_Startup);
   }
 
   /**
@@ -554,7 +569,15 @@ public:
     const auto &r = done.result;
     const bool countdown = countdownGyroRun_;
     countdownGyroRun_ = false;
-    if (r.result == DSP::Calib::CalResult::Pass) {
+    const bool groundMode = vehicleMode_ == VehicleMode::VehicleMode_Startup ||
+                            vehicleMode_ == VehicleMode::VehicleMode_Ready ||
+                            vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
+    if (r.result == DSP::Calib::CalResult::Pass &&
+        !Calibration::gyroBiasMayApply(groundMode, countdown, inMissionCountdown())) {
+      // A late result (starved task, a run overlapping a flight phase) must never step the bias in flight.
+      Core::printW("Calibration: gyro bias run PASS discarded, the vehicle is no longer on the ground or in its countdown "
+                   "(mode %d)\n", int(vehicleMode_));
+    } else if (r.result == DSP::Calib::CalResult::Pass) {
       const float oldB[3] = {gyroLegacy.calib.val(0), gyroLegacy.calib.val(1), gyroLegacy.calib.val(2)};
       applyGyroBias(r.bias, false);
       gyroRunState = Calibration::GyroRunState::Ok;
@@ -593,16 +616,12 @@ public:
   void checkCalibrationsAtCountdownEnd() {
     const Calibration::Validity v = currentCalibrationValidity();
     // The countdown phases are "on the ground" (Safety::decideAbort): reset and stop, as for MissionAbort there.
-    const MissionMode mm = mission_->getMissionState().missionMode;
-    const bool inCountdown = vehicleMode_ == VehicleMode::VehicleMode_Running &&
-                             mission_ == &missionWaypointTask &&
-                             (mm == MissionMode::MissionMode_Initialisation || mm == MissionMode::MissionMode_Startup);
+    const bool inCountdown = inMissionCountdown();
     char reason[96];
     Calibration::describe(v, reason, sizeof(reason));
-    switch (Calibration::decideCountdownEnd(Calibration::checkRequired(simulationMode_), v, inCountdown)) {
+    switch (Calibration::decideCountdownEnd(v, inCountdown)) {
     case Calibration::CountdownAction::Continue:
-      if (Calibration::checkRequired(simulationMode_))
-        Core::printM("Calibration: all three calibrations checked at the end of the gyro run, countdown continues\n");
+      Core::printM("Calibration: all three calibrations checked at the end of the gyro run, countdown continues\n");
       break;
     case Calibration::CountdownAction::BadButNotInCountdown:
       Core::printW("Calibration invalid (%s) but the countdown is no longer running: no abort needed\n", reason);
@@ -850,7 +869,8 @@ public:
   // ---- Sensor calibration commands (legacy telecommands, docs/project/calibration.md) ----
 
   /// Preconditions of every calibration command (design section 3.3): initialised, disarmed, motors off, mode
-  /// Startup/Ready/SensorCalib, mission Idle or Finished, not in simulation mode. Logs the refusal (1/s).
+  /// Startup/Ready/SensorCalib, mission Idle or Finished (the same in simulation and real mode: calibration works on
+  /// the real sensors). Logs the refusal (1/s).
   bool calibrationCommandAllowed(const char *what) {
     Calibration::CommandContext c;
     c.initialised = allSystemsInitialised_;
@@ -860,7 +880,6 @@ public:
                     vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
     const MissionMode mm = mission_->getMissionState().missionMode;
     c.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
-    c.simulation = simulationMode_;
     const Calibration::CommandResult r = Calibration::checkCommand(c);
     if (r == Calibration::CommandResult::Ok)
       return true;
@@ -1010,28 +1029,41 @@ public:
     }
   }
 
-  /// MissionBegin gate: all three calibrations good, and a countdown long enough for the gyro run (not required in
-  /// simulation mode). Logs the refusal every 10 s.
+  /// MissionBegin gate (Calibration::decideMissionBegin, same in simulation and real mode): all three calibrations
+  /// good, and a countdown long enough for the gyro run. Logs the refusal every 10 s.
   bool missionBeginCalibrationOk(int16_t paramInt) {
-    if (!Calibration::checkRequired(simulationMode_))
-      return true;
     const Calibration::Validity v = currentCalibrationValidity();
-    if (!v.allOk()) {
+    switch (Calibration::decideMissionBegin(v, paramInt)) {
+    case Calibration::GateRefusal::None:
+      return true;
+    case Calibration::GateRefusal::CalibrationInvalid:
       if (calibBeginLog_.due(Core::NowNs())) {
         char why[128];
         Calibration::describe(v, why, sizeof(why));
         Core::printW("Mission begin refused: calibration invalid (%s)\n", why);
       }
       return false;
-    }
-    if (!Calibration::countdownLongEnough(paramInt)) {
+    case Calibration::GateRefusal::CountdownTooShort:
       if (calibBeginLog_.due(Core::NowNs()))
         Core::printW("Mission begin refused: countdown too short (%d s), the gyro calibration needs the Initialisation "
                      "phase of at least 8 s: use a start time of %d s or earlier\n",
                      int(paramInt), int(Calibration::kMinCountdownParamInt));
       return false;
     }
-    return true;
+    return false;
+  }
+
+  /// MissionBegin step: the countdown's Initialisation phase (mission time < -10 s) is a zeroing window, and the gyro
+  /// bias run in it closes the calibration check. decideMissionBegin guarantees a window of at least 8 s, so the run
+  /// is always planned; if it cannot start anyway (a session is busy) MissionBegin is REFUSED, because the mission
+  /// would otherwise fly without the countdown re-check. Same in simulation and real mode.
+  bool startCountdownGyroRun(int16_t paramInt) {
+    if (paramInt < -int(Calibration::kCountdownInitialisationEndS) &&
+        startGyroRunForWindow(Calibration::countdownWindowEndNs(Core::NowNs(), paramInt), true))
+      return true;
+    if (calibBeginLog_.due(Core::NowNs()))
+      Core::printW("Mission begin refused: the countdown gyro calibration run could not start (see the log line above)\n");
+    return false;
   }
 
   /// Per-tick calibration upkeep: results of the automatic gyro run, the end of a calibration session (back to
@@ -1046,7 +1078,7 @@ public:
       Core::printM("Calibration session ended, back to Startup (automatic zero runs)\n");
     }
 
-    if (allSystemsInitialised_ && Calibration::checkRequired(simulationMode_) && !calibrationService.gyroRunActive() &&
+    if (allSystemsInitialised_ && !calibrationService.gyroRunActive() &&
         !calibrationService.anyBusy() && !zeroing_.active()) {
       const Calibration::Validity v = currentCalibrationValidity();
       if (!v.allOk() && calibWarnLog_.due(Core::NowNs())) {
@@ -1106,6 +1138,12 @@ public:
         }
         calibrationService.cancelGyroRun(); // the run belonged to the aborted window or countdown
         countdownGyroRun_ = false;
+        // Sim flap faults (active and armed) do not carry over into the next run (review 2026-11-21). The simulated
+        // wind and gusts DO persist across SystemReset on purpose (a run series in the same wind); they are cleared
+        // when simulation mode is switched.
+        if (starshipFlaps.simFaults().any())
+          LOG_MSG("Sim fault: all flap faults cleared (system reset)\n");
+        starshipFlaps.simFaults().clear();
         applyEstimatorZeroing();
 
         starshipTVC.enableMotors(false);      // Disable motors
@@ -1125,10 +1163,10 @@ public:
           break;
         }
 
-        // All three calibrations must be good to fly (not required in simulation mode).
-        if (Calibration::checkRequired(simulationMode_)) {
+        // All three calibrations must be good to fly (in simulation too: the sensors and keys are real there).
+        {
           const Calibration::Validity v = currentCalibrationValidity();
-          if (!v.allOk()) {
+          if (Calibration::decideArm(v) != Calibration::GateRefusal::None) {
             if (calibArmLog_.due(Core::NowNs())) {
               char why[128];
               Calibration::describe(v, why, sizeof(why));
@@ -1171,6 +1209,8 @@ public:
           LOG_MSG("Mission begin refused: estimator zeroing active\n");
       } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !missionBeginCalibrationOk(telecommand.paramInt)) {
         // refused: reason logged by missionBeginCalibrationOk
+      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !startCountdownGyroRun(telecommand.paramInt)) {
+        // refused: the countdown's gyro run could not start (reason logged)
       } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
         int64_t startTime =
             int64_t(telecommand.paramInt) *
@@ -1187,10 +1227,7 @@ public:
 
         LOG_MSG("Mission begin telecommand\n"); // Log the mission begin
 
-        // The countdown's Initialisation phase (mission time < -10 s) is a zeroing window: run the gyro bias run in it
-        // (also in simulation mode, the sensors are real there; the validity check itself is exempt in simulation).
-        if (telecommand.paramInt < -int(Calibration::kCountdownInitialisationEndS))
-          startGyroRunForWindow(Calibration::countdownWindowEndNs(Core::NowNs(), telecommand.paramInt), true);
+        // The countdown's gyro bias run was started by startCountdownGyroRun above (before the mission switch).
 
         if (!simulationMode_) {
           starshipTVC.enableMotors(true); // Enable actuators
@@ -1659,12 +1696,11 @@ public:
       lastDisarmReason_ = 0; // next auto-disarm is logged immediately
     }
 
-    // Invariant "armed implies calibrations good" (not in simulation mode), enforced on the ground only: nothing can
+    // Invariant "armed implies calibrations good" (also in simulation), enforced on the ground only: nothing can
     // make a calibration invalid in flight (runs and sessions need a disarmed vehicle on the ground).
-    if (vehicleArmed_ && vehicleMode_ == VehicleMode::VehicleMode_Ready &&
-        Calibration::checkRequired(simulationMode_)) {
+    if (vehicleArmed_ && vehicleMode_ == VehicleMode::VehicleMode_Ready) {
       const Calibration::Validity v = currentCalibrationValidity();
-      if (!v.allOk()) {
+      if (Calibration::mustDisarmInReady(vehicleArmed_, true, v)) {
         vehicleArmed_ = false;
         if (disarmLogDue(5)) {
           char why[128];

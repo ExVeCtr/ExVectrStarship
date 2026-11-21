@@ -9,8 +9,6 @@ namespace VCTR {
 namespace Calibration {
 
 CommandResult checkCommand(const CommandContext &ctx) {
-  if (ctx.simulation)
-    return CommandResult::Simulation;
   if (!ctx.initialised)
     return CommandResult::NotInitialised;
   if (ctx.armed)
@@ -29,7 +27,6 @@ const char *toString(CommandResult r) {
   case CommandResult::Armed: return "armed";
   case CommandResult::MotorsEnabled: return "motors enabled";
   case CommandResult::NotOnGround: return "not on ground";
-  case CommandResult::Simulation: return "simulation mode";
   }
   return "?";
 }
