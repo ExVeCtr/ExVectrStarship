@@ -162,12 +162,28 @@ Common pattern:
   - `getGroundTopic()` `[v_U, p_U]`.
 - **Constructor:** `(mass, inertia diag, thrustLimit, angleLimit, interval = 10 ms)`. Main uses `(1.1 kg, {0.044,0.044,0.004}, 14 N, 45°/15 = 3°)`.
 
+### Calibration module (2026-11-21, branch `feature/calibration-service`, `include/ExVectrDSP/calibration/`, `src/calibration/`)
+
+Pure code (no Arduino, no ExVectrCore), host-tested from the flight-software repo (`pio test -e native`: `test_cal_accel_fit`, `test_cal_mag_fit`, `test_cal_stillness`; the session engine on top is `src/calibration/`, [project/calibration.md](../project/calibration.md)). Time is injected as int64 ns. Samples are raw sensor frame.
+
+| Piece | What it does |
+|---|---|
+| `fitAccel` (`accel_ellipsoid_fit`) | 12-pose magnitude fit (9 parameters: offset `b`, symmetric `A`; Levenberg-Marquardt on pose means, `a_cal = A (x − b)`), diagonal fallback with 6-8 poses (at best `Warn`), verdict `CalResult` + check bits (poses, coverage, condition, residual rms/max, scale, off-diagonal, offset). |
+| `MagSphereFit` | Hard-iron sphere fit (the former `MagnetometerCalibrationTask` maths in double, accumulated online) plus a direction-thinned sample buffer (caller-provided, 600 samples) for residual and 64-bin coverage; `b = centre`, `M = s·I`, `s = 0.05 / R`. |
+| `SphereCoverage` | 64 equal-area bins on a Fibonacci lattice (shared definition with the ground station). |
+| `StillnessDetector` | Still when the last windowBlocks 0.1 s blocks are inside the gyro and accel limits (calibrated-rate norm with a gyro bias, or bias-free std / peak-to-peak). |
+| `PoseCollector` | Automatic static pose capture: still 1.5 s, averaged 2 s, new if > 20° from every stored pose (up to 24). |
+| `GyroBiasCollector` | Stationary gyro bias run: 5 s of 1 s blocks inside the motion limits (restart otherwise), deadline, bias/noise/temperature acceptance, mean raw accel and mag of the window, **block diagnostics** (worst and quietest block, last block) used for tuning the limits. |
+| `CalResult` | `None, Pass, Warn, FailResidual, FailCoverage, FailRange, Motion, Timeout, Numeric`; `acceptable()` = Pass or Warn. |
+
+Not wired anywhere else: the vehicle uses it only through `src/calibration/`. The old `Calibrator_*` classes below are still unused.
+
 ### Calibrators (`calibrator_*.hpp/.cpp`)
 - `Calibrator_Interface<T,DIM>` holds `calibrationData_` (`Timestamped<ValueCov>`: val = bias, cov = transform), `sensorToBodyMat_` and `isCalibrated_`.
 - `Calibrator_Gyroscope(duration)` averages raw gyro over `duration` after `initCalibration()`. It outputs `val = mean` and `cov = sensorToBody`.
 - `Calibrator_Magnetometer` tracks min/max per axis. It outputs `val = (max+min)/2` and `cov = sensorToBody·diag(scale)`.
 - `Calibrator_Manager<T,DIM>` (a Task) persists `ValueCov` via `Data::Memory_Interface` under `memoryKey` and pushes it into a `TopicCoordTransform`. It has `saveCalibrationData()`, `loadCalibrationData()` and `applyCalibrationData()`.
-- **All are commented out in `src/main.cpp:120-124`.** Main has its own magnetometer least-squares calibration task.
+- **Unused** (the commented-out use in `src/main.cpp` was removed 2026-11-21). The vehicle calibrates through the calibration module above and `src/calibration/`; its former `MagnetometerCalibrationTask` is retired.
 
 ### Generic
 - `KalmanFilter<LEN,T>`: `predict(B,u)`, `update(H, ValueCov z)` (standard form plus symmetrisation), `setTransitionMatrix`, `setProcessNoise`, `setState`. Initial P = 1000·I. Unused.

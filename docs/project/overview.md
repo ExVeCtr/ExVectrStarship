@@ -43,7 +43,7 @@ Any mission ending without a successor, a `MissionAbort` in flight (from any pha
 **Navigation** (ExVectrDSP, [libs/ExVectrDSP.md](../libs/ExVectrDSP.md)):
 - `IMUAttitudeEKF` at 1 kHz: gyro propagation, accelerometer tilt correction, magnetometer yaw correction. Outputs `[ω, q]`.
 - `IMUGPSPositionKalman` at 100 Hz: accelerometer-driven prediction in NWU, updated by baro altitude, GNSS horizontal position/velocity and a separate ground-distance filter from the ToF rangefinder (0.4–1.5 m window). Outputs `[V, P]`.
-- Sensor calibration: per-sensor `TopicCoordTransform` (`T·(v − bias)`) loaded from persistent memory at boot (keys in `memory_keys.hpp`). Gyro bias is currently **hard-coded** in `initialiseMemory()` and overrides the stored value.
+- Sensor calibration: per-sensor `TopicCoordTransform` (`T·(v − bias)`) loaded from persistent memory at boot (keys in `memory_keys.hpp`). The gyro bias is measured automatically (boot zero, `ZeroEstimators` windows of at least 7 s, mission countdown); the hard-coded override is gone. **All three calibrations must be valid to Arm or MissionBegin** (not in simulation mode): [calibration.md](calibration.md).
 
 **Control cascade** (ExVectrControl, [libs/ExVectrControl.md](../libs/ExVectrControl.md)):
 
@@ -77,7 +77,7 @@ Startup ──all inputs published AND valid zero since boot──► Ready ─�
    │  (no zero yet: automatic 10 s boot zero, ZEROING flag)    │                       │
    ▲                                                           │                       │
    └──────────── SystemReset (0xC5) ◄──────────── Failure ◄──── any failure ───────────┘
-SensorCalib (mag calibration telecommand) ── disarms, blocks Ready, aborts a zeroing window
+SensorCalib (CalibStart: gyro / accel / mag session) ── disarms, blocks Ready, aborts a zeroing window and clears the valid zero
 ```
 
 - **Startup → Ready:** every input (GNSS, gyro, mag, baro, both estimators) has published at least once **and** a valid estimator zero exists since boot, with no zeroing window active (`EstimatorZeroing::readyAllowed()`, `src/safety/estimator_zeroing.hpp`). Without a valid zero the vehicle stays in Startup.
@@ -132,7 +132,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 
 - `vehicleIsReady()` false → `vehicleShutdownControl(true)`: TVC, flaps and simulated actuators are disabled. **In flight this means the vehicle falls.** This is the current policy for every latched failure, including radio loss.
 - Otherwise actuators follow `mission->getActuatorsEnabled()`. Flaps are always on in freefall.
-- **Arming** (`Arm`, 0xA5) only sets the motor power limit: 100 % when armed, 10 % when disarmed. It is *not* required for `MissionBegin`. Disarm is forced in Failure, SensorCalib, Startup and SensorInit, and automatically after RTH finishes. The forced-disarm log line ("Vehicle disarmed due to ...") is logged once when the reason changes and then every 5 s while it holds (`disarmLogDue`, main.cpp:335); the disarm itself still runs every 100 ms tick.
+- **Arming** (`Arm`, 0xA5) only sets the motor power limit: 100 % when armed, 10 % when disarmed. It is *not* required for `MissionBegin`. `Arm` and `MissionBegin` are **refused while a calibration is invalid** (real mode, [calibration.md](calibration.md)); `MissionBegin` also needs a countdown of at least 18 s (`paramInt <= −18`) so the gyro bias run fits the Initialisation phase. Disarm is forced in Failure, SensorCalib, Startup and SensorInit, and automatically after RTH finishes. The forced-disarm log line ("Vehicle disarmed due to ...") is logged once when the reason changes and then every 5 s while it holds (`disarmLogDue`, main.cpp:335); the disarm itself still runs every 100 ms tick.
 - Motors are switched on only by `MissionBegin`, and never in simulation mode.
 
 ### Known safety gaps (decide before the next flight)
@@ -141,7 +141,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 - (Fixed 2026-11-20: a SystemReset during a mission no longer lets the chain continue, and the vehicle no longer latches Failure at every boot.)
 - (Fixed 2026-11-20: the first bellyflop after boot no longer differs from later ones; RTH after an abort or mag timeout from freefall now has its controllers.)
 - The bellyflop kick (2026-11-21) is tuned in the simulator only, whose aerodynamics are known to be wrong (bench: tilt 2° → 75° in 0.95 s at 11 N, then belly-down and near horizontal). Review the kick in the first flight data ([missions.md](missions.md) Known issues).
-- Arming does not gate mission start.
+- Arming does not gate mission start (since 2026-11-21 an invalid calibration does, in real mode).
 - Found on the bench 2026-11-20 (feature/review-fixes, not changed): toggling `SimulationMode` off keeps the arm state. The toggle sets Startup, but the inputs are all new in the same tick, so the vehicle returns to Ready before `vehicleArmingControl` sees Startup and auto-disarms. Seen: armed in simulation, `MissionAbort` reset and stop (arm state kept, as documented), `SimulationMode` off: Ready, `armed=true`, `simulation=false`. Send a disarm after leaving simulation; a fix (disarm on the toggle, as `SystemReset` does) needs the user's decision.
 - Altitude is not bounded by the out-of-bounds check.
 - Estimator and controller bugs that affect flight safety are listed in the Known issues sections of [libs/ExVectrDSP.md](../libs/ExVectrDSP.md), [libs/ExVectrControl.md](../libs/ExVectrControl.md) and [missions.md](missions.md).
@@ -159,7 +159,7 @@ Typical sequence:
    To re-zero on the ground (new start spot, vehicle moved): `ZeroEstimators` (type 10, 0x2E, seconds), disarmed, vehicle still.
 6. After landing, RTH finishes and the vehicle auto-disarms.
 
-Magnetometer calibration: `CalibStart` (subsystem Magneto, paramInt > 0) → rotate the vehicle → `CalibStart` with 0 to end → `CalibApply` → `Save` (writes EEPROM).
+Sensor calibration (gyro automatic; accel 12 poses, mag tumble): `CalibStart` (subsystem 0/1/2, paramInt 1) → poses / tumble → `CalibStart` with 0 → `CalibApply` (PASS or WARN only) → `Save` (EEPROM write and read-back). Procedure, validity rules and log cues: [project/calibration.md](calibration.md).
 
 ## Simulation mode
 
@@ -171,7 +171,7 @@ Toggled by `SimulationMode` (0xA9).
 - `SimulationMode` on puts the simulated body to its start pose.
 - **Sim/flight difference (review fix 2026-11-20, user-approved): `SystemReset` in simulation mode also puts the simulated body back to its start pose.** The simulated body is the world, not an estimator: a run that ended tilted, fallen or away from the origin would otherwise carry over into the next run and re-trigger `attitudeOutOfBounds` / `positionOutOfBounds` at once. The estimators are still not touched by `SystemReset` in either mode. In real mode nothing physical can be reset: the estimators keep their origin until `ZeroEstimators` (or the boot zero, or the mission's Initialisation zeroing), so **a vehicle that was carried needs `ZeroEstimators`** before the next flight. Bench (simulation, 2026-11-20): a run ended at pN 0.035 m, pW −0.122 m, yaw 9° (q = [0.9966, −0.0198, −0.0054, −0.0798]); after `SystemReset` the reported pose was the origin and q = [1, 0, 0, 0] within one status line. A drop from 19 m (disarm in the ascent) ended at (0.277, 0.066, 0) m with 3.6° tilt; after `SystemReset` origin and identity, Ready, and the next `MissionBegin` started in Init at the origin, upright, no Failure.
 
-Intended sim/flight differences, complete list (safety.md rule 7): (1) attitude, position and ground distance come from the body simulator instead of the estimators; (2) motors are kept off (`enableMotors(false)` at MissionBegin); (3) `SystemReset` also resets the simulated body to its start pose.
+Intended sim/flight differences, complete list (safety.md rule 7): (1) attitude, position and ground distance come from the body simulator instead of the estimators; (2) motors are kept off (`enableMotors(false)` at MissionBegin); (3) `SystemReset` also resets the simulated body to its start pose; (4) the "all three calibrations valid" rule for `Arm` / `MissionBegin` and the countdown abort is **not required** (`Calibration::kCheckExemptInSimulation`, [calibration.md](calibration.md)), and the calibration commands are refused in simulation mode.
 
 Use it on the bench for every Development verification (see [../development-workflow.md](../development-workflow.md#flight-release-development--master)). The simulator has known model bugs: TVC clamp direction, wind frame. See [libs/ExVectrDSP.md](../libs/ExVectrDSP.md). A passing simulation is therefore necessary but not sufficient.
 

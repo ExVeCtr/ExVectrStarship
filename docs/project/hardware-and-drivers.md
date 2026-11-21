@@ -206,18 +206,18 @@ Messages containing NaN are dropped (self-equality test, `.cpp:41`).
 
 ## 8. Persistent memory keys (`src/memory_keys.hpp`)
 
-`Data::Memory_Internal<512>` is a RAM image of EEPROM, managed by `Memory_Manager` (main.cpp:105-107). At boot: EEPROM → RAM. A manager version mismatch clears memory. Missing items are created with identity defaults. Then RAM → EEPROM (main.cpp:1775-1871). The image is saved again only by `Telecommand_Save` with subsystem `Magneto`.
+`Data::Memory_Internal<512>` is a RAM image of EEPROM, managed by `Memory_Manager` (main.cpp:105-107). At boot: EEPROM → RAM. A manager version mismatch clears memory. Missing items are created with identity defaults. Then RAM → EEPROM (`initialiseMemory`). The image is saved again only by `Telecommand_Save` (any of the subsystems Gyro, Accel, Magneto; EEPROM write then read-back compare; [calibration.md](calibration.md)).
 
 | Key | Define | Type | Content |
 |---|---|---|---|
 | 100 | `MEMORY_KEY_GYROCALIB` | `DSP::ValueCov<float,3>` | `val` = bias (sensor frame), `cov` = scale/misalignment 3×3 |
-| 101 | `MEMORY_KEY_MAGCALIB` | `ValueCov<float,3>` | `val` = hard-iron bias, `cov` = scale. Written by `CalibApply` (main.cpp:769). |
-| 102 | `MEMORY_KEY_ACCCALIB` | `ValueCov<float,3>` | bias / scale |
+| 101 | `MEMORY_KEY_MAGCALIB` | `ValueCov<float,3>` | `val` = hard-iron bias, `cov` = scale. Written by `CalibApply` (mag candidate, `C = s I`). |
+| 102 | `MEMORY_KEY_ACCCALIB` | `ValueCov<float,3>` | bias / scale. Written by `CalibApply` (accel candidate, `C = T A T⁻¹`). |
 | 200 | `MEMORY_KEY_GYROTRANSFORM` | `Matrix<float,3,3>` | sensor → body |
 | 201 | `MEMORY_KEY_MAGTRANSFORM` | `Matrix<float,3,3>` | sensor → body |
 | 202 | `MEMORY_KEY_ACCTRANSFORM` | `Matrix<float,3,3>` | sensor → body |
 
-Applied as `TopicCoordTransform::setTransform(calib.cov * transform, calib.val)` through `applySensorCalibration` (main.cpp:117, calls at :1804-1812), which also keeps a copy for the `CALIBRATION` telemetry. **The gyro bias is overridden in RAM at every boot** with hard-coded `(0.92, 2.0, 0.6) °/s` (main.cpp:1789-1792). It is never written to memory, so the stored key 100 bias is ignored. The exact formulas are in section 8a.
+Applied as `TopicCoordTransform::setTransform(calib.cov * transform, calib.val)` through `applySensorCalibration` (main.cpp:117, calls at :1804-1812), which also keeps a copy for the `CALIBRATION` telemetry. **The hard-coded gyro bias `(0.92, 2.0, 0.6) °/s` is gone (2026-11-21, calibration C2):** the boot gyro offset is key 100 `.val` until the automatic gyro bias run of the boot zeroing window applies the measured bias (RAM transform only, never written to the image unless a manual gyro `CalibApply`). Calibration behaviour, validity rules and the commands: [calibration.md](calibration.md). The exact formulas are in section 8a.
 
 ## 8a. Sensor calibration pipeline (what `CALIBRATION` reproduces)
 
@@ -229,7 +229,7 @@ cal = M * (raw - b)        M = C * T  (3x3),  b = offset (3)
 
 | Sensor | raw (driver output, `IMU_RAW`) | b | C | T | Consumers of `cal` |
 |---|---|---|---|---|---|
-| Gyro | MPU9250 gyro, rad/s | hard-coded `(0.92, 2.0, 0.6)°/s` in rad/s (key 100 `.val` ignored) | key 100 `.cov` | key 200 | attitude EKF |
+| Gyro | MPU9250 gyro, rad/s | key 100 `.val` at boot, then the measured bias of the automatic run (RAM) | key 100 `.cov` | key 200 | attitude EKF |
 | Accel | MPU9250 accel, m/s² | key 102 `.val` | key 102 `.cov` | key 202 | attitude EKF, position KF |
 | Mag | QMC5883, driver gauss | key 101 `.val` | key 101 `.cov` | key 201 | attitude EKF |
 
@@ -249,17 +249,17 @@ omega_est [rad/s] = gyro_cal - gyro_bias_est          (equals POSE.omega up to t
 
 The vehicle computes the mag in gauss (`IMU_RAW.mag` = driver gauss × 1e-4, `mag_offset` = key 101 `.val` × 1e-4, `mag_matrix` unchanged), so `mag_cal` is the vehicle's value × 1e-4. The EKF only uses the mag direction, and drops samples with |vehicle value| outside 0.01–0.1, i.e. |`mag_cal`| outside 1e-6–1e-5 T (`lib/ExVectrDSP/src/imu_attitude_ekf.cpp:327`); with the in-flight calibration |`mag_cal`| ≈ 5e-6 T, which is not the physical field strength.
 
-`raw_frame` is `SENSOR` (0). Source bits per sensor (`*_source`): `CALIB_EEPROM` (key 10x read from EEPROM), `TRANSFORM_EEPROM` (key 20x read), `OFFSET_OVERRIDE` (gyro: hard-coded bias), `RAM_ONLY` (set by `CalibApply`, cleared by a successful `Save`), `MEMORY_CLEARED` (memory manager version mismatch at boot, everything is defaults). Both bits clear means identity defaults.
+`raw_frame` is `SENSOR` (0). Source bits per sensor (`*_source`): `CALIB_EEPROM` (key 10x read from EEPROM), `TRANSFORM_EEPROM` (key 20x read), `OFFSET_OVERRIDE` (no longer set since 2026-11-21: the hard-coded gyro bias is removed), `RAM_ONLY` (set by `CalibApply` and by the automatic gyro run, cleared by a successful `Save` for records whose value was written to the image), `MEMORY_CLEARED` (memory manager version mismatch at boot, everything is defaults). Both bits clear means identity defaults.
 
-**Bench values (vehicle on the bench 2026-11-20, read with `CALIBRATION`):** all six items loaded from EEPROM (gyro source 0x07, accel 0x03, mag 0x03).
+**Bench values (vehicle on the bench 2026-11-20, read with `CALIBRATION`). These are the MANUAL ROLLBACK values for the first calibration increment (calibration C2 has no rollback record: there is no tool that writes arbitrary values, so restoring means re-entering these via firmware or a future ground-station rollback):** all six items loaded from EEPROM (gyro source 0x07 with the override, accel 0x03, mag 0x03).
 
 | Sensor | b | M |
 |---|---|---|
-| Gyro | `(0.01606, 0.03491, 0.01047)` rad/s (override) | `diag(−1, 1, −1)` |
+| Gyro | `(0.01606, 0.03491, 0.01047)` rad/s (the hard-coded override of that time; the stored key 100 value, read 2026-11-21 as the boot offset after the override was removed, is `(0.00323, 0.02011, −0.00744)` rad/s) | `diag(−1, 1, −1)` |
 | Accel | `(0.42849, 0.55833, 2.14256)` m/s² | `diag(−0.9984, 1.003, −0.9673)` |
 | Mag | `(1.0491e-6, −1.467e-7, 8.154e-7)` T | `0.16220 · [[0,0,−1],[1,0,0],[0,−1,0]]` |
 
-These are the values of the `if (false)` block in `initialiseMemory` for the accel (offset/scale, `T = diag(−1,1,−1)`) and gyro (`C = diag(−1,1,−1)`), and a `CalibApply` mag fit with the permutation transform in key 201. With them the bench vehicle at rest gives |accel cal| = 10.3 m/s² (raw 8.44): the accel calibration no longer fits the sensor (Known issues).
+These are the values of the `if (false)` block in `initialiseMemory` for the accel (offset/scale, `T = diag(−1,1,−1)`) and gyro (`C = diag(−1,1,−1)`), and a `CalibApply` mag fit with the permutation transform in key 201. With them the bench vehicle at rest gives |accel cal| = 10.3 m/s² (raw 8.44): the accel calibration no longer fits the sensor (Known issues). Since 2026-11-21 that stored accel offset (`b_z = 2.14` above the 1.5 m/s² limit) makes Arm and MissionBegin refuse until the accelerometer is recalibrated ([calibration.md](calibration.md)).
 
 ---
 
@@ -362,14 +362,14 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 
 | # | Type | Magic / params | Precondition | Implemented behaviour |
 |---|---|---|---|---|
-| 0 | `CalibStart` | `subsystem == Magneto`; `paramInt > 0` starts, ≤ 0 stops | none | Start: mag least-squares calibration task, TVC actuators off, mode `SensorCalib`. Stop: end calibration, mode `Startup`. The duration in the header comment is not implemented. |
-| 1 | `CalibApply` | `subsystem == Magneto` | none | bias = fit, scale = 1/fitScale·I. Write key 101, read key 201, apply to `magTransformTopic` (RAM only until Save). |
+| 0 | `CalibStart` | `subsystem` 0 gyro, 1 accel, 2 mag; `paramInt` 1 (or > 2) calibrate, 2 verify, 0 or ≤ −2 stop and fit, −1 discard | initialised, disarmed, motors off, mode Startup/Ready/SensorCalib, mission Idle/Finished, **not simulation mode** (else refused, logged 1/s) | Starts the `CalibrationService` session (accel 12-pose fit, mag sphere fit, gyro run), TVC actuators off, mode `SensorCalib`, aborts a zeroing window and clears the valid zero. When no session is collecting or fitting the mode returns to `Startup` (automatic zero). [calibration.md](calibration.md). |
+| 1 | `CalibApply` | `subsystem` 0 / 1 / 2 | as `CalibStart`, and a candidate with verdict **PASS or WARN** | Writes the legacy key (accel `C = T A T⁻¹`, mag `C = s I`, gyro bias) to the RAM image, applies the transform (RAM only until Save), invalidates the estimator zero (Ready → Startup). |
 | 2 | `Load` | — | — | **Not handled.** |
-| 3 | `Save` | `subsystem == Magneto` | none | EEPROM ← RAM image (all keys). |
+| 3 | `Save` | `subsystem` 0 / 1 / 2 | as `CalibStart`, no sensor collecting | EEPROM ← RAM image (all keys), then read back and compared (`saved ... verified` / `EEPROM save FAILED`). |
 | 4 | `SystemReset` | `paramInt == 0xC5` | none | **System state only (since 2026-11-20):** mode `Startup`, re-init (wait for all inputs), actuators/motors/flaps off, **whole mission chain reset to the boot state** (`resetMissionsToBootState()`: all missions Idle, RTH active, no pending next mission, never continued), `clearFailures()`, **disarm**, aborts an active zeroing window. Then `Ready` as soon as the inputs are back, without a new zero, if a valid zero exists since boot. It does **not** zero or re-reference the estimators or reset the body simulator (use `ZeroEstimators`), and does **not** change simulation mode (it stays on or off as it was). |
-| 5 | `Arm` | `paramInt == 0xA5` arms; **any other value disarms** | `0xA5`: no zeroing window active (else refused, rate-limited log) | Sets `vehicleArmed_`. Auto-disarm on Failure, SensorCalib, Startup or SensorInit, and after RTH finishes. Disarm is always accepted. |
+| 5 | `Arm` | `paramInt == 0xA5` arms; **any other value disarms** | `0xA5`: no zeroing window active (else refused, rate-limited log) **and all three calibrations valid** (not required in simulation mode; refused with the reason, log every 10 s) | Sets `vehicleArmed_`. Auto-disarm on Failure, SensorCalib, Startup or SensorInit, after RTH finishes, and in mode Ready if the calibration check fails (real mode). Disarm is always accepted. |
 | 6 | `SimulationMode` | `paramInt == 0xA9` | none | **Toggles.** On: motors off, topic switches → `bodySimulator`, simulator reset and unpaused. Off: switches → estimators, simulator paused, mode `Startup`, re-init, actuators off. |
-| 7 | `MissionBegin` | `paramInt` = initial mission time in s (use ≤ −10 for the full countdown) | mode `Ready`, no zeroing window active (else refused, rate-limited log) | `switchMissionTo(waypoint, paramInt·1 s)`, mode `Running`, motors enabled unless in simulation. **Arming not required.** |
+| 7 | `MissionBegin` | `paramInt` = initial mission time in s (use ≤ −10 for the full countdown) | mode `Ready`, no zeroing window active (else refused, rate-limited log), **all three calibrations valid and `paramInt <= −18`** (not required in simulation mode; refused with the reason, log every 10 s) | `switchMissionTo(waypoint, paramInt·1 s)`, mode `Running`, motors enabled unless in simulation. **Arming not required.** |
 | 8 | `MissionSelect` | — | mode `Ready` | No-op (log only). |
 | 9 | `MissionAbort` | none | mode `Running` (else ignored) | **Abort = stop and return home** (user decision 2026-11-20, `Safety::decideAbort`, missions.md 6.2). In flight (waypoint Running or Finished, bellyflop, freefall; by mission mode only, no altitude/speed check): RTH hot start at once; RTH already running: kept. On the ground = before liftoff (waypoint Init/Startup, any Idle mission, RTH landed): TVC actuators and motors off, chain reset, reset mission (Idle), clear failures → Startup → Ready, nothing restarts. The old "only valid in flight" note is replaced by this rule. |
 | 10 | `ZeroEstimators` | `paramInt == 0x2E`; `paramFloat` = window in s (NaN or 0: 10 s; clamped to 1..60 s) | initialised (all inputs published), disarmed, motors off, mode `Startup` or `Ready`, active mission `Idle` or `Finished`. Otherwise ignored, counted, rate-limited log (1/s) | Starts the zeroing window (overview.md, "Estimator zeroing"); a second one during the window restarts it with the new duration. One-shot ground action, timed on the vehicle. **The vehicle must be still.** |
@@ -499,8 +499,8 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | Low | `ublox_gnss.cpp` `performConfigAction` (`Begin`) | Residual blocking: one `begin()` attempt can still block up to 3 x 250 ms (the SparkFun `isConnected` retries) when the receiver does not answer at that baud (first-ever setup, wrong baud, receiver missing). | Only before the first GNSS data, so no sensor-age check runs yet (initialisation waits for GNSS), but the estimators are starved for up to 0.75 s per baud attempt in that case. Normal boots (receiver saved at 115200) do not hit it. |
 | Low | `lib/ExVectrSensor/src/mpu9250.cpp` (`WriteRegister` 2 x 10 ms per register write, AK8963 waits of 100 ms), `qmc5883.cpp:164` (10 ms), `src/vl53l0x/vl53l0x_driver.cpp` (init loops without timeout, `io_timeout = 0`) | Other blocking waits in the start-up path (checked 2026-11-20). All run in the drivers' `taskInit` at t ≈ 0, before the estimators publish and long before the first sensor-age check, so they cannot latch sensorFailure. `MPU9250::WriteRegister` delays 20 ms per call; it is also used by the AK8963 read path, but the mag is disabled on this vehicle (`MPU9250Driver(spiMPU, true)`). | Slower boot only. A missing VL53L0X could hang its init loop (not observed). Not changed. |
 | Low | `starship_flaps.hpp:37` | `FLAP_MIN_ANGLE = 15°` clamps the controller's 0° (full extension, used by `Upright`). | Flaps never fully extend. The true-flap topic shows 15°. |
-| Low | main.cpp:1789-1792 | Gyro bias hard-coded at boot overrides the stored calibration. | Stale bias when the IMU or temperature changes. The key 100 bias is silently ignored. `CALIBRATION` shows it (`OFFSET_OVERRIDE`). |
-| Medium | EEPROM key 102 (bench vehicle) | The stored accel calibration (`b = (0.428, 0.558, 2.143)` m/s², `C·T = diag(−0.9984, 1.003, −0.9673)`) maps the resting raw accel (\|raw\| 8.44 m/s²) to \|cal\| 10.3 m/s², not 9.81. The z offset no longer matches the sensor (it may have shifted, or the values were fitted in another frame). | The tilt estimate can be off by a few degrees (the x/y offset error is not observable at rest in one orientation). Needs a new accel calibration (six-position) before flight; there is no accel calibration command. |
+| Fixed 2026-11-21 | `initialiseMemory` | (was Low) Gyro bias hard-coded at boot overrode the stored calibration. | Removed: the boot offset is key 100 until the automatic gyro run applies the measured bias ([calibration.md](calibration.md)). |
+| Medium | EEPROM key 102 (bench vehicle) | The stored accel calibration (`b = (0.428, 0.558, 2.143)` m/s², `C·T = diag(−0.9984, 1.003, −0.9673)`) maps the resting raw accel (\|raw\| 8.44 m/s²) to \|cal\| 10.3 m/s², not 9.81. The z offset no longer matches the sensor (it may have shifted, or the values were fitted in another frame). | The tilt estimate can be off by a few degrees (the x/y offset error is not observable at rest in one orientation). Needs a new accel calibration (six-position) before flight; there is no accel calibration command. | **Since 2026-11-21 the calibration check refuses Arm and MissionBegin because of it (offset above 1.5 m/s²) until the accelerometer is recalibrated** ([calibration.md](calibration.md)).
 | Medium | `lib/ExVectrSensor/src/qmc5883.cpp:99-101`, `:170` | The QMC5883 is configured for the 8 G range (3000 LSB/G per datasheet) but converted with 8/32767 G/LSB (4096 LSB/G). | `IMU_RAW.mag` is 0.73x the physical field (0.35 G read for about 0.48 G). Direction and the existing mag calibration are unaffected; do not "fix" it without recalibrating the mag (the stored offset is in these units). |
 | Medium | attitude EKF (`lib/ExVectrDSP`), seen in `ESTIMATOR` | The EKF quaternion covariance does not converge on the bench: `att_std` stays at about 0.3-1 rad tilt and several rad heading. The mag correction is a fixed-gain complementary step that never reduces `P`, and the accel update uses the driver variance × 5000. | `att_std` is not a usable confidence today, although the attitude itself is consistent with the calibrated accel and mag (2026-11-20 bench check: accel to world up within 1.6°, mag heading error 1.5°). Estimator change: needs a decision and simulation verification. |
 | Low | main.cpp `systemsInitialised` | "GNSS data not new" (and the other "... not new" lines) are logged every 100 ms until all sensors deliver. | About 10 `LOG_TEXT` lines/s on the bench without GNSS. Not rate-limited (only the auto-disarm messages are, 2026-11-20). |
