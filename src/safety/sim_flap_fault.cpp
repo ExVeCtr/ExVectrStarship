@@ -36,8 +36,8 @@ SimFaultDecision decideSimFault(uint8_t type, uint8_t subsystem, int16_t paramIn
     d.reason = SimFaultRefusal::None;
     return d;
   }
-  const uint8_t allowed = (type == kSimFlapStuckType) ? uint8_t(0x03 | kSimFaultArmBit) : uint8_t(0x03);
-  if ((subsystem & ~allowed) != 0) {
+  // Only the flap index bits. Bit 0x10 (the removed "arm for the descent" mode) is refused like any other bit.
+  if ((subsystem & ~kSimFaultFlapMask) != 0) {
     d.reason = SimFaultRefusal::BadSubsystem;
     return d;
   }
@@ -49,7 +49,6 @@ SimFaultDecision decideSimFault(uint8_t type, uint8_t subsystem, int16_t paramIn
   d.reason = SimFaultRefusal::None;
   if (type == kSimFlapStuckType) {
     d.action = SimFaultAction::Stuck;
-    d.armForDescent = (subsystem & kSimFaultArmBit) != 0;
     if (paramFloat == kSimFlapCaptureValue) {
       d.captureCurrent = true;
     } else {
@@ -68,15 +67,9 @@ bool SimFlapFaults::set(const SimFaultDecision &d, bool simActive) {
   Flap &f = f_[d.flap];
   switch (d.action) {
   case SimFaultAction::Stuck:
-    if (d.armForDescent) {
-      f.armed = true;
-      f.armCapture = d.captureCurrent;
-      f.armAngle = d.value;
-    } else {
-      f.stuck = true;
-      f.capture = d.captureCurrent;
-      f.angle = d.value;
-    }
+    f.stuck = true;
+    f.capture = d.captureCurrent;
+    f.angle = d.value;
     return true;
   case SimFaultAction::Slow:
     f.rate = d.value;
@@ -104,23 +97,6 @@ bool SimFlapFaults::takeReleased(uint8_t flap) {
   return true;
 }
 
-int SimFlapFaults::onDescentBegin(bool simActive) {
-  int n = 0;
-  for (auto &f : f_) {
-    if (!f.armed)
-      continue;
-    if (simActive) {
-      f.stuck = true;
-      f.capture = f.armCapture;
-      f.angle = f.armAngle;
-      n++;
-    }
-    f.armed = false;
-    f.armCapture = false;
-  }
-  return n;
-}
-
 float SimFlapFaults::effectiveAngle(uint8_t flap, bool simActive, float modelAngle) {
   if (!simActive || flap > 3 || !f_[flap].stuck)
     return modelAngle;
@@ -140,9 +116,30 @@ float SimFlapFaults::rateFactor(uint8_t flap, bool simActive) const {
 
 bool SimFlapFaults::any() const {
   for (const auto &f : f_)
-    if (f.stuck || f.armed || f.rate != 1.0f)
+    if (f.stuck || f.rate != 1.0f)
       return true;
   return false;
+}
+
+void TrueFlapModel::advance(int64_t dtNs, const SimFlapFaults &faults, bool simActive) {
+  const double dt = double(dtNs) * 1e-9;
+  for (uint8_t i = 0; i < 4; i++) {
+    const float diff = target_[i] - angle_[i];
+    const float maxStep = float(double(rate_ * faults.rateFactor(i, simActive)) * dt);
+    if (diff <= maxStep && diff >= -maxStep)
+      angle_[i] = target_[i];
+    else
+      angle_[i] += diff > 0 ? maxStep : -maxStep;
+  }
+}
+
+void TrueFlapModel::publishAngles(SimFlapFaults &faults, bool simActive, float out[4]) {
+  for (uint8_t i = 0; i < 4; i++) {
+    if (faults.takeReleased(i))
+      angle_[i] = target_[i]; // a released stuck fault must not leave its forced angle in the model
+    angle_[i] = faults.effectiveAngle(i, simActive, angle_[i]);
+    out[i] = angle_[i];
+  }
 }
 
 } // namespace Safety

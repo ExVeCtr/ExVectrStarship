@@ -31,9 +31,9 @@ namespace VCTR {
         Telecommand_SimGustStrength, //SIMULATION ONLY (refused otherwise): peak gust speed (bound of the extra wind speed along the mean direction) of the simulated world, paramFloat in m/s (finite, clamped to 0..10). paramInt must be equal to 0x57. Value 13.
         Telecommand_SimGustPeriod,  //SIMULATION ONLY (refused otherwise): gust timescale, paramFloat in s (finite, clamped to 0.5..30). paramInt must be equal to 0x57. Value 14.
         Telecommand_SimGustSeed,    //SIMULATION ONLY (refused otherwise): gust seed, paramFloat an integer-valued number 0..16777215 (finite; rounded, clamped; exact in float). paramInt must be equal to 0x57. Value 15.
-        Telecommand_SimFlapStuck,   //SIMULATION ONLY (refused otherwise): stuck flap servo fault, owner-approved 2026-11-21. subsystem bits 0..1 = flap (0 TL, 1 TR, 2 BL, 3 BR), bit 4 (0x10) = arm for the descent (takes effect when the bellyflop mission becomes active). paramFloat = stuck angle in rad (finite, clamped 0..pi/2), -1.0 = hold the true angle at the moment it takes effect. paramInt must be equal to 0x57. Cleared on every simulation mode switch. Value 16.
+        Telecommand_SimFlapStuck,   //SIMULATION ONLY (refused otherwise): stuck flap servo fault, owner-approved 2026-11-21. subsystem = flap 0..3 (0 TL, 1 TR, 2 BL, 3 BR), any other bit refused (the 'arm for descent' bit 0x10 was removed 2026-11-21). Takes effect immediately on the modelled true flap angle. paramFloat = stuck angle in rad (finite, clamped 0..pi/2), -1.0 = hold the current true angle. paramInt must be equal to 0x57. Cleared on every simulation mode switch. Value 16.
         Telecommand_SimFlapSlow,    //SIMULATION ONLY (refused otherwise): slow flap servo fault. subsystem = flap index, paramFloat = servo rate factor (finite, clamped 0.05..1). paramInt must be equal to 0x57. Value 17.
-        Telecommand_SimFaultClear,  //SIMULATION ONLY (refused otherwise): clears all flap faults and armed faults. paramInt must be equal to 0x57, other fields ignored. Value 18.
+        Telecommand_SimFaultClear,  //SIMULATION ONLY (refused otherwise): clears all flap faults. paramInt must be equal to 0x57, other fields ignored. Value 18.
         Telecommand_MAX             //Max value for the enum. This is used to check if the command is valid or not.
     };
 

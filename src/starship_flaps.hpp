@@ -18,24 +18,6 @@
 
 namespace VCTR::CTRL {
 
-class ServoAngleSimulator {
-private:
-  float currentAngleRad_ = 0;
-  float targetAngleRad_ = 0;
-  float radsLimit = 45 * DEGREES; // max radians per second
-public:
-  // Default radsLimit is of a typical cheap 9g servo
-  ServoAngleSimulator(float radsLimit = 60 * DEGREES / 0.1f);
-  void setRadiansPerSecondLimit(float radsPerSecond);
-  void setTargetAngle(float angleRad);
-  float getCurrentAngle() const;
-  void update(int64_t deltaTime);
-  /// Simulation-only fault injection (Safety::SimFlapFaults): overwrites the modelled angle (stuck servo).
-  void forceAngle(float angleRad) { currentAngleRad_ = angleRad; }
-  /// Drops a forced angle: the modelled angle becomes the commanded target (fault released).
-  void snapToTarget() { currentAngleRad_ = targetAngleRad_; }
-};
-
 class StarshipFlaps : public Core::Task_Periodic {
 private:
   const float FLAP_TEST_DURATION = 4.0f;
@@ -53,15 +35,16 @@ private:
 
   CTRL::ControlAttitudeFlapSetting flapSettings_;
 
-  ServoAngleSimulator tlFlapSim_;
-  ServoAngleSimulator trFlapSim_;
-  ServoAngleSimulator blFlapSim_;
-  ServoAngleSimulator brFlapSim_;
+  // Modelled ("true") flap angles [TL, TR, BL, BR] incl. the sim-only faults (Safety::TrueFlapModel). Published on
+  // the true flap topic EVERY tick, enabled or not: the one source of the flap angle for the body simulator and the
+  // telemetry (redesign 2026-11-21).
+  Safety::TrueFlapModel trueFlaps_{FLAP_SERVO_RATE_RADPS};
   int64_t lastUpdateTime_ = 0;
 
   bool enableActuators_ = true;
 
   // Simulation-only servo faults (owner-approved 2026-11-21). Only the modelled true angle is affected, never the PWM.
+  // Applied immediately, at TrueFlapModel::publishAngles().
   Safety::SimFlapFaults simFaults_;
   const bool *simulationFlag_ = nullptr; // read at apply time; nullptr = never simulation
 

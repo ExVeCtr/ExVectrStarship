@@ -984,10 +984,7 @@ static void runFaultRepro(bool faulted, float v0, FaultRunRow *rows, int nRows) 
   n.setState(attOf(bellyDown(0, 0)), Vector<float, 6>{0, 0, -v0, 0, 0, 5000});
   FlapCtrlReplica c;
   c.azSet = atan2f(axisWorld(attOf(bellyDown()), 0, 0, 1)(1), axisWorld(attOf(bellyDown()), 0, 0, 1)(0));
-  VCTR::Safety::SimFlapFaults faults;
-  if (faulted) { // TL stuck at 42 deg, armed for the descent, taking effect at the transition (t = 1 s here)
-    faults.set(VCTR::Safety::decideSimFault(16, 0x10, 0x57, 42 * kDeg, true), true);
-  }
+  VCTR::Safety::SimFlapFaults faults; // TL stuck at 42 deg, applied at t = 1 s (immediate effect, redesign 2026-11-21)
   float servo[4] = {kTopNeutral, kTopNeutral, kBottomNeutral, kBottomNeutral}; // true angles
   const float rate = 60 * kDeg / 0.2f;
   const float dt = n.dt();
@@ -996,8 +993,8 @@ static void runFaultRepro(bool faulted, float v0, FaultRunRow *rows, int nRows) 
   float headPrev = c.azSet, headU = 0;
   int row = 0;
   for (int i = 0; i < total; i++) {
-    if (i == perSec)
-      faults.onDescentBegin(true);
+    if (i == perSec && faulted)
+      faults.set(VCTR::Safety::decideSimFault(16, 0x00, 0x57, 42 * kDeg, true), true);
     if (i % every == 0) {
       c.update(n.att());
       for (int k = 0; k < 4; k++)

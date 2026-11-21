@@ -436,12 +436,6 @@ public:
     mission_->beginMission(startTime);
     controlPositionStandard.subscribeSetpoint(mission_->getSetpointTopic());
     missionSwitchCount_++;
-    if (mission == &missionBellyflop) {
-      // Descent begins: simulation-only armed flap faults take effect (SimFlapStuck with the arm bit).
-      const int n = starshipFlaps.simFaults().onDescentBegin(simulationMode_);
-      if (n > 0)
-        LOG_MSG("Sim fault: %d armed flap fault(s) take effect now (descent begins)\n", n);
-    }
   }
 
   Safety::ActiveMission activeMissionKind() const {
@@ -1149,7 +1143,7 @@ public:
         }
         calibrationService.cancelGyroRun(); // the run belonged to the aborted window or countdown
         countdownGyroRun_ = false;
-        // Sim flap faults (active and armed) do not carry over into the next run (review 2026-11-21). The simulated
+        // Sim flap faults do not carry over into the next run (review 2026-11-21). The simulated
         // wind and gusts DO persist across SystemReset on purpose (a run series in the same wind); they are cleared
         // when simulation mode is switched.
         if (starshipFlaps.simFaults().any())
@@ -1436,15 +1430,14 @@ public:
       }
       static const char *const kFlapNames[4] = {"TL", "TR", "BL", "BR"};
       if (d.action == Safety::SimFaultAction::Clear) {
-        LOG_MSG("Sim fault: all flap faults and armed faults cleared\n");
+        LOG_MSG("Sim fault: all flap faults cleared\n");
       } else if (d.action == Safety::SimFaultAction::Slow) {
         LOG_MSG("Sim fault: flap %s servo rate factor %.2f\n", kFlapNames[d.flap], double(d.value));
       } else if (d.captureCurrent) {
-        LOG_MSG("Sim fault: flap %s %s at its current true angle\n", kFlapNames[d.flap],
-                d.armForDescent ? "ARMED to stick (descent begin)" : "STUCK");
+        LOG_MSG("Sim fault: flap %s STUCK at its current true angle (now)\n", kFlapNames[d.flap]);
       } else {
-        LOG_MSG("Sim fault: flap %s %s at %.1f deg\n", kFlapNames[d.flap],
-                d.armForDescent ? "ARMED to stick (descent begin)" : "STUCK", double(d.value * 180.0f / float(M_PI)));
+        LOG_MSG("Sim fault: flap %s STUCK at %.1f deg (now)\n", kFlapNames[d.flap],
+                double(d.value * 180.0f / float(M_PI)));
       }
     } break;
 

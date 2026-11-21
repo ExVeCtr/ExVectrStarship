@@ -8,9 +8,11 @@ Run with the ground-station venv python (needs pyserial and the exvectr_gs packa
 Steps (run in order):
   wait <s>                          watch for <s> seconds
   tc <type> <paramInt> [paramFloat] send one legacy telecommand (port 0x7F, 8 bytes <BBhf, subsystem 0)
-  tcs <type> <subsystem> <paramInt> send one legacy telecommand with a subsystem (calibration: CalibStart = type 0,
+  tcs <type> <subsystem> <paramInt> [paramFloat]
+                                    send one legacy telecommand with a subsystem (calibration: CalibStart = type 0,
                                     CalibApply = 1, Save = 3; subsystem 0 gyro, 1 accel, 2 mag; paramInt 1 calibrate,
-                                    2 verify, 0 stop and fit, -1 discard)
+                                    2 verify, 0 stop and fit, -1 discard; sim flap fault: SimFlapStuck = 16,
+                                    subsystem = flap 0..3, paramInt 0x57, paramFloat = angle rad or -1)
   tc <Name> [paramFloat]            by name with its validation value: SystemReset, Arm, Disarm, SimulationMode,
                                     MissionBegin (paramFloat = start time s, default -20), ZeroEstimators
   sh <command>                      run a shell command (for example `exgs tc send ...`, which then goes over the
@@ -102,7 +104,7 @@ class Vehicle:
         self.framer = NetFramer(0)
         self.lock = threading.Lock()
         self.st = {"mode": None, "mm": None, "phase": None, "flags": 0, "pos": [0.0] * 3, "vel": [0.0] * 3,
-                   "q": [1.0, 0, 0, 0], "fail": 0, "vt": 0.0, "sens": 0, "sq": None}
+                   "q": [1.0, 0, 0, 0], "fail": 0, "vt": 0.0, "sens": 0, "sq": None, "flaps": None}
         self.seq = 0
         self.t0 = time.time()
         self.stop = False
@@ -173,6 +175,7 @@ class Vehicle:
                                             *[round(v, 4) for v in p.vel], *[round(v, 5) for v in p.q],
                                             *[round(v, 4) for v in p.omega]])
                 elif cls is xp.Actuators:
+                    self.st.update(flaps=list(p.flaps))
                     if self.csvw:  # thrust (N), tvc deflection x/y (rad), flaps (rad)
                         self.csvw.writerow([round(t, 3), "ACT", round(p.thrust, 3), *[round(v, 4) for v in p.tvc],
                                             *[round(v, 3) for v in p.flaps]])
@@ -203,6 +206,7 @@ class Vehicle:
                 "sim": bool(s["flags"] & xp.VehicleStatus.FLAGS_SIMULATION),
                 "px": s["pos"][0], "py": s["pos"][1], "pz": s["pos"][2], "vz": s["vel"][2], "q": s["q"],
                 "sq": s["sq"], "sqn": (sum(v * v for v in s["sq"]) ** 0.5) if s["sq"] else None,
+                "flaps": s["flaps"], "flapsdeg": [v * 57.29578 for v in s["flaps"]] if s["flaps"] else None,
                 "READY": 3, "RUNNING": 4, "FAILURE": 5, "STARTUP": 0}
 
     def line(self):
@@ -211,9 +215,10 @@ class Vehicle:
         mode = MODES[s["mode"]] if s["mode"] is not None and s["mode"] < len(MODES) else s["mode"]
         mm = MMODES[s["mm"]] if s["mm"] is not None and s["mm"] < len(MMODES) else s["mm"]
         print("%7.2f  %-8s %-8s ph=%s Z=%d A=%d S=%d fail=0x%X sens=0x%03X pos=[%7.3f %7.3f %8.3f] vel=[%6.3f %6.3f %6.3f] "
-              "q=[%.4f %.4f %.4f %.4f] sq=%s" % (self.now(), mode, mm, s["phase"], e["zeroing"], e["armed"], e["sim"],
-                                                 s["fail"], s["sens"], *s["pos"], *s["vel"], *s["q"],
-                                                 "[%.4f %.4f %.4f %.4f]" % tuple(s["sq"]) if s["sq"] else "-"),
+              "q=[%.4f %.4f %.4f %.4f] sq=%s flaps=%s" % (
+                  self.now(), mode, mm, s["phase"], e["zeroing"], e["armed"], e["sim"], s["fail"], s["sens"], *s["pos"],
+                  *s["vel"], *s["q"], "[%.4f %.4f %.4f %.4f]" % tuple(s["sq"]) if s["sq"] else "-",
+                  "[%.1f %.1f %.1f %.1f]deg" % tuple(e["flapsdeg"]) if e["flapsdeg"] else "-"),
               flush=True)
 
     def watch(self, seconds, until=None):
@@ -268,7 +273,7 @@ def main():
                     r = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=60)
                     print("%7.2f  $ %s -> %s" % (v.now(), cmd, (r.stdout + r.stderr).strip()[:200]), flush=True)
                 elif w[0] == "tcs":
-                    v.tc(int(w[1], 0), int(w[3], 0), 0.0, subsystem=int(w[2], 0))
+                    v.tc(int(w[1], 0), int(w[3], 0), float(w[4]) if len(w) > 4 else 0.0, subsystem=int(w[2], 0))
                 elif w[0] == "tc":
                     if w[1] in TC_BY_NAME:
                         t, pi, pf = TC_BY_NAME[w[1]]

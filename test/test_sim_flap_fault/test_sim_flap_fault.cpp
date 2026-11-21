@@ -1,11 +1,15 @@
 // Host tests of src/safety/sim_flap_fault.cpp: pio test -e native -f test_sim_flap_fault
 //
 // Simulation-only flap servo faults (owner-approved 2026-11-21): the pure decision, the stuck / slow servo model,
-// capture of the current angle, armed-for-descent, clear, and the guarantee that outside simulation nothing changes.
+// capture of the current angle, immediate effect, clear, the removed arm-for-descent bit, the one application point
+// (TrueFlapModel::publishAngles, the angles StarshipFlaps publishes) and every consumer of it (telemetry ACTUATORS and
+// AIR_ACTUATORS, body simulator flap input), and the guarantee that outside simulation nothing changes.
 #include <math.h>
 #include <string.h>
 #include <unity.h>
 
+#include "ExVectrDSP/body_sim_model.hpp"
+#include "comms/telemetry_mapping.hpp"
 #include "safety/sim_flap_fault.hpp"
 
 using namespace VCTR::Safety;
@@ -16,21 +20,33 @@ void tearDown() {}
 static constexpr float kDeg = 3.14159265f / 180.0f;
 static constexpr float kRate = 60 * kDeg / 0.2f; // StarshipFlaps modelled servo rate
 
-// Replica of ServoAngleSimulator::update (src/starship_flaps.cpp) plus the fault hooks, as called in StarshipFlaps.
+// The real StarshipFlaps true-angle stage (Safety::TrueFlapModel), driven as StarshipFlaps drives it, one flap
+// exposed per adapter: powered tick = setTargets + advance, then publishAngles (every tick).
 struct Servo {
+  TrueFlapModel m{kRate};
   float cur = 0, target = 0;
-  void step(SimFlapFaults &f, uint8_t i, bool sim, int64_t dtNs) {
-    if (f.takeReleased(i))
-      cur = target; // ServoAngleSimulator::snapToTarget
-    const float limit = kRate * f.rateFactor(i, sim);
-    float diff = target - cur, mx = limit * double(dtNs) / 1e9;
-    if (fabs(diff) <= mx)
-      cur = target;
-    else
-      cur += (diff > 0 ? 1 : -1) * mx;
-    const float held = f.effectiveAngle(i, sim, cur);
-    if (held != cur)
-      cur = held;
+  float out[4] = {0, 0, 0, 0};
+  int idx = 0;
+  void place(float a) { // start the servo at angle a (target a, settled)
+    target = a;
+    float t[4] = {a, a, a, a};
+    m.setTargets(t);
+    SimFlapFaults none;
+    m.advance(10000000000LL, none, false);
+    cur = a;
+  }
+  void step(SimFlapFaults &f, uint8_t i, bool sim, int64_t dtNs, bool powered = true) {
+    idx = i;
+    if (powered) {
+      float t[4];
+      for (int k = 0; k < 4; k++)
+        t[k] = m.target(k);
+      t[i] = target;
+      m.setTargets(t);
+      m.advance(dtNs, f, sim);
+    }
+    m.publishAngles(f, sim, out);
+    cur = out[i];
   }
 };
 
@@ -49,7 +65,9 @@ static void test_decision_refusals() {
   TEST_ASSERT_EQUAL(int(SimFaultRefusal::NotFinite), int(decideSimFault(17, 1, 0x57, INFINITY, true).reason));
   // clear ignores the float
   TEST_ASSERT_EQUAL(int(SimFaultAction::Clear), int(decideSimFault(18, 0xFF, 0x57, NAN, true).action));
-  // subsystem bits: bits 2,3,5..7 refused; slow takes no arm bit
+  // subsystem bits: only the flap index; the removed "arm for the descent" bit 0x10 is refused (redesign 2026-11-21)
+  TEST_ASSERT_EQUAL(int(SimFaultRefusal::BadSubsystem), int(decideSimFault(16, 0x10, 0x57, 0.7f, true).reason));
+  TEST_ASSERT_EQUAL(int(SimFaultRefusal::BadSubsystem), int(decideSimFault(16, 0x13, 0x57, 0.7f, true).reason));
   TEST_ASSERT_EQUAL(int(SimFaultRefusal::BadSubsystem), int(decideSimFault(16, 0x04, 0x57, 0.7f, true).reason));
   TEST_ASSERT_EQUAL(int(SimFaultRefusal::BadSubsystem), int(decideSimFault(16, 0x20, 0x57, 0.7f, true).reason));
   TEST_ASSERT_EQUAL(int(SimFaultRefusal::BadSubsystem), int(decideSimFault(17, 0x10, 0x57, 0.5f, true).reason));
@@ -62,12 +80,10 @@ static void test_decision_values() {
   SimFaultDecision d = decideSimFault(16, 0x00, 0x57, 42 * kDeg, true);
   TEST_ASSERT_EQUAL(int(SimFaultAction::Stuck), int(d.action));
   TEST_ASSERT_EQUAL(0, d.flap);
-  TEST_ASSERT_FALSE(d.armForDescent);
   TEST_ASSERT_FALSE(d.captureCurrent);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 42 * kDeg, d.value);
-  d = decideSimFault(16, 0x13, 0x57, 5.0f, true); // flap 3, armed, clamped to pi/2
+  d = decideSimFault(16, 0x03, 0x57, 5.0f, true); // flap 3, clamped to pi/2
   TEST_ASSERT_EQUAL(3, d.flap);
-  TEST_ASSERT_TRUE(d.armForDescent);
   TEST_ASSERT_EQUAL_FLOAT(kSimFlapMaxRad, d.value);
   d = decideSimFault(16, 0x01, 0x57, -0.3f, true); // negative (not -1) clamps to 0
   TEST_ASSERT_FALSE(d.captureCurrent);
@@ -136,36 +152,33 @@ static void test_slow_rate() {
 static void test_clear_and_mode_switch() {
   SimFlapFaults f;
   f.set(decideSimFault(16, 0, 0x57, 0.7f, true), true);
-  f.set(decideSimFault(16, 0x11, 0x57, 0.7f, true), true);
+  f.set(decideSimFault(16, 0x01, 0x57, 0.7f, true), true);
   f.set(decideSimFault(17, 3, 0x57, 0.2f, true), true);
-  TEST_ASSERT_TRUE(f.stuck(0) && f.armed(1) && f.any());
+  TEST_ASSERT_TRUE(f.stuck(0) && f.stuck(1) && f.any());
   TEST_ASSERT_TRUE(f.set(decideSimFault(18, 0, 0x57, 0, true), true));
   TEST_ASSERT_FALSE(f.any());
   TEST_ASSERT_EQUAL_FLOAT(1.0f, f.rateFactor(3, true));
   // the simulation mode switch calls clear()
   f.set(decideSimFault(16, 0, 0x57, 0.7f, true), true);
-  f.set(decideSimFault(16, 0x12, 0x57, 0.7f, true), true);
+  f.set(decideSimFault(16, 0x02, 0x57, 0.7f, true), true);
   f.clear();
   TEST_ASSERT_FALSE(f.any());
   TEST_ASSERT_EQUAL_FLOAT(0.123f, f.effectiveAngle(0, true, 0.123f));
 }
 
-// Review 2026-11-21: finding 10 (SystemReset clears active and armed faults, so nothing fires at the next descent) and
+// Review 2026-11-21: finding 10 (SystemReset clears all faults, so nothing carries into the next run) and
 // finding 11 (the servo model drops its forced angle when a stuck fault is released).
 static void test_system_reset_clears_faults_and_servo_snaps_back() {
   SimFlapFaults f;
   Servo s;
-  s.target = 90 * kDeg;
-  s.cur = 90 * kDeg;
+  s.place(90 * kDeg);
   f.set(decideSimFault(16, 0, 0x57, 40 * kDeg, true), true); // TL stuck at 40 deg
-  f.set(decideSimFault(16, 0x11, 0x57, 42 * kDeg, true), true); // TR armed for the descent
   f.set(decideSimFault(17, 2, 0x57, 0.3f, true), true);        // BL slow
   s.step(f, 0, true, 2000000);
   TEST_ASSERT_EQUAL_FLOAT(40 * kDeg, s.cur);
   // SystemReset: the vehicle calls clear()
   f.clear();
   TEST_ASSERT_FALSE(f.any());
-  TEST_ASSERT_EQUAL(0, f.onDescentBegin(true)); // the armed fault of the previous run does not fire
   TEST_ASSERT_FALSE(f.stuck(0) || f.stuck(1));
   TEST_ASSERT_EQUAL_FLOAT(1.0f, f.rateFactor(2, true));
   // finding 11: the next update snaps the model angle to the commanded target instead of slewing back for 0.3 s
@@ -178,38 +191,13 @@ static void test_system_reset_clears_faults_and_servo_snaps_back() {
   // a release by leaving simulation mode (clear while sim is already false) still snaps back
   SimFlapFaults g;
   Servo t;
-  t.target = 60 * kDeg;
-  t.cur = 60 * kDeg;
+  t.place(60 * kDeg);
   g.set(decideSimFault(16, 1, 0x57, 20 * kDeg, true), true);
   t.step(g, 1, true, 2000000);
   TEST_ASSERT_EQUAL_FLOAT(20 * kDeg, t.cur);
   g.clear();
   t.step(g, 1, false, 2000000);
   TEST_ASSERT_EQUAL_FLOAT(60 * kDeg, t.cur);
-}
-
-static void test_armed_for_descent() {
-  SimFlapFaults f;
-  TEST_ASSERT_TRUE(f.set(decideSimFault(16, 0x10, 0x57, 42 * kDeg, true), true)); // TL armed
-  TEST_ASSERT_TRUE(f.armed(0));
-  TEST_ASSERT_FALSE(f.stuck(0));
-  TEST_ASSERT_EQUAL_FLOAT(0.9f, f.effectiveAngle(0, true, 0.9f)); // not stuck before the descent
-  TEST_ASSERT_EQUAL(1, f.onDescentBegin(true));
-  TEST_ASSERT_TRUE(f.stuck(0));
-  TEST_ASSERT_FALSE(f.armed(0));
-  TEST_ASSERT_EQUAL_FLOAT(42 * kDeg, f.effectiveAngle(0, true, 0.9f));
-  TEST_ASSERT_EQUAL(0, f.onDescentBegin(true)); // nothing armed any more
-  // armed capture
-  SimFlapFaults g;
-  g.set(decideSimFault(16, 0x12, 0x57, -1.0f, true), true);
-  g.onDescentBegin(true);
-  TEST_ASSERT_EQUAL_FLOAT(0.6f, g.effectiveAngle(2, true, 0.6f));
-  TEST_ASSERT_EQUAL_FLOAT(0.6f, g.effectiveAngle(2, true, 0.9f));
-  // descent outside simulation: armed faults are dropped, nothing takes effect
-  SimFlapFaults h;
-  h.set(decideSimFault(16, 0x10, 0x57, 0.7f, true), true);
-  TEST_ASSERT_EQUAL(0, h.onDescentBegin(false));
-  TEST_ASSERT_FALSE(h.any());
 }
 
 static void test_non_simulation_is_inert_and_bit_identical() {
@@ -241,8 +229,65 @@ static void test_non_simulation_is_inert_and_bit_identical() {
     }
   }
   TEST_ASSERT_EQUAL_FLOAT(1.0f, leaked.rateFactor(2, false));
-  // descent in real mode must not activate anything
-  TEST_ASSERT_EQUAL(0, leaked.onDescentBegin(false));
+}
+
+// Redesign 2026-11-21 (owner: 'Apply stuck fault' did nothing). Root cause on the bench: StarshipFlaps published the
+// true angle only while the flaps were enabled, so on the ground (flaps off) the fault was accepted and logged but never
+// reached the topic. Now the forced angle is published at the next tick, powered or not, and moves nothing else.
+static void test_immediate_effect_powered_and_unpowered() {
+  for (int powered = 0; powered < 2; powered++) {
+    SimFlapFaults f;
+    Servo s;
+    s.place(50 * kDeg);
+    s.step(f, 0, true, 20000000, powered);
+    TEST_ASSERT_EQUAL_FLOAT(50 * kDeg, s.cur);
+    TEST_ASSERT_TRUE(f.set(decideSimFault(16, 0, 0x57, 30 * kDeg, true), true));
+    s.step(f, 0, true, 20000000, powered); // first tick after the command
+    TEST_ASSERT_EQUAL_FLOAT(30 * kDeg, s.cur);
+    TEST_ASSERT_EQUAL_FLOAT(30 * kDeg, s.out[0]);
+    for (int k = 1; k < 4; k++)
+      TEST_ASSERT_EQUAL_FLOAT(50 * kDeg, s.out[k]); // the other flaps are untouched
+    // hold-current (-1) on an unpowered/powered flap: holds the angle it had
+    TEST_ASSERT_TRUE(f.set(decideSimFault(16, 2, 0x57, -1.0f, true), true));
+    s.step(f, 2, true, 20000000, powered);
+    TEST_ASSERT_EQUAL_FLOAT(50 * kDeg, s.out[2]);
+  }
+}
+
+// Every consumer of the flap angle reads the published true angle: the telemetry snapshot (ACTUATORS.flaps and the
+// AIR_ACTUATORS samples, the ground station's FlapState is decoded from these) and the body simulator's flap input.
+// The forced value must appear in all of them; the flap controller itself reads no flap angle.
+static void test_forced_angle_reaches_every_consumer() {
+  SimFlapFaults f;
+  Servo s;
+  s.place(50 * kDeg);
+  TEST_ASSERT_TRUE(f.set(decideSimFault(16, 1, 0x57, 20 * kDeg, true), true)); // TR stuck at 20 deg
+  for (int n = 0; n < 5; n++) {
+    s.target = 80 * kDeg; // the controller commands something else
+    s.step(f, 1, true, 20000000);
+  }
+  // (1) the published angles (true flap topic, ControlAttitudeFlapSetting [TL, TR, BL, BR])
+  TEST_ASSERT_EQUAL_FLOAT(20 * kDeg, s.out[1]);
+  // (2) telemetry: TelemetryProvider copies the topic into TelemetrySnapshot.flaps
+  VCTR::Comms::TelemetrySnapshot snap;
+  for (int k = 0; k < 4; k++)
+    snap.flaps[k] = s.out[k];
+  const auto act = VCTR::Comms::makeActuators(snap);
+  TEST_ASSERT_EQUAL_FLOAT(20 * kDeg, act.flaps[1]);
+  TEST_ASSERT_EQUAL_FLOAT(50 * kDeg, act.flaps[0]);
+  VCTR::Comms::ActuatorHistory hist;
+  hist.push(VCTR::Comms::makeActuatorSample(snap));
+  hist.push(VCTR::Comms::makeActuatorSample(snap));
+  const auto air = VCTR::Comms::makeAirActuators(hist);
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 20 * kDeg, air.flaps[1]); // i16 on the wire, 4 per sample
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 20 * kDeg, air.flaps[4 + 1]);
+  // (3) body simulator: BodySimulator passes the topic to BodySimModel::setFlapInput; the modelled flap reaches it.
+  VCTR::DSP::BodySimModel model{VCTR::DSP::BodySimParams()};
+  model.setFlapInput(s.out[0], s.out[1], s.out[2], s.out[3]);
+  for (int n = 0; n < 200; n++)
+    model.step();
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 20 * kDeg, model.flapAngle(1));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 50 * kDeg, model.flapAngle(0));
 }
 
 int main(int, char **) {
@@ -254,7 +299,8 @@ int main(int, char **) {
   RUN_TEST(test_slow_rate);
   RUN_TEST(test_clear_and_mode_switch);
   RUN_TEST(test_system_reset_clears_faults_and_servo_snaps_back);
-  RUN_TEST(test_armed_for_descent);
   RUN_TEST(test_non_simulation_is_inert_and_bit_identical);
+  RUN_TEST(test_immediate_effect_powered_and_unpowered);
+  RUN_TEST(test_forced_angle_reaches_every_consumer);
   return UNITY_END();
 }

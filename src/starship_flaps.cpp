@@ -10,28 +10,6 @@
 #include "ExVectrHAL/pin_pwm.hpp"
 #include "ExVectrMath.hpp"
 
-namespace VCTR::CTRL /* ServoAngleSimulator */ {
-ServoAngleSimulator::ServoAngleSimulator(float radsLimit)
-    : radsLimit(radsLimit) {}
-void ServoAngleSimulator::setRadiansPerSecondLimit(float radsPerSecond) {
-  radsLimit = radsPerSecond;
-}
-void ServoAngleSimulator::setTargetAngle(float angleRad) {
-  targetAngleRad_ = angleRad;
-}
-float ServoAngleSimulator::getCurrentAngle() const { return currentAngleRad_; }
-void ServoAngleSimulator::update(int64_t deltaTime) {
-  float angleDiff = targetAngleRad_ - currentAngleRad_;
-  float maxAngleChange = radsLimit * double(deltaTime) / double(Core::SECONDS);
-  if (fabs(angleDiff) <= maxAngleChange) {
-    currentAngleRad_ = targetAngleRad_;
-  } else {
-    currentAngleRad_ +=
-        (angleDiff > 0 ? 1 : -1) * maxAngleChange; // Move towards target angle
-  }
-}
-} // namespace VCTR::CTRL
-
 namespace VCTR::CTRL /* StarshipFlaps */ {
 
 StarshipFlaps::StarshipFlaps(HAL::PinPWM &flapServoULPin,
@@ -59,10 +37,7 @@ void StarshipFlaps::taskInit() {
 
   // Modelled ("true") flap angle: generic 9 g servos, 60 deg per 0.2 s = 300 deg/s (owner 2026-11-21; was
   // 60 deg per 0.3 s). Used for telemetry and as the simulator's flap input.
-  tlFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
-  trFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
-  blFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
-  brFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
+  trueFlaps_.setRate(FLAP_SERVO_RATE_RADPS);
 
   flapSettings_.flapTLAngle_Rad =
       0.0f; // Initialize the top left flap angle to 0 radians
@@ -166,41 +141,31 @@ void StarshipFlaps::taskThread() {
     servoBRPin_.setValue(
         1 - (flapSettings.flapBRAngle_Rad + offset + offsetBR) / 3.1415 * 2);
 
-    auto newUpdateTime = Core::NowNs();
-    tlFlapSim_.setTargetAngle(flapSettings.flapTLAngle_Rad);
-    trFlapSim_.setTargetAngle(flapSettings.flapTRAngle_Rad);
-    blFlapSim_.setTargetAngle(flapSettings.flapBLAngle_Rad);
-    brFlapSim_.setTargetAngle(flapSettings.flapBRAngle_Rad);
-    if (newUpdateTime - lastUpdateTime_ > 1 * Core::MILLISECONDS) {
-      int64_t deltaTime = newUpdateTime - lastUpdateTime_;
-      // Simulation-only fault injection (owner-approved 2026-11-21, safety.md rule 9 exception). The flag is read
-      // here at apply time; outside simulation rateFactor is exactly 1.0f and effectiveAngle returns the model
-      // angle unchanged, so the true-angle path is bit-identical to a build without the faults.
-      const bool simActive = simulationActive();
-      ServoAngleSimulator *sims[4] = {&tlFlapSim_, &trFlapSim_, &blFlapSim_, &brFlapSim_};
-      for (uint8_t i = 0; i < 4; i++) {
-        if (simFaults_.takeReleased(i))
-          sims[i]->snapToTarget(); // a released stuck fault must not leave its forced angle in the model
-        sims[i]->setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS * simFaults_.rateFactor(i, simActive));
-        sims[i]->update(deltaTime);
-        const float modelAngle = sims[i]->getCurrentAngle();
-        const float held = simFaults_.effectiveAngle(i, simActive, modelAngle);
-        if (held != modelAngle)
-          sims[i]->forceAngle(held);
-      }
-      lastUpdateTime_ = newUpdateTime;
-    }
-
-    trueFlapPub_.publish(CTRL::ControlAttitudeFlapSetting{
-        .flapTLAngle_Rad = tlFlapSim_.getCurrentAngle(),
-        .flapTRAngle_Rad = trFlapSim_.getCurrentAngle(),
-        .flapBLAngle_Rad = blFlapSim_.getCurrentAngle(),
-        .flapBRAngle_Rad = brFlapSim_.getCurrentAngle(),
-        .enableFlaps = enableActuators_});
-
-  } else {
-    lastUpdateTime_ = Core::NowNs();
+    const float targets[4] = {flapSettings.flapTLAngle_Rad, flapSettings.flapTRAngle_Rad,
+                              flapSettings.flapBLAngle_Rad, flapSettings.flapBRAngle_Rad};
+    trueFlaps_.setTargets(targets);
   }
+
+  // Modelled true flap angle. Powered: the servo model moves toward the clamped command. Not powered: nothing moves
+  // (an unpowered servo stays where it is). The faults (simulation only, owner-approved 2026-11-21, safety.md rule 9
+  // exception) are applied at ONE point, publishAngles(), and the result is published EVERY tick, so the body
+  // simulator and the telemetry show a fault immediately, also with the flaps disabled. The flag is read here at apply
+  // time; outside simulation rateFactor is exactly 1.0f and effectiveAngle returns the model angle unchanged.
+  const auto newUpdateTime = Core::NowNs();
+  const bool simActive = simulationActive();
+  if (enable && newUpdateTime - lastUpdateTime_ > 1 * Core::MILLISECONDS) {
+    trueFlaps_.advance(newUpdateTime - lastUpdateTime_, simFaults_, simActive);
+  }
+  if (!enable || newUpdateTime - lastUpdateTime_ > 1 * Core::MILLISECONDS)
+    lastUpdateTime_ = newUpdateTime;
+
+  float trueAngle[4];
+  trueFlaps_.publishAngles(simFaults_, simActive, trueAngle);
+  trueFlapPub_.publish(CTRL::ControlAttitudeFlapSetting{.flapTLAngle_Rad = trueAngle[0],
+                                                        .flapTRAngle_Rad = trueAngle[1],
+                                                        .flapBLAngle_Rad = trueAngle[2],
+                                                        .flapBRAngle_Rad = trueAngle[3],
+                                                        .enableFlaps = enableActuators_});
 }
 
 } // namespace VCTR::CTRL
