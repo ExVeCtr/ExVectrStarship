@@ -173,10 +173,19 @@ void StarshipFlaps::taskThread() {
     brFlapSim_.setTargetAngle(flapSettings.flapBRAngle_Rad);
     if (newUpdateTime - lastUpdateTime_ > 1 * Core::MILLISECONDS) {
       int64_t deltaTime = newUpdateTime - lastUpdateTime_;
-      tlFlapSim_.update(deltaTime);
-      trFlapSim_.update(deltaTime);
-      blFlapSim_.update(deltaTime);
-      brFlapSim_.update(deltaTime);
+      // Simulation-only fault injection (owner-approved 2026-11-21, safety.md rule 9 exception). The flag is read
+      // here at apply time; outside simulation rateFactor is exactly 1.0f and effectiveAngle returns the model
+      // angle unchanged, so the true-angle path is bit-identical to a build without the faults.
+      const bool simActive = simulationActive();
+      ServoAngleSimulator *sims[4] = {&tlFlapSim_, &trFlapSim_, &blFlapSim_, &brFlapSim_};
+      for (uint8_t i = 0; i < 4; i++) {
+        sims[i]->setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS * simFaults_.rateFactor(i, simActive));
+        sims[i]->update(deltaTime);
+        const float modelAngle = sims[i]->getCurrentAngle();
+        const float held = simFaults_.effectiveAngle(i, simActive, modelAngle);
+        if (held != modelAngle)
+          sims[i]->forceAngle(held);
+      }
       lastUpdateTime_ = newUpdateTime;
     }
 

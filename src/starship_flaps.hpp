@@ -14,6 +14,8 @@
 #include "ExVectrActuator/servo_control.hpp"
 #include "ExVectrHAL/pin_pwm.hpp"
 
+#include "safety/sim_flap_fault.hpp"
+
 namespace VCTR::CTRL {
 
 class ServoAngleSimulator {
@@ -28,6 +30,8 @@ public:
   void setTargetAngle(float angleRad);
   float getCurrentAngle() const;
   void update(int64_t deltaTime);
+  /// Simulation-only fault injection (Safety::SimFlapFaults): overwrites the modelled angle (stuck servo).
+  void forceAngle(float angleRad) { currentAngleRad_ = angleRad; }
 };
 
 class StarshipFlaps : public Core::Task_Periodic {
@@ -55,6 +59,10 @@ private:
 
   bool enableActuators_ = true;
 
+  // Simulation-only servo faults (owner-approved 2026-11-21). Only the modelled true angle is affected, never the PWM.
+  Safety::SimFlapFaults simFaults_;
+  const bool *simulationFlag_ = nullptr; // read at apply time; nullptr = never simulation
+
   enum class ActuatorTestingState { WaitBegin, Testing, Idle };
   ActuatorTestingState actuatorTestState_ = ActuatorTestingState::Idle;
 
@@ -76,6 +84,11 @@ public:
       Core::Topic<CTRL::ControlAttitudeFlapSetting> &trueFlapSettingTopic) {
     trueFlapPub_.subscribe(trueFlapSettingTopic);
   }
+
+  /// The simulation flag the faults are gated by (read every update, not cached).
+  void setSimulationFlag(const bool *flag) { simulationFlag_ = flag; }
+  bool simulationActive() const { return simulationFlag_ != nullptr && *simulationFlag_; }
+  Safety::SimFlapFaults &simFaults() { return simFaults_; }
 
   void enableActuators(bool enable) { enableActuators_ = enable; }
   bool actuatorsEnabled() const { return enableActuators_; }

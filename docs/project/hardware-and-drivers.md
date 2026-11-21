@@ -378,8 +378,11 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 | 13 | `SimGustStrength` | `paramInt == 0x57`; `paramFloat` = peak gust speed (bound of the extra wind speed along the mean direction) in m/s (finite; clamped to 0..10; 0 = no gusts) | as 11 | Sets the gust strength (period and seed unchanged). Owner-approved simulation-only exception to safety.md rule 7 (2026-11-21). Reset to 0 with the wind when `SimulationMode` switches. |
 | 14 | `SimGustPeriod` | `paramInt == 0x57`; `paramFloat` = gust timescale in s (finite; clamped to 0.5..30) | as 11 | Sets the gust period (default 5 s). |
 | 15 | `SimGustSeed` | `paramInt == 0x57`; `paramFloat` = integer-valued seed 0..16777215 (finite; rounded to the nearest integer, clamped; exact in a float) | as 11 | Sets the gust seed (default 1). Same seed and settings give an identical gust series (model: ExVectrDSP.md). |
+| 16 | `SimFlapStuck` | `paramInt == 0x57`; `subsystem` bits 0..1 = flap (0 TL, 1 TR, 2 BL, 3 BR, the telemetry ACTUATORS flaps order), bit 4 (`0x10`) = arm for the descent, other bits must be 0; `paramFloat` = stuck angle in rad (finite; clamped 0..π/2), **−1.0 = hold the true angle at the moment the fault takes effect** | **simulation mode only** (else refused and logged with the reason; also refused for a bad magic, bad subsystem bits or a non-finite value) | The flap's modelled TRUE angle (what the simulator's aerodynamic model and the ACTUATORS telemetry use) is held at that angle whatever the controller commands; the servo PWM output still follows the commanded angle. Without the arm bit it takes effect at once (capture: at the next flap task tick, 20 ms); with the arm bit it takes effect when the **bellyflop mission becomes the active mission** (`switchMissionTo(&missionBellyflop)`, i.e. the waypoint mission ended and the descent begins; capture at the first flap tick after that). Owner request 2026-11-21: reproduces the real flight where the TL servo stuck at 40-45° in the transition to the descent. |
+| 17 | `SimFlapSlow` | `paramInt == 0x57`; `subsystem` = flap index (0..3, no other bits); `paramFloat` = servo rate factor (finite; clamped 0.05..1.0, 1 = normal) | as 16 | Scales the modelled servo slew rate (300 deg/s) of that flap from then on. Effective at once. |
+| 18 | `SimFaultClear` | `paramInt == 0x57`; subsystem and `paramFloat` ignored | as 16 (magic and simulation mode) | Clears every active and armed flap fault. Faults are also cleared on every `SimulationMode` switch (on and off); `SystemReset` keeps them (a rerun keeps its fault). |
 
-**Encoding of 11..15** (8 bytes, little-endian, subsystem 0 = unused; `paramInt` 0x57 = bytes `57 00`; send at least 100 ms apart, only the newest command per 100 ms tick is handled). Examples:
+**Encoding of 11..18** (8 bytes, little-endian, subsystem 0 = unused; `paramInt` 0x57 = bytes `57 00`; send at least 100 ms apart, only the newest command per 100 ms tick is handled). Examples:
 
 | Command | Hex bytes |
 |---|---|
@@ -388,6 +391,11 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 | 13 gust strength 3.0 m/s | `0D 00 57 00 00 00 40 40` |
 | 14 gust period 4.0 s | `0E 00 57 00 00 00 80 40` |
 | 15 gust seed 42 | `0F 00 57 00 00 00 28 42` |
+| 16 TL stuck at 42° now (0.7330 rad) | `10 00 57 00 66 A8 3B 3F` |
+| 16 TL stuck at 42°, armed for the descent | `10 10 57 00 66 A8 3B 3F` |
+| 16 BR stuck at its current angle, armed for the descent (subsystem 0x13, value −1.0) | `10 13 57 00 00 00 80 BF` |
+| 17 BL servo rate factor 0.25 | `11 02 57 00 00 00 80 3E` |
+| 18 clear all faults | `12 00 57 00 00 00 00 00` |
 
 There is no authentication beyond the three magic values and the source address 0 (which any node on a link can claim). The vehicle subscribes to no other port: telemetry ports are send-only now.
 

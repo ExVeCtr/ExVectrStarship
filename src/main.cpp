@@ -39,6 +39,7 @@
 #include "safety/estimator_zeroing.hpp"
 #include "safety/control_phase.hpp"
 #include "safety/mission_abort.hpp"
+#include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
@@ -409,6 +410,8 @@ public:
   const FailureState &getFailureState() { return failureState_; }
 
   bool simulationModeEnabled() { return simulationMode_; }
+  /// The live simulation flag (the flap fault model reads it at apply time).
+  const bool *simulationFlag() const { return &simulationMode_; }
 
   bool isVehicleArmed() { return vehicleArmed_; }
 
@@ -433,6 +436,12 @@ public:
     mission_->beginMission(startTime);
     controlPositionStandard.subscribeSetpoint(mission_->getSetpointTopic());
     missionSwitchCount_++;
+    if (mission == &missionBellyflop) {
+      // Descent begins: simulation-only armed flap faults take effect (SimFlapStuck with the arm bit).
+      const int n = starshipFlaps.simFaults().onDescentBegin(simulationMode_);
+      if (n > 0)
+        LOG_MSG("Sim fault: %d armed flap fault(s) take effect now (descent begins)\n", n);
+    }
   }
 
   Safety::ActiveMission activeMissionKind() const {
@@ -1257,6 +1266,9 @@ public:
       if (telecommand.paramInt == 0xA9) { // Validate.
 
         simulationMode_ = !simulationMode_; // Toggle simulation mode
+        if (starshipFlaps.simFaults().any())
+          LOG_MSG("Sim fault: all flap faults cleared (simulation mode switched)\n");
+        starshipFlaps.simFaults().clear(); // faults never survive a simulation mode switch
 
         if (simulationMode_) {
           starshipTVC.enableMotors(
@@ -1355,6 +1367,37 @@ public:
       bodySimulator.setGust(strength, period, seed);
       LOG_MSG("Sim gusts: strength %.2f m/s, period %.2f s, seed %u\n", double(bodySimulator.gustStrength()),
               double(bodySimulator.gustPeriod()), unsigned(bodySimulator.gustSeed()));
+    } break;
+
+    case TelecommandType::Telecommand_SimFlapStuck:
+    case TelecommandType::Telecommand_SimFlapSlow:
+    case TelecommandType::Telecommand_SimFaultClear: {
+      // Simulation-only flap servo faults (owner-approved exception to safety.md rules 7 and 9, 2026-11-21). The
+      // decision is the pure Safety::decideSimFault; the fault only alters the modelled true flap angle inside
+      // StarshipFlaps and only while simulation mode is active (checked again there at apply time).
+      const Safety::SimFaultDecision d = Safety::decideSimFault(uint8_t(telecommand.type), uint8_t(telecommand.subsystem),
+                                                                telecommand.paramInt, telecommand.paramFloat,
+                                                                simulationMode_);
+      if (d.action == Safety::SimFaultAction::Refuse) {
+        LOG_MSG("Sim fault %d refused (%s)\n", int(telecommand.type), Safety::simFaultRefusalText(d.reason));
+        break;
+      }
+      if (!starshipFlaps.simFaults().set(d, simulationMode_)) {
+        LOG_MSG("Sim fault %d refused (not applied)\n", int(telecommand.type));
+        break;
+      }
+      static const char *const kFlapNames[4] = {"TL", "TR", "BL", "BR"};
+      if (d.action == Safety::SimFaultAction::Clear) {
+        LOG_MSG("Sim fault: all flap faults and armed faults cleared\n");
+      } else if (d.action == Safety::SimFaultAction::Slow) {
+        LOG_MSG("Sim fault: flap %s servo rate factor %.2f\n", kFlapNames[d.flap], double(d.value));
+      } else if (d.captureCurrent) {
+        LOG_MSG("Sim fault: flap %s %s at its current true angle\n", kFlapNames[d.flap],
+                d.armForDescent ? "ARMED to stick (descent begin)" : "STUCK");
+      } else {
+        LOG_MSG("Sim fault: flap %s %s at %.1f deg\n", kFlapNames[d.flap],
+                d.armForDescent ? "ARMED to stick (descent begin)" : "STUCK", double(d.value * 180.0f / float(M_PI)));
+      }
     } break;
 
     default:
@@ -2498,6 +2541,7 @@ void initialiseTopicConnections() {
   starshipTVC.setTVCInputTopic(controlAttitudeTvc.getTvcTopic());
   starshipFlaps.setFlapSettingTopic(flapSettingTopic);
   starshipFlaps.setTrueFlapSettingTopic(trueFlapSettingTopic);
+  starshipFlaps.setSimulationFlag(vehicleSafetyAndControlTask.simulationFlag()); // gate of the sim-only flap faults
 
   bodySimulator.setPaused(true);
   bodySimulator.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(),

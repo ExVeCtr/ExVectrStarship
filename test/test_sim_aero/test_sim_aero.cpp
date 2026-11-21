@@ -17,6 +17,7 @@
 
 #include "ExVectrDSP/body_sim_model.hpp"
 #include "legacy_model.hpp"
+#include "safety/sim_flap_fault.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Math;
@@ -942,6 +943,81 @@ static void test_closed_loop_flap_hold() {
   (void)rn;
 }
 
+// Owner reproduction (2026-11-21): the last real flight had the top-left flap servo stuck at about 40-45 deg during the
+// transition to the descent. Closed loop with the controller replica (current gains, untouched neutral angles) and the
+// real SimFlapFaults model between the controller and the aerodynamic model, as StarshipFlaps does it (300 deg/s servo).
+// Information only: nothing is asserted about the outcome.
+struct FaultRunRow {
+  float t, headUnwrapped, roll, pitch, belly, speed, rate;
+};
+static float rollAboutNoseDeg(const Vector<float, 7> &a) {
+  Vector_F z = axisWorld(a, 0, 0, 1), x = axisWorld(a, 1, 0, 0);
+  Vector_F up = {0, 0, 1};
+  float d = up(0) * z(0) + up(1) * z(1) + up(2) * z(2);
+  Vector_F u = {up(0) - d * z(0), up(1) - d * z(1), up(2) - d * z(2)};
+  float um = sqrtf(u(0) * u(0) + u(1) * u(1) + u(2) * u(2));
+  if (um < 1e-3f)
+    return 0;
+  float dot = (x(0) * u(0) + x(1) * u(1) + x(2) * u(2)) / um;
+  Vector_F cr = {x(1) * u(2) - x(2) * u(1), x(2) * u(0) - x(0) * u(2), x(0) * u(1) - x(1) * u(0)};
+  float sg = (cr(0) * z(0) + cr(1) * z(1) + cr(2) * z(2)) / um;
+  return atan2f(sg, dot) / kDeg;
+}
+static void runFaultRepro(bool faulted, float v0, FaultRunRow *rows, int nRows) {
+  NewSim n;
+  n.setState(attOf(bellyDown(0, 0)), Vector<float, 6>{0, 0, -v0, 0, 0, 5000});
+  FlapCtrlReplica c;
+  c.azSet = atan2f(axisWorld(attOf(bellyDown()), 0, 0, 1)(1), axisWorld(attOf(bellyDown()), 0, 0, 1)(0));
+  VCTR::Safety::SimFlapFaults faults;
+  if (faulted) { // TL stuck at 42 deg, armed for the descent, taking effect at the transition (t = 1 s here)
+    faults.set(VCTR::Safety::decideSimFault(16, 0x10, 0x57, 42 * kDeg, true), true);
+  }
+  float servo[4] = {kTopNeutral, kTopNeutral, kBottomNeutral, kBottomNeutral}; // true angles
+  const float rate = 60 * kDeg / 0.2f;
+  const float dt = n.dt();
+  const int total = int(20.0f / dt + 0.5f), every = int(0.02f / dt + 0.5f), perSec = int(1.0f / dt + 0.5f);
+  float cmd[4] = {servo[0], servo[1], servo[2], servo[3]};
+  float headPrev = c.azSet, headU = 0;
+  int row = 0;
+  for (int i = 0; i < total; i++) {
+    if (i == perSec)
+      faults.onDescentBegin(true);
+    if (i % every == 0) {
+      c.update(n.att());
+      for (int k = 0; k < 4; k++)
+        cmd[k] = c.out[k];
+      for (int k = 0; k < 4; k++) { // StarshipFlaps servo model + fault hook, 20 ms step
+        float diff = cmd[k] - servo[k], mx = rate * faults.rateFactor(uint8_t(k), true) * 0.02f;
+        servo[k] = fabsf(diff) <= mx ? cmd[k] : servo[k] + (diff > 0 ? mx : -mx);
+        servo[k] = faults.effectiveAngle(uint8_t(k), true, servo[k]);
+      }
+      n.setFlaps(servo[0], servo[1], servo[2], servo[3]);
+    }
+    n.step();
+    Vector_F z = axisWorld(n.att(), 0, 0, 1);
+    float head = atan2f(z(1), z(0)), dh = head - headPrev;
+    if (dh > 3.14159265f) dh -= 2 * 3.14159265f; else if (dh < -3.14159265f) dh += 2 * 3.14159265f;
+    headU += dh / kDeg;
+    headPrev = head;
+    if ((i + 1) % (5 * perSec) == 0 && row < nRows) {
+      auto a = n.att();
+      float w = sqrtf(a(0) * a(0) + a(1) * a(1) + a(2) * a(2)) / kDeg;
+      rows[row++] = FaultRunRow{(i + 1) * dt, headU, rollAboutNoseDeg(a), pitchDeg(a), bellyDeg(a), -n.pos()(2), w};
+    }
+  }
+}
+static void test_sim_fault_reproduction_tl_stuck() {
+  float v = gNewTerminal > 0 ? gNewTerminal : 6.4f;
+  FaultRunRow ok[4], bad[4];
+  runFaultRepro(false, v, ok, 4);
+  runFaultRepro(true, v, bad, 4);
+  for (int r = 0; r < 4; r++)
+    printf("SIMFAULT t=%2.0f s | unfaulted: heading %+7.1f deg, roll %+6.1f, pitch %+6.1f, belly %5.1f, rate %5.1f deg/s, v %.2f | TL stuck 42 deg: heading %+7.1f, roll %+6.1f, pitch %+6.1f, belly %5.1f, rate %5.1f deg/s, v %.2f\n",
+           ok[r].t, ok[r].headUnwrapped, ok[r].roll, ok[r].pitch, ok[r].belly, ok[r].rate, ok[r].speed,
+           bad[r].headUnwrapped, bad[r].roll, bad[r].pitch, bad[r].belly, bad[r].rate, bad[r].speed);
+  TEST_ASSERT_TRUE(isfinite(bad[3].headUnwrapped) && isfinite(ok[3].headUnwrapped));
+}
+
 static void test_wind_frame() {
   // Steady wind 3 m/s toward West (direction 90 deg): a falling body drifts toward West only (no North component),
   // for any yaw; broadside to the wind (yaw 0: nose South) it reaches the wind speed within 20 s.
@@ -1212,6 +1288,7 @@ int main(int, char **) {
   RUN_TEST(test_align_from_small_tilt);
   RUN_TEST(test_flip_and_kick);
   RUN_TEST(test_closed_loop_flap_hold);
+  RUN_TEST(test_sim_fault_reproduction_tl_stuck);
   RUN_TEST(test_wind_frame);
   RUN_TEST(test_gusts);
   RUN_TEST(test_ground_contact_holds_in_wind);

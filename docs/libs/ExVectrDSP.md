@@ -367,3 +367,6 @@ To add an estimator:
 4. Follow `docs/libs/ExVectrMath.md` Conventions. Write measurement models explicitly, as the EKF does; don't depend on implicit `rotate()` direction. Add a simulator test through `BodySimulator`.
 5. Covariance hygiene: symmetrise after updates, and prefer the Joseph form. Don't rely on the unpivoted `Matrix::inverse()` for poorly conditioned `S`.
 6. Wire it in `src/main.cpp` `initialiseTopicConnections()` (`:1920`). Feed inputs from the `TopicCoordTransform` outputs, never from raw sensor topics.
+
+
+Note (2026-11-21, `feature/sim-faults`): simulated flap servo faults (stuck, slow; telecommands 16..18) are applied in `src/starship_flaps.cpp` to the modelled true angle that feeds this model, not inside the library; the model itself is unchanged. See overview.md "Simulation mode" and `src/safety/sim_flap_fault.hpp`. The closed-loop reproduction with the top-left flap stuck at 42 deg is `test_sim_fault_reproduction_tl_stuck` in `test/test_sim_aero` (`-v | grep SIMFAULT`).
