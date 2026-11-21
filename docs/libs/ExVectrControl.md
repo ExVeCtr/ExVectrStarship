@@ -1,6 +1,6 @@
 # ExVectrControl
 
-> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified)`
+> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, a rigid-body physics integrator, and the flight executive core (phases as data, one command per step). Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified). Pinned on `feature/executive-core`: fc93d24 (branch feature/executive, 2026-11-21) adds the flight executive core in `executive/` (verified against fc93d24); the controllers are unchanged`
 
 ## Purpose & scope
 
@@ -14,6 +14,8 @@
 
 ## Dependencies (ExVectr libs + external)
 
+- **Flight executive core (`executive/`): none.** It includes only `<stdint.h>`, `<stddef.h>`, `<math.h>` and its own headers (checked by `test/test_executive_includes` in the flight software), so it builds in the flight software's `env:native` without any other ExVectr library. The rest of the library depends on:
+
 - **ExVectrCore**: `Task_Periodic`, `Topic`, `Simple_Subscriber`, `Callback_Subscriber`, `Topic_Publisher`, `Timestamped`, `NowNs()`, `LOG_MSG`.
 - **ExVectrMath**: quaternions and vectors. Conventions are in `docs/libs/ExVectrMath.md`.
 - **ExVectrDSP**: only `value_covariance.hpp` is included. Note the reverse dependency: `DSP/body_simulator.hpp` includes `physics_bodysim.hpp` and `starship/control_attitude_flaps.hpp`, which makes the pair circular.
@@ -24,6 +26,10 @@
 - All controllers are `Core::Task_Periodic` subclasses that add themselves to `Core::getSystemScheduler()` in the constructor, at **20 ms**. All three are named `"Control Rocket"`.
 - `taskInit()` calls `setInitialised(false)` until the required inputs have produced data, which makes the scheduler retry init.
 - Frames follow the ExVectrMath conventions: q = body→world, world = X-North/Y-West/Z-Up, body +Z = nose, TVC at body z = −0.35 m.
+
+### Flight executive core (`executive/`, `executive.hpp`, namespace `VCTR::Exec`, since fc93d24)
+
+A pure engine, not a task: `FlightExecutive::step(const ExecInputs &)` returns one `ControlCommand` per call (controller modes, setpoints, flap mode, actuator and motor requests, thrust cap, zeroing, actuator-test counter, bounds profile). It is driven by a `FlightPlan` (a `constexpr` table of `PhaseSpec` rows and typed parameter tables) that must pass `validatePlan()`. Parts: `exec_types.hpp` (inputs, command, status), `plan.hpp` (phase rows and their builder), `behaviours.hpp` + `behaviour_*.hpp` (go-to, transit, land, kick attitude, descent flap guidance, hold, idle), `guards.hpp` (exit and entry conditions), `validate_plan.hpp`, `sanitize.hpp` (non-finite outputs replaced and flagged), `kick.hpp` (pitch-over geometry, moved from the Starship flight software). No hardware, no ExVectrCore, no scheduler, no globals, no dynamic allocation; the step interval comes from the inputs (`dtNs`). The vehicle supplies the plan and the adapters. The full reference (step semantics, plan format, tests) is in [../project/flight-executive.md](../project/flight-executive.md).
 
 ### `ControlPositionStandard` (`control_position_standard.hpp/.cpp`)
 - **Inputs:**
@@ -191,6 +197,7 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 - `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (freefall and the bellyflop after its powered kick → Stabilize (bellyflop since 2026-11-20, after the kick only since 2026-11-21), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
 - `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (`unsubscribeAttitudeSetpoint()` + `setAttitudeStateSetpoint()` every 10 ms) for the powered bellyflop kick (2026-11-21), and calls `enableControl(false)` itself at the kick end so the motors go neutral without waiting for the 10 Hz phase table.
 - `CTRL::PhysicsBodySim` is used inside `DSP::BodySimulator`. `SimplePID` is unused.
+- Flight executive core: host-tested only (E0 to E2, `test/test_executive_*`); the Starship plan is `src/executive/starship_plan.*`. In the firmware only `executive/kick.*` is linked, through the legacy re-export `src/safety/bellyflop_kick.hpp` used by `mission_bellyflop.hpp`. The engine is linked from E3 (shadow) on ([../project/flight-executive.md](../project/flight-executive.md)).
 
 ## Known issues & limitations
 
@@ -217,6 +224,8 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 | Low | `src/physics_bodysim.cpp:100`, `:119-124` | `hdtsq = 0`. No gyroscopic `ω×Iω` term. `torqueSumNav_` is ignored. Only diagonal inertia. | Acceptable for a slender body at low rates. Inaccurate for fast roll combined with pitch. |
 
 ## Extending
+
+To add a flight executive behaviour or guard, follow [../project/flight-executive.md](../project/flight-executive.md) ("How to"); keep the core's include boundary.
 
 To add a controller:
 1. Create `include/ExVectrControl/<name>.hpp` and `src/<name>.cpp` in `namespace VCTR::CTRL`. Vehicle-specific controllers go under `starship/`.
