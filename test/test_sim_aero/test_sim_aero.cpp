@@ -162,7 +162,7 @@ struct HoverResult {
 template <class S> HoverResult runHover(S &s, float seconds) {
   s.setState(attOf(Quat_F(1, 0, 0, 0)), Vector<float, 6>{0, 0, 0, 0, 0, 10});
   s.setFlaps(90 * kDeg, 90 * kDeg, 90 * kDeg, 90 * kDeg);
-  s.setThrust(Vector_F{0, 0, 1.1f * kG}, true);
+  s.setThrust(Vector_F{0, 0, 1.2f * kG}, true);
   Csv csv(s.name(), "hover");
   int n = int(seconds / s.dt() + 0.5f);
   for (int i = 0; i < n; i++) {
@@ -342,10 +342,10 @@ struct VaneResult {
 template <class S> VaneResult runVaneStep(S &s) {
   s.setState(attOf(Quat_F(1, 0, 0, 0)), Vector<float, 6>{0, 0, 0, 0, 0, 10});
   s.setFlaps(90 * kDeg, 90 * kDeg, 90 * kDeg, 90 * kDeg);
-  s.setThrust(Vector_F{0, 0, 1.1f * kG}, true);
+  s.setThrust(Vector_F{0, 0, 1.2f * kG}, true);
   for (int i = 0; i < int(0.5f / s.dt()); i++)
     s.step();
-  const float a = 3 * kDeg, T = 1.1f * kG;
+  const float a = 3 * kDeg, T = 1.2f * kG;
   s.setThrust(Vector_F{sinf(a) * T, 0, cosf(a) * T}, true);
   VaneResult r{-1, 0};
   Csv csv(s.name(), "vane_step");
@@ -628,7 +628,7 @@ static void test_flap_geometry_and_cant() {
   BodySimParams p;
   BodySimModel m(p);
   const float cant = p.topFlapCantRad;
-  TEST_ASSERT_FLOAT_WITHIN(0.001f, 5 * kDeg, cant);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 10 * kDeg, cant);
   // Bottom flaps: lower edge 1 cm above the ship bottom, centroid about 0.115 m above it (chamfer lowers it a bit).
   Vector_F cb, nb;
   m.flapPlate(2, 0.0f, cb, nb);

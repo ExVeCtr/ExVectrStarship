@@ -4,7 +4,7 @@
 
 ## Purpose
 
-An autonomous model of SpaceX's Starship (≈1.1 kg). It serves as the flagship application and hardware-in-the-loop testbed for the ExVectr embedded framework. Flight goals:
+An autonomous model of SpaceX's Starship (1.2 kg). It serves as the flagship application and hardware-in-the-loop testbed for the ExVectr embedded framework. Flight goals:
 
 1. Lift off and hover using **thrust-vector control (TVC)**.
 2. Ascend to altitude.
@@ -16,7 +16,7 @@ An autonomous model of SpaceX's Starship (≈1.1 kg). It serves as the flagship 
 
 | Item | Value | Source |
 |---|---|---|
-| Mass | 1.1 kg | `VEHICLE_MASS_KG`, `starship_hardware.h` |
+| Mass | 1.2 kg (measured, owner 2026-11-21) | `VEHICLE_MASS_KG`, `starship_hardware.h` |
 | Max thrust | 14 N (T/W ≈ 1.3) | `TVC_THRUST_LIMIT_N` |
 | Propulsion | 2 contra-rotating motors (CW pin 8, CCW pin 7); differential speed gives roll torque | `starship_tvc.*` |
 | TVC | 4 vane servos (±45° servo travel), mechanical ratio 15 → ±3° thrust deflection | `TVC_SERVO_LIMIT`, `TVC_ANGLE_FACTOR` |

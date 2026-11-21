@@ -50,7 +50,7 @@ Buses (`initialiseHardware`, main.cpp): `SPI` for the MPU9250. `Wire` at 100 kHz
 | `TVC_SERVO_LIMIT` | `45*DEG_TO_RAD` | Servo half-range. **Not parenthesised.** Safe in its only use as a constructor argument. |
 | `TVC_ANGLE_FACTOR` | 15 | Servo angle ÷ thrust-deflection angle. Not passed to `StarshipTVC`, which uses its own default `tvcFactor = 15`. |
 | `TVC_ANGLE_LIMIT_RAD` | `TVC_SERVO_LIMIT/15` = **3°** (0.0524 rad) | The stale comment says 8°. Also passed to `ControlAttitudeTvc` and `BodySimulator`. |
-| `VEHICLE_MASS_KG` | 1.1 | Used by controller, simulator and freefall stop calculation. |
+| `VEHICLE_MASS_KG` | 1.2 (measured, owner 2026-11-21; was 1.1) | Used by controller, simulator and freefall stop calculation. |
 | `TVC_THRUST_LIMIT_N` | 14.0 | Total thrust of both motors. T/W = 1.30. |
 
 Simulator-only parameters in main.cpp: inertia `{0.044, 0.044, 0.004}` kg·m² (`:117`), TVC lever arm `(0,0,−0.35)` m (`:1967`).

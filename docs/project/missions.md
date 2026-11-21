@@ -33,7 +33,7 @@ Virtuals: `beginMission(int64_t startTime)`, `resetMission()`, `missionEnd()`, `
 |---|---|---|
 | `defaultMission_` | `MissionRTH` | att = `attitudeTopicSwitch`, pos = `positionTopicSwitch`, ground = `groundTopicSwitch`, groundCov = `posEstTask.getGroundDistanceCovTopic()`, **home = `{0, 0, 3}`** |
 | `missionWaypointTask` | `MissionWaypoint` | att, pos topic switches. Waypoints are added in the safety task's `taskInit` (§7). |
-| `missionFreefallTask` | `MissionFreefall` | att, pos, `vehicleMass_kg = VEHICLE_MASS_KG` (1.1), `tvcThrustLimit_N = TVC_THRUST_LIMIT_N` (14.0), **`stopAlt = 20`** m |
+| `missionFreefallTask` | `MissionFreefall` | att, pos, `vehicleMass_kg = VEHICLE_MASS_KG` (1.2), `tvcThrustLimit_N = TVC_THRUST_LIMIT_N` (14.0), **`stopAlt = 20`** m |
 | `missionBellyflop` | `MissionBellyflop` | att, `controlAttitudeTvc`, `controlMappingAccToAtt`, **`transitionTimeLimit = 1 s`**, **`angleThreshold = 50°`**, **`angVelThreshold = 150°/s`** |
 
 ### Configured chain (main.cpp:556-558)
@@ -150,7 +150,7 @@ In `Idle` (`missionIdle`) the mission sets actuators off, mission time 0 and `mi
 | `Running` | `Finished` | `Pz < stopDist(Vz) + stopAlt` (`:119`) | `missionEnd_ = true`. Afterwards `taskThread` returns immediately (`:83`), so nothing more is published. |
 | any | `Idle` | `resetMission`, or `taskInit` (which also sets `missionEnd_ = true`) | actuators off |
 
-`stopDist = 0.5·Vz² / (T/m − 9.81)` (`:157`). With T = 14 N and m = 1.1 kg: `T/m − g = 2.917 m/s²`, so the trigger altitude is `0.171·Vz² + 20` m. For example, the trigger is at 89 m when falling at 20 m/s. A drag-free fall from 120 m triggers at about 97 m and 21 m/s; drag lowers both numbers. The formula uses `Vz²`, so it ignores the sign of the velocity and also triggers while climbing fast. It also ignores the time needed to flip upright. `getStopAltitude()` returns `stopDist + stopAlt` and is used by the flap observer.
+`stopDist = 0.5·Vz² / (T/m − 9.81)` (`:157`). With T = 14 N and m = 1.2 kg (since 2026-11-21; 1.1 kg before: 2.917 m/s², `0.171·Vz² + 20`): `T/m − g = 1.857 m/s²`, so the trigger altitude is `0.269·Vz² + 20` m. For example, the trigger is at 128 m when falling at 20 m/s. A drag-free fall from 120 m triggers at about 97 m and 21 m/s; drag lowers both numbers. The formula uses `Vz²`, so it ignores the sign of the velocity and also triggers while climbing fast. It also ignores the time needed to flip upright. `getStopAltitude()` returns `stopDist + stopAlt` and is used by the flap observer.
 
 **Setpoint:** publishes `[0,0,0,0,0,0]` every tick while active. **TVC actuators are off** (`actuatorsEnabled_ = false`), but the safety task force-enables the **flaps** for this mission (`main.cpp:1195-1196`).
 
