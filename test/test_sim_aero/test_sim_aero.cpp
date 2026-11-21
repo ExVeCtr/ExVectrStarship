@@ -689,6 +689,23 @@ static void test_wind_frame() {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, m.windWorld().magnitude());
 }
 
+static void test_ground_contact_holds_in_wind() {
+  BodySimParams p;
+  p.windSpeed_mps = 10.0f;
+  p.windDirection_rad = 1.0f;
+  BodySimModel m(p);
+  m.setAttitudeState(attOf(Quat_F(Vector_F{0, 1, 0}, 3 * kDeg)));
+  m.setPositionState({0, 0, 0, 1.0f, 2.0f, 0});
+  for (int i = 0; i < 5000; i++)
+    m.step();
+  auto ps = m.positionState();
+  auto a = m.attitudeState();
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, ps(3));
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, ps(4));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, ps(5));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 3.0f, tiltDeg(a));
+}
+
 static void test_determinism() {
   auto run = [](Vector<float, 7> &a, Vector<float, 6> &p) {
     BodySimModel m;
@@ -795,6 +812,7 @@ int main(int, char **) {
   RUN_TEST(test_flip_and_kick);
   RUN_TEST(test_closed_loop_flap_hold);
   RUN_TEST(test_wind_frame);
+  RUN_TEST(test_ground_contact_holds_in_wind);
   RUN_TEST(test_determinism);
   RUN_TEST(test_advance_bounded_and_fixed_step);
   RUN_TEST(test_torque_free_spin_conserves_momentum);
