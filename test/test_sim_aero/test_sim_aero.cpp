@@ -426,6 +426,8 @@ struct FlapCtrlReplica {
 };
 struct ClosedResult {
   float pitchMean, pitchStd, bellyMax, azErrEnd, vEnd;
+  float tAlign = -1;      ///< time from which |azimuth error| stays below 5 deg to the end, s (-1 = never)
+  float azErrLateMax = 0; ///< max |azimuth error| over the second half, deg
 };
 template <class S> ClosedResult runClosedLoop(S &s, const char *scen, float pitch0, float yaw0Deg, float v0,
                                               float seconds) {
@@ -439,6 +441,7 @@ template <class S> ClosedResult runClosedLoop(S &s, const char *scen, float pitc
   double sum = 0, sum2 = 0;
   int cnt = 0;
   ClosedResult r{0, 0, 0, 0, 0};
+  float lastOutside = 0;
   for (int i = 0; i < n; i++) {
     if (i % every == 0) {
       c.update(s.att());
@@ -446,6 +449,15 @@ template <class S> ClosedResult runClosedLoop(S &s, const char *scen, float pitc
     }
     s.step();
     auto a = s.att();
+    {
+      Vector_F zz = axisWorld(a, 0, 0, 1);
+      float e = (c.azSet - atan2f(zz(1), zz(0))) / kDeg;
+      e = e > 180 ? e - 360 : (e < -180 ? e + 360 : e);
+      if (fabsf(e) >= 5.0f)
+        lastOutside = (i + 1) * s.dt();
+      if (i > n / 2 && fabsf(e) > r.azErrLateMax)
+        r.azErrLateMax = fabsf(e);
+    }
     float b = bellyDeg(a);
     r.bellyMax = (i * s.dt() > 1.0f && b > r.bellyMax) ? b : r.bellyMax;
     if (i > n / 2) {
@@ -463,6 +475,7 @@ template <class S> ClosedResult runClosedLoop(S &s, const char *scen, float pitc
   float ea = (c.azSet - atan2f(z(1), z(0))) / kDeg;
   r.azErrEnd = ea > 180 ? ea - 360 : (ea < -180 ? ea + 360 : ea);
   r.vEnd = -s.pos()(2);
+  r.tAlign = lastOutside < seconds - 1.0f ? lastOutside : -1.0f;
   return r;
 }
 
@@ -641,10 +654,14 @@ static void test_control_axis_signs() {
   // inputs (one explicit step from rest: dw = tau / I dt).
   const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f, vo = gOldTerminal > 0 ? gOldTerminal : 15.0f;
   const float d = 1 * kDeg;
-  auto newTau = [&](bool belly, const float a[4], float pDeg) {
+  // Variants: the default model (fold toward the back, fold shield 0.7 since 2026-11-21), the same without the fold
+  // shield (documents the reversal it fixes) and the fold toward the belly without shield (the rejected alternative).
+  auto newTau = [&](bool belly, const float a[4], float pDeg, bool shield = true) {
     BodySimParams p;
     p.applyActuatorRateLimits = false;
     p.flapFoldTowardBelly = belly;
+    if (!shield || belly)
+      p.flapFoldShieldFactor = 0.0f;
     BodySimModel mm(p);
     mm.setFlapInput(a[0], a[1], a[2], a[3]);
     mm.step();
@@ -675,14 +692,17 @@ static void test_control_axis_signs() {
                    b2 = newTau(false, a2, pDeg);
     const Vector_F fb = newTau(true, n0, pDeg), f0 = newTau(true, a0, pDeg), f1 = newTau(true, a1, pDeg),
                    f2 = newTau(true, a2, pDeg);
-    printf("SIMAERO   AoA %+3.0f | old [%+.5f %+.5f %+.5f] | new fold->back [%+.5f %+.5f %+.5f] | new fold->belly [%+.5f %+.5f %+.5f]\n",
+    const Vector_F nb = newTau(false, n0, pDeg, false), x0 = newTau(false, a0, pDeg, false);
+    printf("SIMAERO   AoA %+3.0f | old [%+.5f %+.5f %+.5f] | new DEFAULT (fold->back, shield 0.7) [%+.5f %+.5f %+.5f] | no shield yaw %+.5f | fold->belly [%+.5f %+.5f %+.5f]\n",
            pDeg, o0(0) - ob(0), o1(1) - ob(1), o2(2) - ob(2), b0(0) - bb(0), b1(1) - bb(1), b2(2) - bb(2),
-           f0(0) - fb(0), f1(1) - fb(1), f2(2) - fb(2));
-    // Pitch and roll have the controller's sign in every variant; azimuth only with the fold toward the belly.
+           x0(0) - nb(0), f0(0) - fb(0), f1(1) - fb(1), f2(2) - fb(2));
+    // The default model has the controller's sign on all three axes at every AoA -20..+20 (2026-11-21: fold
+    // shield on). Without the shield the yaw sign is reversed (fold toward the back).
+    TEST_ASSERT_TRUE(b0(0) - bb(0) > 0);
     TEST_ASSERT_TRUE(b1(1) - bb(1) > 0 && f1(1) - fb(1) > 0);
     TEST_ASSERT_TRUE(b2(2) - bb(2) > 0 && f2(2) - fb(2) > 0);
     TEST_ASSERT_TRUE(f0(0) - fb(0) > 0);
-    TEST_ASSERT_TRUE(b0(0) - bb(0) < 0); // documents the reversal of the default (fold toward the back)
+    TEST_ASSERT_TRUE(x0(0) - nb(0) < 0); // documents the reversal without the fold shield
     TEST_ASSERT_TRUE(o0(0) - ob(0) > 0 && o1(1) - ob(1) > 0 && o2(2) - ob(2) > 0);
   }
   // Per-flap derivation at belly-down, fold toward the back: sideways force and its tau_x when each flap extends 1 deg.
@@ -712,6 +732,7 @@ static void test_control_axis_signs() {
   {
     BodySimParams p;
     p.flapFoldTowardBelly = true;
+    p.flapFoldShieldFactor = 0.0f;
     NewSim n(p);
     ClosedResult rb = runClosedLoop(n, "closed_pitch20_yaw20_foldbelly", 20, 20, v, 15.0f);
     printf("SIMAERO flap controller replica, fold toward the belly, start pitch +20 yaw +20 deg: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
@@ -946,17 +967,30 @@ static void test_kick_cap_altitude_change_1p1_kg() {
 static void test_closed_loop_flap_hold() {
   float vn = gNewTerminal > 0 ? gNewTerminal : 6.4f;
   float vo = gOldTerminal > 0 ? gOldTerminal : 15.0f;
-  NewSim n;
   OldSim o;
-  ClosedResult rn = runClosedLoop(n, "closed_pitch20_yaw20", 20, 20, vn, 15.0f);
   ClosedResult ro = runClosedLoop(o, "closed_pitch20_yaw20", 20, 20, vo, 15.0f);
-  printf("SIMAERO flap controller replica, start pitch +20 yaw +20 deg | old: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f | new: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
-         ro.pitchMean, ro.pitchStd, ro.bellyMax, ro.azErrEnd, ro.vEnd, rn.pitchMean, rn.pitchStd, rn.bellyMax,
-         rn.azErrEnd, rn.vEnd);
-  // Not asserted since the 2026-11-21 geometry (bottom flaps 1 cm above the bottom, top flaps canted): with the
-  // unchanged neutral angles (50/40 deg) and gains the belly-down trim moved (see the SIMAERO trim line), so the
-  // replica no longer holds the belly-down pose. The owner retunes the controller (Known issues, ExVectrDSP.md).
-  (void)rn;
+  printf("SIMAERO flap controller replica (old model), start pitch +20 yaw +20 deg: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
+         ro.pitchMean, ro.pitchStd, ro.bellyMax, ro.azErrEnd, ro.vEnd);
+  // New model (fold shield 0.7 on by default, 2026-11-21), unchanged gains and neutral angles: heading errors of
+  // +-20 deg with and without a pitch error, 30 s.
+  struct Case {
+    const char *scen;
+    float pitch0, yaw0;
+  } cases[] = {{"closed_pitch20_yaw20", 20, 20}, {"closed_pitch20_yaw-20", 20, -20}, {"closed_pitch0_yaw20", 0, 20},
+               {"closed_pitch0_yaw-20", 0, -20}, {"closed_pitch-20_yaw20", -20, 20}};
+  bool allHold = true;
+  for (auto &c : cases) {
+    NewSim n;
+    ClosedResult r = runClosedLoop(n, c.scen, c.pitch0, c.yaw0, vn, 30.0f);
+    printf("SIMAERO flap controller replica (new model), start pitch %+3.0f yaw %+3.0f deg: pitch %.1f +- %.1f deg, belly max %.0f, az err end %+.1f deg, |az err| < 5 deg from %.1f s, late max %.1f deg, v %.2f\n",
+           c.pitch0, c.yaw0, r.pitchMean, r.pitchStd, r.bellyMax, r.azErrEnd, r.tAlign, r.azErrLateMax, r.vEnd);
+    allHold = allHold && r.bellyMax < 45.0f && r.tAlign >= 0.0f && r.tAlign < 20.0f && r.azErrLateMax < 5.0f;
+  }
+  printf("SIMAERO flap controller replica (new model): %s\n", allHold ? "holds belly-down and aligns from +-20 deg in all cases" : "does NOT hold/align in every case");
+  // Report only (2026-11-21): with the fold shield the yaw sign is right and the replica holds belly-down (max 32 deg),
+  // but the heading settles into a yaw/roll limit cycle of about +-34 deg (period about 4 s) instead of aligning, with
+  // the unchanged gains and neutral angles. Not asserted until the controller is retuned (ExVectrDSP.md Known issues).
+  (void)allHold;
 }
 
 // Owner reproduction (2026-11-21): the last real flight had the top-left flap servo stuck at about 40-45 deg during the
