@@ -124,7 +124,7 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x92 | `TASK_TIMING` | down | 5 Hz | – |
 | 0x93 | `CALIBRATION` (applied sensor calibration) | down | 0.5 Hz | – |
 
-Packet layouts: ExVectrPackets schema (hash 0x761D5378), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+Packet layouts: ExVectrPackets schema (hash 0xBFF82392), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
 `radioConnectionLoss` (since 2026-11-20): no **radio packet** for 2 s, where a radio packet is a DATA frame arriving on the UART from node 0 or node 2 (the far side of the air link; normally the Pocket's `RC_STATE` at 25 Hz). Heartbeats, node 3 frames and anything on USB never count; before the first radio packet, a 10 s boot grace applies. The ground station on USB no longer influences it ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
 
