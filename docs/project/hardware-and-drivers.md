@@ -50,7 +50,7 @@ Buses (`initialiseHardware`, main.cpp): `SPI` for the MPU9250. `Wire` at 100 kHz
 | `TVC_SERVO_LIMIT` | `45*DEG_TO_RAD` | Servo half-range. **Not parenthesised.** Safe in its only use as a constructor argument. |
 | `TVC_ANGLE_FACTOR` | 15 | Servo angle ÷ thrust-deflection angle. Not passed to `StarshipTVC`, which uses its own default `tvcFactor = 15`. |
 | `TVC_ANGLE_LIMIT_RAD` | `TVC_SERVO_LIMIT/15` = **3°** (0.0524 rad) | The stale comment says 8°. Also passed to `ControlAttitudeTvc` and `BodySimulator`. |
-| `VEHICLE_MASS_KG` | 1.2 (measured, owner 2026-11-21; was 1.1) | Used by controller, simulator and freefall stop calculation. |
+| `VEHICLE_MASS_KG` | 1.1 (measured; a change to 1.2 on 2026-11-21 was reverted by the owner the same day) | Used by controller, simulator and freefall stop calculation. |
 | `TVC_THRUST_LIMIT_N` | 14.0 | Total thrust of both motors. T/W = 1.30. |
 
 Simulator-only parameters in main.cpp: inertia `{0.044, 0.044, 0.004}` kg·m² (`:117`), TVC lever arm `(0,0,−0.35)` m (`:1967`).
@@ -306,8 +306,8 @@ UART total about 2.0 kB/s including framing (air downlink: about 2.14 kB/s of 6.
 | | `last_req_id`, `last_req_status`, `rc_age` | 0, 0, NaN (no `REQUEST` / `RC_STATE` until T9b) |
 | `POSE` | `omega`, `q`, `vel`, `pos` | attitude state `[ω, q]`, position state `[V, P]` (f32) |
 | `AIR_POSE` | `q` (i16, 1/32767), `pos` (**i32, 0.001 m = 1 mm**, ±2147483 m; was i16 0.1 m until 2026-11-20), `vel` (i16, 0.01 m/s, ±327 m/s) | as `POSE`, fixed point, saturating; 30 byte payload. USB `POSE` is f32 and unchanged |
-| `ACTUATORS` | `flaps` | true flap angles `[TL, TR, BL, BR]`, rad |
-| | `tvc` | `[atan2(Fx, Fz), atan2(Fy, Fz)]` of the actual thrust vector (body frame), rad |
+| `ACTUATORS` | `flaps` | true flap angles `[TL, TR, BL, BR]`, rad. **Modelled, not measured**: the output of the servo model in `StarshipFlaps` (300 °/s slew; in simulation also the injected faults); no position feedback exists. |
+| | `tvc` | `[atan2(Fx, Fz), atan2(Fy, Fz)]` of the actual thrust vector (body frame), rad. **Modelled, not measured**: servo-space slew model (20 °/s on the thrust angle) in `StarshipTVC`, not the measured vane position. |
 | | `thrust` | `|[Fx, Fy, Fz]|`, N. The roll torque `T` has no field (Known issues) |
 | | `ground_distance` | ground topic switch `data(1)` (KF state `[rate, distance]`), m; NaN before the first sample |
 | `AIR_ACTUATORS` | `t_us`, `prev_age` | time of the newest sample; newest minus previous sample time, s (nominally 0.020; NaN with no previous sample) |
