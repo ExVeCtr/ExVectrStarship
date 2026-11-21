@@ -28,6 +28,9 @@ namespace VCTR {
         Telecommand_ZeroEstimators, //Zeroes all estimators (position origin and baro altitude reference, position/velocity state, accelerometer and gyro bias) for a window of paramFloat seconds (NaN or 0: 10 s, clamped to 1..60 s), timed on the vehicle. paramInt must be equal to 0x2E. Accepted only when initialised, disarmed, motors off and in mode Startup or Ready. The vehicle must be still. Value 10.
         Telecommand_SimWindSpeed,   //SIMULATION ONLY (refused otherwise): steady wind speed of the simulated world, paramFloat in m/s (finite, clamped to 0..20). paramInt must be equal to 0x57. Reset to 0 whenever simulation mode is switched on or off. Value 11.
         Telecommand_SimWindDirection, //SIMULATION ONLY (refused otherwise): direction the simulated wind blows TOWARD, paramFloat in rad, counterclockwise from North toward West (NWU; 0 = toward North, pi/2 = toward West), finite, wrapped to -pi..pi. paramInt must be equal to 0x57. Value 12.
+        Telecommand_SimGustStrength, //SIMULATION ONLY (refused otherwise): peak gust speed (bound of the extra wind speed along the mean direction) of the simulated world, paramFloat in m/s (finite, clamped to 0..10). paramInt must be equal to 0x57. Value 13.
+        Telecommand_SimGustPeriod,  //SIMULATION ONLY (refused otherwise): gust timescale, paramFloat in s (finite, clamped to 0.5..30). paramInt must be equal to 0x57. Value 14.
+        Telecommand_SimGustSeed,    //SIMULATION ONLY (refused otherwise): gust seed, paramFloat an integer-valued number 0..16777215 (finite; rounded, clamped; exact in float). paramInt must be equal to 0x57. Value 15.
         Telecommand_MAX             //Max value for the enum. This is used to check if the command is valid or not.
     };
 

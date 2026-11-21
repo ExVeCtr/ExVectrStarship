@@ -1276,7 +1276,7 @@ public:
           // topic of the body simulator
 
           bodySimulator.resetToStartPose(); // upright, at the origin, at rest
-          bodySimulator.setWind(0.0f, 0.0f); // every simulation starts without wind (SimWindSpeed sets it)
+          bodySimulator.clearWind(); // every simulation starts without wind and gusts (SimWind*/SimGust* set them)
 
           bodySimulator.setPaused(
               false); // Unpause the body simulator to start the simulation
@@ -1295,7 +1295,7 @@ public:
           // position estimator
 
           bodySimulator.setPaused(true);
-          bodySimulator.setWind(0.0f, 0.0f);
+          bodySimulator.clearWind();
 
           // Reset the system to normal mode
           vehicleMode_ =
@@ -1329,6 +1329,32 @@ public:
         bodySimulator.setWind(NAN, atan2f(sinf(value), cosf(value)));
       LOG_MSG("Sim wind: %.2f m/s toward %.1f deg (CCW from North)\n", double(bodySimulator.windSpeed()),
               double(bodySimulator.windDirection() * 180.0f / float(M_PI)));
+    } break;
+
+    case TelecommandType::Telecommand_SimGustStrength:
+    case TelecommandType::Telecommand_SimGustPeriod:
+    case TelecommandType::Telecommand_SimGustSeed: {
+      // Simulation-only gust settings (owner-approved exception to safety.md rule 7, 2026-11-21). Same refusal
+      // rules as the wind telecommands; the gust series is deterministic (BodySimParams "Gusts").
+      constexpr int16_t kSimWindMagic = 0x57;
+      const float value = telecommand.paramFloat;
+      if (telecommand.paramInt != kSimWindMagic || !simulationMode_ || !isfinite(value)) {
+        LOG_MSG("Sim gust setting %d refused (%s)\n", int(telecommand.type),
+                !simulationMode_ ? "not in simulation mode"
+                                 : (telecommand.paramInt != kSimWindMagic ? "bad magic" : "value not finite"));
+        break;
+      }
+      float strength = bodySimulator.gustStrength(), period = bodySimulator.gustPeriod();
+      uint32_t seed = bodySimulator.gustSeed();
+      if (telecommand.type == TelecommandType::Telecommand_SimGustStrength)
+        strength = value; // clamped 0..10 in the model
+      else if (telecommand.type == TelecommandType::Telecommand_SimGustPeriod)
+        period = value; // clamped 0.5..30 in the model
+      else
+        seed = uint32_t(value < 0.0f ? 0.0f : (value > 16777215.0f ? 16777215.0f : value + 0.5f));
+      bodySimulator.setGust(strength, period, seed);
+      LOG_MSG("Sim gusts: strength %.2f m/s, period %.2f s, seed %u\n", double(bodySimulator.gustStrength()),
+              double(bodySimulator.gustPeriod()), unsigned(bodySimulator.gustSeed()));
     } break;
 
     default:
