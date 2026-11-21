@@ -1,6 +1,6 @@
 # ExVectrControl
 
-> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified)`
+> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified; feature/sim-aero c8d1ffb, 2026-11-21: PhysicsBodySim integrator rewritten, re-verified for that file)`
 
 ## Purpose & scope
 
@@ -8,7 +8,7 @@
   - a TVC body-frame force plus roll torque (`Vector<4>`);
   - four flap angles (`ControlAttitudeFlapSetting`).
 - Control laws are cascaded P/PI with hand-tuned gains. There is **no LQR, MPC or trajectory optimisation**. Guidance is minimal: it comes from mission setpoints in `src/mission/*` and `FlapModeObserverTask` in `src/main.cpp:1258`.
-- `PhysicsBodySim` is the integrator used by `DSP::BodySimulator`.
+- `PhysicsBodySim` is the integrator used by `DSP::BodySimModel` (inside `DSP::BodySimulator`).
 - Commit `084bea1` removed the old monolithic `control_rocket.*`. The parent repo pins `9ab8379`, one commit behind.
 - The README is stale ("Implement PID control" TODO).
 
@@ -135,10 +135,11 @@
 ### `PhysicsBodySim` (`physics_bodysim.hpp/.cpp`)
 - State: `positionState_` `[v(3), p(3)]` world, and `attitudeState_` `[ω_body(3), q(4)]`.
 - `addForce(F, r_body=0, bodyFrame=true, isAccel=false)` accumulates the force and `r×F` torque into body or nav sums. `addTorque(...)`, `clearForces()`.
-- `simulateForTime(dt_ns)`:
-  - `v += (R(q)F_body + F_nav)/m·dt`, `p += v·dt` (semi-implicit; the ½dt² term is 0).
-  - `q ← normalize(q ⊗ Δq(ω·dt))`, `ω += τ_body/I_diag·dt`.
-- Only diagonal inertia is used. There is no `ω×Iω` term and nav-frame torques are ignored. There are no damping terms despite the commit message.
+- `step(dt_s)` (since 2026-11-21, `feature/sim-aero`, c8d1ffb; `simulateForTime(dt_ns)` forwards to it), semi-implicit Euler with the force and torque sums held over the step:
+  - `v += (R(q)F_body + F_nav)/m·dt`, then `p += v_new·dt`.
+  - `ω += I⁻¹(τ_body + R(q)ᵀτ_nav − ω × Iω)·dt` (full Euler equation, full inertia tensor with products of inertia, inverse cached by `setInertiaTensor`), then `q ← normalize(q ⊗ Δq(ω_new·dt))`, w ≥ 0.
+  - Pure code (no scheduler or wall clock, no print): host-built in the flight software's native harness (`test/test_sim_aero`, torque-free spin conserves |L| within 1.3 % over 4 s at 2 ms steps).
+- No damping terms (aerodynamics are the caller's job: `DSP::BodySimModel`).
 
 ## Usage
 
@@ -190,7 +191,7 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 - `src/main.cpp` `applyControlPhase()`: `enableControl` and `resetControlState()` of the position and TVC attitude controllers from the explicit phase table `Safety::controlPhaseFor` (`src/safety/control_phase.*`), every tick (since 2026-11-20; before, on mission-mode edges). See missions.md 6.2.
 - `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (freefall and the bellyflop after its powered kick → Stabilize (bellyflop since 2026-11-20, after the kick only since 2026-11-21), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
 - `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (`unsubscribeAttitudeSetpoint()` + `setAttitudeStateSetpoint()` every 10 ms) for the powered bellyflop kick (2026-11-21), and calls `enableControl(false)` itself at the kick end so the motors go neutral without waiting for the 10 Hz phase table.
-- `CTRL::PhysicsBodySim` is used inside `DSP::BodySimulator`. `SimplePID` is unused.
+- `CTRL::PhysicsBodySim` is used inside `DSP::BodySimModel` / `DSP::BodySimulator`. `SimplePID` is unused.
 
 ## Known issues & limitations
 
@@ -214,7 +215,7 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 | Low | `src/control_attitude_tvc.cpp:18`, `src/control_position_standard.cpp:19`, `src/starship/control_attitude_flaps.cpp:16` | All three tasks are named `"Control Rocket"`. | Ambiguous scheduler diagnostics. |
 | Low | `include/ExVectrControl/control_attitude_tvc.hpp:20-26`, `:13-14` | Doc comments describe the setpoint as `[V,P]` (it is `[ω,q]`) and the class as a "Simple one dimensional PID". `tiltLimit_Rad_` is unused. | Misleading docs. |
 | Low | `src/simple_pid.cpp:43`, `:53-59` | `(stateTime − lastTime_)` can be 0, giving a divide by zero. There is a derivative kick on the first call. The integral is reset to 0 (not held) on saturation. | Unused, but unsafe if adopted. |
-| Low | `src/physics_bodysim.cpp:100`, `:119-124` | `hdtsq = 0`. No gyroscopic `ω×Iω` term. `torqueSumNav_` is ignored. Only diagonal inertia. | Acceptable for a slender body at low rates. Inaccurate for fast roll combined with pitch. |
+| ~~Low~~ Fixed | `src/physics_bodysim.cpp` | `hdtsq = 0`. No gyroscopic `ω×Iω` term. `torqueSumNav_` is ignored. Only diagonal inertia. | Fixed 2026-11-21 (`feature/sim-aero`, c8d1ffb): full Euler equation with the full tensor, nav torques rotated into the body frame, semi-implicit Euler. |
 
 ## Extending
 

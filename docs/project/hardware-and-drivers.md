@@ -100,7 +100,7 @@ Maps the attitude controller's force/torque demand to four exhaust vanes (XP, XN
 
 **Actuator test (`beginActuatorTest(offset)`):** starts at `NOW + offset` and hijacks the servos regardless of enable. For `TVC_TEST_SPIN_TIME = 2 s` it traces a circle: `x = sin`, `y = cos` at 45° amplitude, 2 revolutions. For the next `TVC_TEST_TWIST_TIME = 2 s` it applies roll-only `twist = sin(...)` at amplitude 1.0 (unclamped, ±45°), 2 cycles. Motors are held off throughout. It is triggered at every mission `Startup` edge (main.cpp:663).
 
-**"Actual" thrust model** (`.cpp:211-240`, only when actuators are enabled and the test is idle): direction = clamped `tvcVector`, magnitude = mean motor command × 14 N. The vane angles are rate-limited to 600°/s (`60°/0.1 s`). `T = twist·|F|/45`, i.e. the roll torque reconstructed after clamping. The header calls `T` an "angle in radians".
+**"Actual" thrust model** (`.cpp:211-240`, only when actuators are enabled and the test is idle): direction = clamped `tvcVector`, magnitude = mean motor command × 14 N. The modelled thrust angles are rate-limited to the vane servo rate divided by the servo-to-thrust gain: 300°/s / `tvcFactor_` (15) = **20°/s**, so a full ±3° reversal takes 0.3 s (since 2026-11-21, `feature/sim-aero`, review F6; before: 600°/s in thrust-angle space = 9000°/s of servo). A non-finite command holds the previous angles and reports 0 thrust for that tick, so NaN can no longer latch into the integrated angles (it stayed NaN until reboot). `T = twist·|F|/45`, i.e. the roll torque reconstructed after clamping; `T` is zeroed when the actuators are disabled (review F13). The header calls `T` an "angle in radians".
 
 ---
 
@@ -121,7 +121,7 @@ Drives four flap servos from `ControlAttitudeFlapSetting` (`lib/ExVectrControl/i
 
 **Actuator test (`beginActuatorTest(offset)`):** a 4 s window in which each flap follows `(sin(φ + 2πt/4) + 1)·π/2` (0..π before the [15°, 90°] clamp), with phase offsets BL 0, TR π/4, TL π/2, BR 3π/4. Output is forced on. It is only called under `#ifdef DO_FLAP_TEST_STARTUP` (main.cpp:664, undefined). Note that the hold-off before start (`WaitBegin`) does not force-enable the output.
 
-**True flap topic:** `ServoAngleSimulator` per flap, slew-limited to 200°/s (`60°/0.3 s`, `.cpp:60-63`), towards the **clamped** commanded angle. Published only while enabled. Its `enableFlaps` field carries `enableActuators_`, not the combined enable.
+**True flap topic:** `ServoAngleSimulator` per flap, slew-limited to **300°/s** (`FLAP_SERVO_RATE_RADPS` = 60°/0.2 s, generic 9 g servo, owner 2026-11-21; was 200°/s), towards the **clamped** commanded angle. Published only while enabled. Its `enableFlaps` field carries `enableActuators_`, not the combined enable.
 
 ---
 
@@ -373,6 +373,8 @@ Only the newest telecommand per 100 ms tick is processed (`Simple_Subscriber`).
 | 8 | `MissionSelect` | — | mode `Ready` | No-op (log only). |
 | 9 | `MissionAbort` | none | mode `Running` (else ignored) | **Abort = stop and return home** (user decision 2026-11-20, `Safety::decideAbort`, missions.md 6.2). In flight (waypoint Running or Finished, bellyflop, freefall; by mission mode only, no altitude/speed check): RTH hot start at once; RTH already running: kept. On the ground = before liftoff (waypoint Init/Startup, any Idle mission, RTH landed): TVC actuators and motors off, chain reset, reset mission (Idle), clear failures → Startup → Ready, nothing restarts. The old "only valid in flight" note is replaced by this rule. |
 | 10 | `ZeroEstimators` | `paramInt == 0x2E`; `paramFloat` = window in s (NaN or 0: 10 s; clamped to 1..60 s) | initialised (all inputs published), disarmed, motors off, mode `Startup` or `Ready`, active mission `Idle` or `Finished`. Otherwise ignored, counted, rate-limited log (1/s) | Starts the zeroing window (overview.md, "Estimator zeroing"); a second one during the window restarts it with the new duration. One-shot ground action, timed on the vehicle. **The vehicle must be still.** |
+| 11 | `SimWindSpeed` | `paramInt == 0x57`; `paramFloat` = wind speed in m/s (finite; clamped to 0..20) | **simulation mode only** (else refused, logged with the reason; also refused for a bad magic or a non-finite value) | Sets the steady wind of the body simulator (no gusts; only the simulated air changes). The wind is reset to 0 whenever `SimulationMode` switches on or off; `SystemReset` keeps it. Owner request 2026-11-21 (`feature/sim-aero`). |
+| 12 | `SimWindDirection` | `paramInt == 0x57`; `paramFloat` = direction the air moves **toward**, rad, counterclockwise from North toward West (NWU: 0 = toward North, π/2 = toward West; wrapped to −π..π) | as 11 | Sets the wind direction (speed unchanged). Send 11 and 12 at least 100 ms apart: only the newest telecommand per 100 ms tick is handled. |
 
 There is no authentication beyond the three magic values and the source address 0 (which any node on a link can claim). The vehicle subscribes to no other port: telemetry ports are send-only now.
 
@@ -384,7 +386,7 @@ Purpose: everything a 3D model or ground-station view needs to place the body ax
 
 ### Body frame
 
-- **[code]** Right-handed, **+Z = long axis toward the nose**, TVC/motors at the aft end at body `(0,0,−0.35)` m (`src/main.cpp:1967`, `lib/ExVectrDSP/src/body_simulator.cpp:34`). Top flaps at z = +0.26 m, bottom flaps at z = −0.26 m.
+- **[code]** Right-handed, **+Z = long axis toward the nose**, TVC/motors at the aft end at body `(0,0,−0.35)` m (`src/main.cpp:1967`, `lib/ExVectrDSP/src/body_simulator.cpp:34`). Flap pair centroids (owner geometry 2026-11-21, simulator `BodySimModel`, origin at the CoM 0.37 m above the bottom): top z = +0.220 m (span +0.16..+0.30), bottom z = −0.174 m (span −0.27..−0.06); the old simulator used ±0.26 m.
 - **[code]** **±Y are the flap sides**: TL and BL at +Y, TR and BR at −Y (`body_simulator.cpp`, flap block: `mountY = 0.08`, `mountZ = 0.26`).
 - **[code]** **+X completes the frame** (X = Y × Z). The belly of the vehicle is **−X** and the back is **+X**: `ControlAttitudeFlaps` measures `bellyDownAngle` as the angle between body +X and world +Z, so "belly down" means body +X pointing up (`lib/ExVectrControl/src/starship/control_attitude_flaps.cpp:80-84`).
 - **[code]** Roll axis = body **Z**. `StarshipTVC` roll torque `τz` is about Z. Pitch = rotation about body **Y**, yaw/azimuth for the flap controller is defined from the world projection of body Z (see below). Rotation sign is right-handed (`docs/libs/ExVectrMath.md`).
@@ -412,18 +414,18 @@ Purpose: everything a 3D model or ground-station view needs to place the body ax
 
 Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL** bottom-left, **BR** bottom-right. In the code "top" and "bottom" (UL/UR, DL/DR in `starship_hardware.h`) mean the **forward (+Z, z = +0.26 m)** and **aft (−Z, z = −0.26 m)** flap pairs **[sim]**.
 
-| Flap | PWM pin (`src/starship_hardware.h:15-18`) | Body position (m) [sim] | Servo value (`starship_flaps.cpp:158-165`) |
+| Flap | PWM pin (`src/starship_hardware.h:15-18`) | Hinge line, area centroid height (m) [owner geometry, sim] | Servo value (`starship_flaps.cpp:158-165`) |
 |---|---|---|---|
-| TL | 25 (`FLAP_SERVO_PIN_UL`) | `(0, +0.08, +0.26)` | `1 − angle/(π/2)` |
-| TR | 24 (`FLAP_SERVO_PIN_UR`) | `(0, −0.08, +0.26)` | `angle/(π/2)` |
-| BL | 29 (`FLAP_SERVO_PIN_DL`) | `(0, +0.08, −0.26)` | `angle/(π/2)` |
-| BR | 28 (`FLAP_SERVO_PIN_DR`) | `(0, −0.08, −0.26)` | `1 − angle/(π/2)` |
+| TL | 25 (`FLAP_SERVO_PIN_UL`) | `y = +0.065`, `z = +0.220` (7 × 14 cm, 8 cm chamfer, 82 cm²) | `1 − angle/(π/2)` |
+| TR | 24 (`FLAP_SERVO_PIN_UR`) | `y = −0.065`, `z = +0.220` | `angle/(π/2)` |
+| BL | 29 (`FLAP_SERVO_PIN_DL`) | `y = +0.065`, `z = −0.174` (8 × 21 cm, 8 cm chamfer, 152 cm²) | `angle/(π/2)` |
+| BR | 28 (`FLAP_SERVO_PIN_DR`) | `y = −0.065`, `z = −0.174` | `1 − angle/(π/2)` |
 
-- **Hinge axis [sim]:** all four hinge axes are **parallel to body Z** (the long axis). The simulator rotates each flap about Z by `∓angle` (TL, BL: `−angle`; TR, BR: `+angle`) with the centre of pressure `0.03` m out from the hinge in ±Y (`body_simulator.cpp`, flap block). At angle 0 the flap points straight out sideways (±Y, away from the body). At 90° it has swung to point toward body **+X (the back/top of the vehicle, away from the belly)** on all four. **UNKNOWN (needs the user):** whether the real flaps fold toward the back (+X) or toward the belly (−X), their chord/span dimensions, and the real hinge location. The simulator's model is the only source.
+- **Hinge axis [sim]:** all four hinge axes are **parallel to body Z** (the long axis). The simulator rotates each flap about Z by `∓angle` (TL, BL: `−angle`; TR, BR: `+angle`) (`body_sim_model.cpp`, `addFlap`), hinge line on the tube surface (r = 0.065 m), the plate extending radially; the chordwise centre of pressure moves from 1/4 to 1/2 of the width with the flap angle of attack. At angle 0 the flap points straight out sideways (±Y, away from the body). At 90° it has swung to point toward body **+X (the back/top of the vehicle, away from the belly)** on all four. Owner 2026-11-21: hinges parallel to the axis, the fully extended flaps lie in a plane through the axis (not swept back); dimensions as in the table (workspace `docs/system-architecture.md`, owner update 2026-11-21: bottom flaps start 10 cm above the bottom, top flaps' lower edge 53 cm). The owner wrote "the body X-Z plane" for the extended flaps; with the confirmed frame (flaps on ±Y, belly −X) the extended flap lies in the **Y-Z** plane, which the model uses (open question to the owner).
 - **Angle meaning [code]:** radians. **0° = fully extended**, **90° = retracted/folded** against the body. Evidence: ascent without the extend command commands 90° on all four, `Upright` commands top 0° and bottom 90° (`control_attitude_flaps.cpp:174-189`). So during bellyflop the flaps are extended into the airflow.
 - **Sign convention [code]:** one commanded angle per flap, same sense for the left and right flap of a pair (mirroring is done in the servo mapping above). Larger angle = more folded.
 - **Clamp [code]:** the driver limits every angle to **[`FLAP_MIN_ANGLE` = 15°, `FLAP_MAX_ANGLE` = 90°]** (`starship_flaps.hpp:36-37`, `:93-99`). 0° is never commanded in flight. The `Upright` mode's 0° becomes 15°.
-- **Servo [code]:** STANDARD PWM, value 0..1 maps to 1–2 ms, 90° of travel mapped over the full range; trim offsets all zero (`starship_flaps.cpp:146-150`). Slew limited to 200°/s in the simulated "true" position (`:60-63`).
+- **Servo [code]:** STANDARD PWM, value 0..1 maps to 1–2 ms, 90° of travel mapped over the full range; trim offsets all zero (`starship_flaps.cpp:146-150`). Slew limited to 300°/s in the simulated "true" position (since 2026-11-21; was 200°/s).
 - **Controller mixing [code]** (Stabilize mode, `control_attitude_flaps.cpp:150-167`): with controller output `u = [azimuth+rates (x), pitch+rates (y), roll rate (z)]`:
   TL = neutral + (−u0 − u1 + u2)·k, TR = neutral + (+u0 − u1 − u2)·k, BL = neutral + (+u0 + u1 + u2)·k, BR = neutral + (−u0 + u1 − u2)·k (neutral top / bottom set by `flapTopNeutralAngle_Rad_` / `flapBottomNeutralAngle_Rad_`).
 - **Telemetry [code]:** the true flap angles `[TL, TR, BL, BR]` (rad) are in `ACTUATORS` (port 0x81, 50 Hz) on **USB only**. They are not in the radio set ("bare minimum on the radio", section 9).
@@ -490,7 +492,7 @@ Four flap servos, names from the code: **TL** top-left, **TR** top-right, **BL**
 | High | main.cpp:1233-1237, `starship_tvc.cpp:247-250` | Arming does not gate the motors. Disarmed only sets `motorPowerLimit = 0.1` (+0.04 idle). | Motors spin on a disarmed vehicle whenever `enableMotors_` and the actuators are enabled. |
 | Medium | `starship_tvc.cpp:27`, `:36` | TVC output is event-driven on controller publications only. | If the controller stops publishing, the servo, motor, enable and test state freezes at the last values. Motors keep their last command. |
 | Medium | `starship_tvc.cpp:191-198` | Trim (up to 5°/45° = 0.11), roll twist (±0.5) and full deflection (±1) are summed with no prioritisation. PWM clips at 0/1. | Pitch/yaw authority is lost asymmetrically under roll demand. Saturation is not reported to the controller (the "actual" topic does not model it). |
-| Medium | `starship_tvc.cpp:116-119` vs `:76-92` | Vane angles use the unclamped force direction, while the "actual" topic uses the 3°-cone-clamped vector. The rate-limit model (600°/s) is not applied to the real servos. | Simulator and telemetry thrust direction can differ from what the vanes do near the limits. |
+| Medium | `starship_tvc.cpp:116-119` vs `:76-92` | Vane angles use the unclamped force direction, while the "actual" topic uses the 3°-cone-clamped vector. The rate-limit model (20°/s of thrust angle = 300°/s of servo) is not applied to the real servos. | Simulator and telemetry thrust direction can differ from what the vanes do near the limits. |
 | Medium | `ublox_gnss.cpp:23-31`, `:37` | `positionCov` and `velocityCov` hold 1σ accuracies (m, m/s), not variances. Validity is only `numSats ≥ 5` with the fix-OK check disabled. | Wrong KF weighting unless the consumer knows it gets σ. A 2D or invalid fix with 5 satellites is accepted as valid. |
 | Medium | `vl53l0x_driver.cpp:834-856` | Range status is not checked. `cov = 0.15·range` is σ-like, not m². | Out-of-range readings (~8.19 m) are published. The KF window 0.4–1.5 m (main.cpp:1932) masks this today. |
 | Medium | `vl53l0x_driver.cpp:72-73`, main.cpp:1732 | The VL53L0X sets its I2C device to 400 kHz on the shared `Wire`, while main sets 100 kHz. | Whether the bus clock changes per transaction depends on the HAL. The BME280, QMC5883 and OLED may run at 400 kHz. |

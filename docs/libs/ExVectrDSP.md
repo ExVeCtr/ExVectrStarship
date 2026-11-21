@@ -1,6 +1,6 @@
 # ExVectrDSP
 
-> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, plus a rigid-body flight simulator. Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 3e1f070 (pinned now: fc99b99 = 3e1f070 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified)`
+> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, plus a rigid-body flight simulator. Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 3e1f070 (pinned now: fc99b99 = 3e1f070 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified; feature/sim-aero a5c21af, 2026-11-21: body simulator section re-verified against the redesign)`
 
 ## Purpose & scope
 
@@ -9,7 +9,7 @@
   - **position** `[v(3), p(3)]` in NWU
   - plus a ground-distance estimate.
 - Provides `TopicCoordTransform` (sensor→body plus calibration) and calibrators for gyro and magnetometer.
-- Contains `BodySimulator`, a hardware-in-the-loop simulator task that publishes the same topic types as the estimators, so the application can switch between real and simulated state.
+- Contains `BodySimulator`, a simulator task that publishes the same topic types as the estimators, so the application can switch between real and simulated state, around the pure, host-tested physics model `BodySimModel` (2026-11-21).
 - Generic helpers: `KalmanFilter<LEN>`, `ValueCov`, first-order `LowPassFilter` and `HighPassFilter`.
 - Not implemented:
   - `FullStateEKF` is declared only, with no `.cpp`.
@@ -20,11 +20,11 @@
 
 ## Dependencies (ExVectr libs + external)
 
-- **ExVectrCore**: `Topic`, `Simple_Subscriber`, `Buffer_Subscriber`, `Callback_Subscriber`, `Task_Periodic`, `Timestamped`, `ListBuffer`, `NowNs()`, `LOG_MSG`, `randGen`.
+- **ExVectrCore**: `Topic`, `Simple_Subscriber`, `Buffer_Subscriber`, `Callback_Subscriber`, `Task_Periodic`, `Timestamped`, `ListBuffer`, `NowNs()`, `LOG_MSG` (`randGen` no longer used since the simulator redesign).
 - **ExVectrMath**: all algebra. Frame conventions come from `docs/libs/ExVectrMath.md`.
 - **ExVectrSensor**: `SNSR::GNSSData` (`gnss.hpp`). Lat/lon in rad, alt in m above the ellipsoid, velocity documented as NED (`imu_gps_position_kf.hpp:128`).
 - **ExVectrData**: `Data::Memory_Interface` and memory manager, used by `Calibrator_Manager`.
-- **ExVectrControl** (**circular**): `body_simulator.hpp:4-5` includes `ExVectrControl/physics_bodysim.hpp` and `starship/control_attitude_flaps.hpp`, while Control includes `ExVectrDSP/value_covariance.hpp`. PlatformIO resolves this because all headers are on the include path. The CMake build would need both libraries.
+- **ExVectrControl** (**circular**): `body_sim_model.hpp` includes `ExVectrControl/physics_bodysim.hpp` and `body_simulator.hpp` includes `starship/control_attitude_flaps.hpp`, while Control includes `ExVectrDSP/value_covariance.hpp`. PlatformIO resolves this because all headers are on the include path. The CMake build would need both libraries.
 - External: `<math.h>` only.
 
 ## Key concepts & API
@@ -140,27 +140,71 @@ Common pattern:
 - **Tuning (hard-coded):** acc cov ×1000; baro cov ×1000 and velocity cov ×2/dt×10; range cov ×1000 and velocity cov ×2/dt×10; GNSS cov ×200; acc-bias IIR 0.1; zeroing IIR 0.1. `setProcessNoise()` is a no-op.
 - **Task:** `IMUGPSPositionKalmanTask(period)` runs `predict()` then `update()`. Main runs it at **10 ms**.
 
-### `BodySimulator` (`body_simulator.hpp/.cpp`, a `Task_Periodic` registered on the system scheduler)
-- Wraps `CTRL::PhysicsBodySim`.
-- **Forces per tick:**
-  - Gravity: world frame, applied as an acceleration.
-  - TVC force at `tvcPosition_`, clamped by angle and magnitude, plus a roll torque `T`.
-  - Cylinder side drag at z = ±0.1, with a speed-dependent CoP shift of −1/200·airflow_z.
-  - End-cap drag at z = ±0.35.
-  - 4 flap drag forces. The flap CoP rotates with the flap angle; flap angles are clamped to 10–90° (0° = extended, normal +X; 90° = retracted).
-  - Random lateral wind, 0–4 m/s along Y plus a −1 m/s bias along X, refreshed every 1 s.
-  - Ground clamp at p_U < 0.
-- **Inputs:**
-  - `setTVCInputTopic(Topic<Vector<4>> [Fx,Fy,Fz,T] body N / N·m, tvcPosition, angleLimit, forceLimit)`.
-  - `setFlapSettingInputTopic(Topic<ControlAttitudeFlapSetting>)`.
-  - `enableTVC`, `enableFlaps`, `enableZeroingMode` (holds the body at the start pose every tick), `setAttitudeState`, `setPositionState`.
-  - `resetToStartPose()`: upright (q = identity), at the origin, at rest. Used by zeroing mode, by `SimulationMode` on and by `SystemReset` in simulation mode (app, overview.md "Simulation mode").
-  - Note: the `flapsEnabled_` flag is stored but never read; flap forces are always applied.
-- **Outputs**, same layouts as the estimators:
-  - `getAttitudeEstTopic()` `[ω,q]`.
-  - `getStateEstTopic()` `[v,p]`.
-  - `getGroundTopic()` `[v_U, p_U]`.
-- **Constructor:** `(mass, inertia diag, thrustLimit, angleLimit, interval = 10 ms)`. Main uses `(1.1 kg, {0.044,0.044,0.004}, 14 N, 45°/15 = 3°)`.
+### Body simulator (`body_sim_model.hpp/.cpp` + `body_simulator.hpp/.cpp`, redesigned 2026-11-21, `feature/sim-aero`)
+
+Two parts:
+- **`BodySimModel`** (pure: no scheduler, topics, wall clock or random numbers; host-built and tested in the flight software, `test/test_sim_aero`). Holds `CTRL::PhysicsBodySim` (semi-implicit Euler with `ω × Iω`, ExVectrControl), the geometry, the aerodynamics, the actuator models and the wind. All coefficients are in **`BodySimParams`** (table below). `step()` integrates one fixed step (2 ms); `advance(elapsed)` integrates elapsed time in fixed steps with the remainder carried, at most `maxAdvance_s` (50 ms) per call. Identical inputs give bit-identical runs.
+- **`BodySimulator`** (`Task_Periodic`, 10 ms, registered on the system scheduler): feeds the TVC actual-thrust topic `[Fx,Fy,Fz,T]` and the true flap angles into the model, integrates the wall-clock time since its previous run (a gap above `kMaxGapNs` = 100 ms, i.e. a pause or a restart, is not integrated: the simulation continues from where it stopped), applies zeroing mode, publishes `[ω,q]`, `[v,p]`, ground `[v_U, p_U]`. On the vehicle `applyActuatorRateLimits = false`: the flap driver (`ServoAngleSimulator`, 300°/s) and the TVC driver (thrust-angle slew 20°/s = 300°/s servo / 15) already publish rate-limited actual values.
+
+**Model (body frame +Z nose, belly −X, flaps TL/BL on +Y, origin at the CoM):**
+- **Body crossflow (strip theory):** `bodyStrips` (24) strips over the real length (tube 0.54 m + parabolic nose 0.20 m, `r = R(2s − s²)`), each `dF = ½ρ·η·Cdc·d(z)·dz·|u⊥|u⊥` with the local air velocity `u = u_cg − ω × r`. The rotation term gives the distributed pitch/yaw damping.
+- **Body potential normal force (slender body, Jorgensen):** `½ρV²·A_base·sin 2α·cos(α/2)` along the crossflow, at the **leading end** (nose: x_cp = L(1 − V_nose/(A_base L)) = 0.467 L from the tip; tail first: the base face). It gives the angle-of-attack dependent centre of pressure and the belly-down pitch stiffness. Replaces the old ad hoc `z −= u_z/200` CoP shift.
+- **Axial force:** `½ρ·Cd_axial·A_base·u_z|u_z|` on the axis (tail-first 0.9, nose-first 0.35).
+- **Flaps (flat plates):** hinge on the tube surface, parallel to Z; normal `n = (cos a, ∓sin a, 0)`, radial direction `d = (sin a, ±cos a, 0)` (upper sign TL/BL). Normal force `½ρ|u|²·A·C_N(α)` along `n` with `α` the angle between the local flow and the plate; `C_N` blends the attached branch `C_Nα sin α cos α` into the stalled branch `C_N90 sin α` (logistic, centre `flapStallAngle_rad`). Chordwise centre of pressure from the leading edge `x/c = 0.5 − 0.25 cos α` (1/4 at small α, 1/2 broadside); the hinge edge leads when the flow goes hinge → tip.
+- **Wind:** steady, world frame, `u_cg = Rᵀ(w − v)` (correct frame and sign); speed and direction (toward, CCW from North) in the parameters, off by default. Vehicle: telecommands `SimWindSpeed` / `SimWindDirection` (simulation only, hardware-and-drivers.md).
+- **Thrust:** force at `(0,0,tvcFromCg_m)`, magnitude and cone limits (the cone clamp keeps the azimuth and puts the vector on the 3° cone toward +Z), roll torque `T` about Z; both act only while TVC is enabled. Non-finite inputs are ignored (no NaN state).
+- **Actuators (harness only, `applyActuatorRateLimits = true`):** flap dead time → 300°/s rate limit → first-order lag (lag and dead time default 0); TVC thrust-angle slew `tvcServoRate / tvcServoToThrustGain` (20°/s).
+- **Ground:** CoM height 0. Arriving: stop (horizontal and downward velocity and body rates zeroed, attitude kept). Resting: position and attitude held (no sliding, no tip-over).
+
+**`BodySimParams`** (defaults; units SI):
+
+| Group | Parameter | Default | Meaning / source |
+|---|---|---|---|
+| Mass | `mass_kg` | 1.1 | measured (owner; = `VEHICLE_MASS_KG`) |
+| | `inertiaXX/YY/ZZ`, `inertiaXY/XZ/YZ` | 0.044 / 0.044 / 0.004, 0 | kg m² about the CoM, measured (double swing, owner). Main passes the diagonal |
+| Geometry | `bodyRadius_m` | 0.065 | tube diameter 13 cm |
+| | `tubeLength_m`, `noseLength_m` | 0.54, 0.20 | tube without nose; parabolic nose (total 0.74 m) |
+| | `cgFromBottom_m` | 0.37 | CoM above the bottom ("basically the middle", owner). Neutral flaps trim exactly belly-down at 0.33 m (see Known issues) |
+| | `flapHingeRadius_m` | 0.065 | hinge line on the tube surface |
+| | `flapTop` | 0.07 × 0.14 m, chamfer 0.08, lower edge 0.53 m, eff. 1 | TL/TR: 82 cm², centroid z = +0.220 m |
+| | `flapBottom` | 0.08 × 0.21 m, chamfer 0.08, lower edge 0.10 m, eff. 1 | BL/BR: 152 cm², centroid z = −0.174 m |
+| Air | `airDensity_kgm3` | 1.2 | |
+| Body aero | `cdCrossflow`, `crossflowEta` | 1.2, 0.65 | 2-D cylinder Cd (Re ≈ 7·10⁴), finite-length factor (L/D ≈ 5.7) |
+| | `potentialFactor` | 1.0 | scale of the slender-body potential term |
+| | `cdAxialTailFirst`, `cdAxialNoseFirst` | 0.9, 0.35 | blunt base first / parabolic nose first, on πR² |
+| | `bodyStrips` | 24 | 4..64 |
+| Flap aero | `flapCnAlpha` | 3.0 /rad | attached slope (Helmbold, AR ≈ 2.5) |
+| | `flapCn90` | 1.17 | broadside normal-force coefficient |
+| | `flapStallAngle_rad`, `flapStallWidth_rad` | 30°, 5° | blend centre and width |
+| Calibration | `aeroCalibration` | **3.08** | **one global factor on every aerodynamic force and moment**: without it the belly-down fall at neutral flaps is 13.5 m/s; 3.08 gives the 7.7 m/s of flight 4 (Known issues) |
+| Actuators | `applyActuatorRateLimits` | true (vehicle: false) | model applies the servo rates itself |
+| | `flapServoRate_radps`, `flapServoLag_s`, `flapServoDeadTime_s` | 300°/s, 0, 0 | 9 g servo 60°/0.2 s (owner); optional lag and dead time (≤ 0.25 s) |
+| | `flapMinAngle_rad`, `flapMaxAngle_rad` | 0, 90° | modelled travel (the driver clamps commands to 15..90°) |
+| | `tvcServoRate_radps`, `tvcServoToThrustGain` | 300°/s, 15 | vane servo rate; `StarshipTVC::tvcFactor_` (default 15, main does not pass it) |
+| | `tvcThrustLimit_N`, `tvcAngleLimit_rad`, `tvcFromCg_m` | 14, 3°, −0.35 | main: `TVC_THRUST_LIMIT_N`, `TVC_ANGLE_LIMIT_RAD`, `setTVCInputTopic` position z |
+| Wind | `windSpeed_mps`, `windDirection_rad` | 0, 0 | steady; direction the air moves toward, CCW from North (NWU) |
+| Integration | `step_s`, `maxAdvance_s` | 0.002, 0.05 | fixed step; bounded catch-up per call |
+
+**Measured with the harness** (`pio test -e native -f test_sim_aero -v | grep SIMAERO`; old = 1:1 replica of the model before this branch, `test/test_sim_aero/legacy_model.hpp`):
+
+| Scenario | Old model | New model |
+|---|---|---|
+| Hover, T = m·g, 5 s | balanced | balanced (v_U 0, tilt 0) |
+| Belly-down fall, attitude held, flaps 50/40° | **14.9 m/s** | **7.71 m/s** (13.5 m/s without the calibration factor) |
+| same, flaps folded 90° / out 15° | 16.5 / 13.3 m/s | 9.2 / 7.0 m/s |
+| Belly-down free, +10° pitch, flaps fixed neutral | period 1.62 s, ζ −0.02 (slowly growing), trim pitch −6°, 16 m/s | period 1.64 s, **ζ 0.22**, trim pitch −0.8°, 7.0 m/s down **gliding 4.2 m/s nose-first at AoA 58°** |
+| Free fall from rest, tilt +5° (nose toward the back) | belly < 20° after 3.5 s, then tumbling (end tilt 65°) | belly-down after 2.0 s, holds (end belly 1°) |
+| Free fall from rest, tilt −5° (nose toward the belly) | ends back-down-ish (belly 155°) | ends **back-down** (belly 179°), also with a 5° roll asymmetry |
+| Roll 20° about the axis from belly-down, free | settles at 17° | settles at 28° (gliding) |
+| Flap step, top pair out 10° (pitch up) | +2.65 rad/s² | +3.76 rad/s² |
+| Flap step, controller u0 = 10° (azimuth) | ω̇x +1.43 rad/s² (correct sign) | **ω̇x −2.37 rad/s² (reversed)**, with ω̇y +3.3 and ω̇z +4.9 coupling |
+| Flap step, controller u2 = 10° (roll) | ω̇z +11.6 | ω̇z +9.9 |
+| Static ∂τ/∂u per degree at 50/40°: u0 (x), u1 (y), u2 (z) | — | −0.0069, +0.0152, +0.0073 N m/deg; trim moment at neutral −0.43 N m (nose down) |
+| Vane step 0 → 3° | 0.010 s (thrust-angle slew 600°/s) | 0.148 s (servo 300°/s / 15) |
+| Flip from belly-down, 14 N, fixed 3° vane | upright (< 15°) after 1.94 s | upright after 1.61 s |
+| Flap-controller replica (gains of 6e07d38), start pitch +20°, yaw +20° | holds, azimuth error 0 | holds belly-down (max 34°), pitch −1.8 ± 0.2°, **azimuth drifts 177°** |
+| Wind 3 m/s toward West | body-fixed, sign inverted, random 0–3 m/s steps | drift exactly toward West at any yaw (3.0 m/s broadside) |
+| Torque-free spin 4 s | (no ω × Iω) | |L| +1.3 %, direction 0.03° |
 
 ### Calibration module (2026-11-21, branch `feature/calibration-service`, `include/ExVectrDSP/calibration/`, `src/calibration/`)
 
@@ -223,7 +267,7 @@ Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> att(imuTask.g
 Math::Quat_F q = att.getItem().data.block<4, 1>(3, 0);   // body -> world
 ```
 
-Simulator in place of the estimators (`src/main.cpp:117`, `:920-960`):
+Simulator in place of the estimators (main.cpp `bodySimulator`, `SimulationMode` handler):
 
 ```cpp
 DSP::BodySimulator sim(1.1f, {0.044, 0.044, 0.004}, 14.0f, TVC_ANGLE_LIMIT_RAD);
@@ -276,14 +320,19 @@ positionTopicSwitch.subscribe(sim.getStateEstTopic());
 | Med | `src/imu_gps_position_kf.cpp:348-351`, `:453` | `positionCov.magnitude(true)`: the bool becomes `startRow = 1`, so element 0 is excluded. | The GNSS validity gating ignores the north/first covariance component. |
 | Med | `src/imu_gps_position_kf.cpp:415-418` | `updateAccBias` treats the GNSS velocity difference as world NWU and adds the up-gravity, while GNSS velocity is NED. The non-zero path also divides by `dTime`, which can be 0. | Wrong bias if ever called with real motion. Currently only called with `assumeZero`. |
 | Med | `src/imu_gps_position_kf.cpp:276-343` | The range is used as a vertical distance with no tilt compensation. | Ground distance is wrong when tilted. The VL53L0X window is 0.4–1.5 m, so this matters during touchdown. |
-| Med | `src/body_simulator.cpp:58-65` (Quat-semantics) | The TVC angle clamp uses `Quat(f×z, α−limit).conjugate().rotate(f)`, which pushes the vector further from +Z (to `2α − limit`). The app's `src/starship_tvc.cpp:88-91` uses a double conjugate and is correct. | The simulator lets TVC exceed the angle limit, so the sim is optimistic about control authority. |
-| Med | `src/body_simulator.cpp:115` | `airFlowVector = -velocityBody - windVelocity`: a world-frame wind is subtracted from a body-frame vector without rotation. The sign is also inverted for a wind-velocity definition. | Wind acts along body axes and rotates with the vehicle, so the wind disturbance model is wrong. |
+| ~~Med~~ Fixed | `src/body_simulator.cpp` (TVC clamp) | The TVC angle clamp pushed the vector further from +Z (to `2α − limit`). | Fixed 2026-11-21 (`feature/sim-aero`): `BodySimModel::setThrust` puts the vector on the cone toward +Z (harness `test_thrust_gating_and_nan_inputs`). |
+| ~~Med~~ Fixed | `src/body_simulator.cpp` (wind) | A world-frame wind was subtracted from the body-frame airflow without rotation and with the wrong sign, and was a random, time-seeded body-fixed 0–3 m/s step every 1 s. | Fixed 2026-11-21 (`feature/sim-aero`): steady world-frame wind, `u = Rᵀ(w − v)`, off by default, set by `setWind` / the sim wind telecommands (harness `test_wind_frame`). |
 | ~~Med~~ Fixed | `src/body_simulator.cpp` (zeroing mode) | Zeroing mode set `positionState_ = {0,0,0,1,0,0}` (pN = 1 m) and `attitudeState_ = {0,0,0, 0,0,0,1}` (q = (0,0,0,1), a 180° yaw). | Fixed 2026-11-20 (feature/review-fixes): zeroing mode holds `resetToStartPose()` (origin, identity), the same pose as simulation start and the sim `SystemReset`. |
-| Low | `src/body_simulator.cpp:105` (Quat-semantics) | `attitude.conjugate().rotate(velocity)` is world→body. | Correct with current Math; it was inverted before. |
-| Low | `src/body_simulator.cpp:157-168`, `:321-334` (Quat-semantics) | Flap CoP and normal rotations `Quat(z, ±angle).rotate(...)` change sign vs the old Math. The flaps now fold toward +X at 90°. | Geometry is mirrored relative to the tuning date. Verify the flap force and torque directions in sim against hardware. |
-| Low | `src/body_simulator.cpp:385` | End-cap area is `2πr²` instead of `πr²`. | End-cap drag is twice too high. |
-| Low | `src/body_simulator.cpp:404-412`; `include/ExVectrDSP/body_simulator.hpp:36-37` | `calcTorqueFromTVC` is unused and returns only the roll torque. The comments "30 degrees" / "1000 N" don't match the values 8° / 12. | Dead code and misleading comments. |
-| Low | `include/ExVectrDSP/body_simulator.hpp:80` | The `flapsEnabled_` flag is stored but `update()` always applies flap forces. | `enableFlaps()` has no effect in sim. |
+| Low | `src/body_sim_model.cpp` (`addFlap`) | Flap geometry and fold direction (toward +X) follow the documented frame and the owner's dimensions, but the force directions have not been checked against hardware. | Verify flap torque signs on the bench (e.g. pivot test) before trusting the sim's azimuth behaviour. |
+| ~~Low~~ Fixed | `src/body_simulator.cpp` | End-cap area `2πr²`. | Fixed 2026-11-21 (`feature/sim-aero`): axial force on πR². |
+| ~~Low~~ Fixed | `src/body_simulator.cpp` | Dead `calcTorqueFromTVC`, wrong comments. | Fixed 2026-11-21 (`feature/sim-aero`): removed. |
+| ~~High~~ Fixed | `src/body_simulator.cpp` | Belly-down fall 14.9 m/s (real 7.7), no physically based pitch stiffness or damping (ad hoc `z −= u_z/200` CoP shift), Newtonian flap law with a sign-reversing azimuth term, no `ω × Iω`, wall-clock dt (a pause gave one huge step), phantom +m·g thrust before the first TVC message, roll torque not gated with the TVC (review F1-F3, F8-F11, F13-F15). | Fixed 2026-11-21 (`feature/sim-aero`): redesign (section "Body simulator"); measured before/after table there. |
+| High | `include/ExVectrDSP/body_sim_model.hpp` `aeroCalibration` = 3.08 | The documented ship (1.1 kg, 13 × 74 cm, flaps 2×82 + 2×152 cm²) gives a belly-down fall of 13.5 m/s with textbook coefficients; flight 4's 7.7 m/s needs a drag area of 0.30 m² instead of 0.097 m². The single factor scales **all** aerodynamic forces and moments, so it also triples stiffness, damping and flap authority relative to the geometry. | Owner to check: mass, the 7.7 m/s figure (vertical speed, steady, which sensor), missing drag sources. The aero moments are now larger than the TVC authority (0.26 N m at 14 N; trim moment 0.43 N m at 7.7 m/s), which matters for the RTH flip. |
+| Med | `BodySimParams::cgFromBottom_m` = 0.37 | With the CoM at the owner's "middle" the neutral flaps (50/40°) leave a 0.43 N m nose-down moment at belly-down; the free body trims by gliding nose-first (4.2 m/s horizontal at 7 m/s down, AoA 58°) while the body stays horizontal. Neutral flaps trim exactly belly-down with the CoM at 0.33 m. | Measure the CoM; check flight logs for horizontal drift in the belly-down descent. |
+| Med | `src/body_sim_model.cpp` (`flapCn`, `addFlap`) | The azimuth authority of the controller's u0 mixer comes only from the flaps' sideways (Y) force, which depends on the slope of C_N(α) near α = 40-50°. With the default low-AR plate curve, both pairs are **reversed** at the neutral angles (∂τx/∂u0 = −0.0069 N m/deg); the old model had it positive. In the harness replica the azimuth then drifts 180° while belly-down holds. | Prediction with a medium-confidence coefficient: verify on the real vehicle (azimuth response to u0) before retuning. Controller gains are unchanged in this branch. |
+| Low | `src/body_sim_model.cpp` | A gliding back-down fall (body +X down) is also a stable equilibrium in the model once reached (from a tilt toward the belly side); it is unstable at zero glide. | Real behaviour unknown. |
+| Low | `src/body_sim_model.cpp` | Not modelled: sensors (perfect, zero-latency state, review F12), motor spool-up (owner: instantaneous), vane effectiveness vs thrust and crossflow, flap-body interference, ground tip-over, gusts. | Simulation remains necessary but not sufficient. |
+| Low | `include/ExVectrDSP/body_simulator.hpp` | `flapsEnabled_` is informational only: the model keeps the last true flap angles (the driver publishes only while enabled), i.e. unpowered flaps hold their position. | Matches the owner's statement that the flaps are always powered in flight. |
 | Low | `src/imu_attitude_ekf.cpp:291-299`; `src/imu_attitude_cf.cpp:264-272` | Gyro bias from consecutive accelerometer vectors is computed but never written back. It also reads `lastAccData_` before it is first set. | Dead code. |
 | Low | `src/imu_attitude_cf.cpp:145` (Quat-semantics) | CF gyro integration `rotQuat * quat` is now a world-frame increment applied to a body-frame rate. | Wrong attitude propagation. The CF is unused. |
 | Low | `src/imu_attitude_cf.cpp:213`, `:395`, `:402`, `:321`, `:422-434` (Quat-semantics) | `accErrorIndex` compares a body-frame vector with world g. Init/mag use frame directions inconsistent with the EKF. | The CF is unusable as-is. Unused. |
