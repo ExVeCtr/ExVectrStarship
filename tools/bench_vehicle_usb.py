@@ -18,7 +18,7 @@ Steps (run in order):
 Procedure: (1) `exgs sources disable usb` so the bench core releases the vehicle USB, (2) optionally flash a hex
 (134 baud reboot request, teensy_loader_cli, one retry), (3) open the vehicle USB, send node-0 heartbeats at 1 Hz
 (so the vehicle keeps seeing a ground station and does not latch radioConnectionLoss), decode VEHICLE_STATUS,
-POSE and LOG_TEXT with the generated module of THIS checkout (lib/ExVectrPackets/python, so new fields such as
+POSE, MISSION (setpoint_q as `sq`, its norm as `sqn`) and LOG_TEXT with the generated module of THIS checkout (lib/ExVectrPackets/python, so new fields such as
 the ZEROING flag decode even when the running core is older), run the steps and print a status line every 0.5 s,
 (4) always `exgs sources enable usb` at the end. Never touches the Router or any Espressif device.
 """
@@ -98,7 +98,7 @@ class Vehicle:
         self.framer = NetFramer(0)
         self.lock = threading.Lock()
         self.st = {"mode": None, "mm": None, "phase": None, "flags": 0, "pos": [0.0] * 3, "vel": [0.0] * 3,
-                   "q": [1.0, 0, 0, 0], "fail": 0, "vt": 0.0, "sens": 0}
+                   "q": [1.0, 0, 0, 0], "fail": 0, "vt": 0.0, "sens": 0, "sq": None}
         self.seq = 0
         self.t0 = time.time()
         self.stop = False
@@ -167,6 +167,11 @@ class Vehicle:
                     if self.csvw:
                         self.csvw.writerow([round(t, 3), "POSE", *[round(v, 4) for v in p.pos],
                                             *[round(v, 4) for v in p.vel], *[round(v, 4) for v in p.q[:2]]])
+                elif cls is xp.Mission:
+                    sq = list(getattr(p, "setpoint_q", [float("nan")] * 4))  # attitude setpoint, 0 = none
+                    self.st.update(sq=sq)
+                    if self.csvw:
+                        self.csvw.writerow([round(t, 3), "MIS", p.phase, *[round(v, 4) for v in sq]])
                 elif cls is xp.LogText:
                     txt = p.text.decode(errors="replace") if isinstance(p.text, bytes) else str(p.text)
                     print("%7.2f  LOG %s" % (t, txt.strip()), flush=True)
@@ -178,6 +183,7 @@ class Vehicle:
                 "armed": bool(s["flags"] & xp.VehicleStatus.FLAGS_ARMED),
                 "sim": bool(s["flags"] & xp.VehicleStatus.FLAGS_SIMULATION),
                 "px": s["pos"][0], "py": s["pos"][1], "pz": s["pos"][2], "vz": s["vel"][2], "q": s["q"],
+                "sq": s["sq"], "sqn": (sum(v * v for v in s["sq"]) ** 0.5) if s["sq"] else None,
                 "READY": 3, "RUNNING": 4, "FAILURE": 5, "STARTUP": 0}
 
     def line(self):
@@ -186,8 +192,10 @@ class Vehicle:
         mode = MODES[s["mode"]] if s["mode"] is not None and s["mode"] < len(MODES) else s["mode"]
         mm = MMODES[s["mm"]] if s["mm"] is not None and s["mm"] < len(MMODES) else s["mm"]
         print("%7.2f  %-8s %-8s ph=%s Z=%d A=%d S=%d fail=0x%X sens=0x%03X pos=[%7.3f %7.3f %8.3f] vel=[%6.3f %6.3f %6.3f] "
-              "q=[%.4f %.4f %.4f %.4f]" % (self.now(), mode, mm, s["phase"], e["zeroing"], e["armed"], e["sim"],
-                                           s["fail"], s["sens"], *s["pos"], *s["vel"], *s["q"]), flush=True)
+              "q=[%.4f %.4f %.4f %.4f] sq=%s" % (self.now(), mode, mm, s["phase"], e["zeroing"], e["armed"], e["sim"],
+                                                 s["fail"], s["sens"], *s["pos"], *s["vel"], *s["q"],
+                                                 "[%.4f %.4f %.4f %.4f]" % tuple(s["sq"]) if s["sq"] else "-"),
+              flush=True)
 
     def watch(self, seconds, until=None):
         end = time.time() + seconds
