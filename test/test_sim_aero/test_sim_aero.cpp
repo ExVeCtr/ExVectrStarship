@@ -624,6 +624,100 @@ static void test_static_flap_authority_table() {
     TEST_ASSERT_TRUE(m.flapCn(a * kDeg) > 0);
 }
 
+// Mixer of ControlAttitudeFlaps (control_attitude_flaps.cpp, Stabilize, verbatim): u = attRateCtrlOutput, ff = 1.
+static void flapMixer(float u0, float u1, float u2, float out[4]) {
+  out[0] = kTopNeutral + (-u0 - u1 + u2);
+  out[1] = kTopNeutral + (+u0 - u1 - u2);
+  out[2] = kBottomNeutral + (+u0 + u1 + u2);
+  out[3] = kBottomNeutral + (-u0 + u1 - u2);
+}
+
+static void test_control_axis_signs() {
+  // Intended (controller): u0 > 0 (azimuth error > 0, i.e. turn the nose counter-clockwise seen from above = about
+  // world up = body +X when belly-down) -> tau_x > 0; u1 > 0 (nose too low) -> tau_y > 0 (nose toward body +X = up);
+  // u2 > 0 -> tau_z > 0 (the -wz rate term damps). Static torque per +1 deg of u, falling straight down at the
+  // terminal speed, body pitched by the angle of attack offset (nose up > 0). The legacy replica gets the same
+  // inputs (one explicit step from rest: dw = tau / I dt).
+  const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f, vo = gOldTerminal > 0 ? gOldTerminal : 15.0f;
+  const float d = 1 * kDeg;
+  auto newTau = [&](bool belly, const float a[4], float pDeg) {
+    BodySimParams p;
+    p.applyActuatorRateLimits = false;
+    p.flapFoldTowardBelly = belly;
+    BodySimModel mm(p);
+    mm.setFlapInput(a[0], a[1], a[2], a[3]);
+    mm.step();
+    mm.setAttitudeState(attOf(bellyDown(pDeg)));
+    mm.setPositionState({0, 0, -v, 0, 0, 100});
+    mm.computeAero();
+    return mm.loads().aeroTorque;
+  };
+  auto oldTau = [&](const float a[4], float pDeg) {
+    legacy::LegacyModel lm;
+    for (int i = 0; i < 4; i++)
+      lm.flaps[i] = a[i];
+    lm.att = attOf(bellyDown(pDeg));
+    lm.pos = {0, 0, -vo, 0, 0, 100};
+    const float h = 1e-3f;
+    lm.step(h);
+    return Vector_F{lm.att(0) * lm.I[0] / h, lm.att(1) * lm.I[1] / h, lm.att(2) * lm.I[2] / h};
+  };
+  printf("SIMAERO control axis signs (intended: all +) | d tau_x/du0, d tau_y/du1, d tau_z/du2 in N m/deg at neutral 50/40\n");
+  float n0[4], a0[4], a1[4], a2[4];
+  flapMixer(0, 0, 0, n0);
+  flapMixer(d, 0, 0, a0);
+  flapMixer(0, d, 0, a1);
+  flapMixer(0, 0, d, a2);
+  for (float pDeg : {-20.0f, -10.0f, 0.0f, 10.0f, 20.0f}) {
+    const Vector_F ob = oldTau(n0, pDeg), o0 = oldTau(a0, pDeg), o1 = oldTau(a1, pDeg), o2 = oldTau(a2, pDeg);
+    const Vector_F bb = newTau(false, n0, pDeg), b0 = newTau(false, a0, pDeg), b1 = newTau(false, a1, pDeg),
+                   b2 = newTau(false, a2, pDeg);
+    const Vector_F fb = newTau(true, n0, pDeg), f0 = newTau(true, a0, pDeg), f1 = newTau(true, a1, pDeg),
+                   f2 = newTau(true, a2, pDeg);
+    printf("SIMAERO   AoA %+3.0f | old [%+.5f %+.5f %+.5f] | new fold->back [%+.5f %+.5f %+.5f] | new fold->belly [%+.5f %+.5f %+.5f]\n",
+           pDeg, o0(0) - ob(0), o1(1) - ob(1), o2(2) - ob(2), b0(0) - bb(0), b1(1) - bb(1), b2(2) - bb(2),
+           f0(0) - fb(0), f1(1) - fb(1), f2(2) - fb(2));
+    // Pitch and roll have the controller's sign in every variant; azimuth only with the fold toward the belly.
+    TEST_ASSERT_TRUE(b1(1) - bb(1) > 0 && f1(1) - fb(1) > 0);
+    TEST_ASSERT_TRUE(b2(2) - bb(2) > 0 && f2(2) - fb(2) > 0);
+    TEST_ASSERT_TRUE(f0(0) - fb(0) > 0);
+    TEST_ASSERT_TRUE(b0(0) - bb(0) < 0); // documents the reversal of the default (fold toward the back)
+    TEST_ASSERT_TRUE(o0(0) - ob(0) > 0 && o1(1) - ob(1) > 0 && o2(2) - ob(2) > 0);
+  }
+  // Per-flap derivation at belly-down, fold toward the back: sideways force and its tau_x when each flap extends 1 deg.
+  for (int i = 0; i < 4; i++) {
+    BodySimParams p;
+    p.applyActuatorRateLimits = false;
+    float a[4];
+    flapMixer(0, 0, 0, a);
+    BodySimModel m0(p), m1(p);
+    m0.setFlapInput(a[0], a[1], a[2], a[3]);
+    a[i] -= d;
+    m1.setFlapInput(a[0], a[1], a[2], a[3]);
+    BodySimModel *ms[2] = {&m0, &m1};
+    for (auto *m : ms) {
+      m->step();
+      m->setAttitudeState(attOf(bellyDown()));
+      m->setPositionState({0, 0, -v, 0, 0, 100});
+      m->computeAero();
+    }
+    const char *nm[4] = {"TL", "TR", "BL", "BR"};
+    printf("SIMAERO   %s extend 1 deg (fold->back): F [%+.3f %+.3f %+.3f] N, dFy %+.4f N, dtau_x %+.5f N m\n", nm[i],
+           m0.loads().flapForce[i](0), m0.loads().flapForce[i](1), m0.loads().flapForce[i](2),
+           m1.loads().flapForce[i](1) - m0.loads().flapForce[i](1),
+           m1.loads().aeroTorque(0) - m0.loads().aeroTorque(0));
+  }
+  // Closed loop with the controller replica and the fold toward the belly (information for the owner).
+  {
+    BodySimParams p;
+    p.flapFoldTowardBelly = true;
+    NewSim n(p);
+    ClosedResult rb = runClosedLoop(n, "closed_pitch20_yaw20_foldbelly", 20, 20, v, 15.0f);
+    printf("SIMAERO flap controller replica, fold toward the belly, start pitch +20 yaw +20 deg: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
+           rb.pitchMean, rb.pitchStd, rb.bellyMax, rb.azErrEnd, rb.vEnd);
+  }
+}
+
 static void test_flap_geometry_and_cant() {
   BodySimParams p;
   BodySimModel m(p);
@@ -991,6 +1085,7 @@ int main(int, char **) {
   RUN_TEST(test_belly_down_free_oscillation);
   RUN_TEST(test_flap_steps);
   RUN_TEST(test_static_flap_authority_table);
+  RUN_TEST(test_control_axis_signs);
   RUN_TEST(test_flap_geometry_and_cant);
   RUN_TEST(test_vane_step);
   RUN_TEST(test_align_from_small_tilt);
