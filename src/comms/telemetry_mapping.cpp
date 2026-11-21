@@ -255,8 +255,16 @@ void flapPointingSetpoint(float azimuth, float pitch, const float qIs[4], float 
     dq[2] = a[2] * b[0] - a[0] * b[2];
     dq[3] = a[0] * b[1] - a[1] * b[0];
   }
+  // Normalise here, not with sanitizeSetpointQuat: dq has norm sqrt(2 (1 + d)), which is below that function's 0.5
+  // "invalid" threshold for corrections above about 151 deg (fixed 2026-11-21: zero setpoint_q in early freefall).
+  const float n = sqrtf(dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2] + dq[3] * dq[3]);
+  if (!(n > 1e-12f) || !isfinite(n)) {
+    zeroQ(out);
+    return;
+  }
   float dqn[4], r[4];
-  sanitizeSetpointQuat(dq, dqn);
+  for (int i = 0; i < 4; i++)
+    dqn[i] = dq[i] / n;
   quatMul(dqn, q, r); // apply the world-frame correction after body -> world
   sanitizeSetpointQuat(r, out);
 }
@@ -269,7 +277,7 @@ AttitudeSetpointSource selectAttitudeSetpointSource(bool tvcEnabled, bool flapsS
 
 void attitudeSetpoint(const AttitudeSetpointInputs &in, float out[4]) {
   switch (selectAttitudeSetpointSource(in.tvcEnabled, in.flapsStabilize)) {
-    case AttitudeSetpointSource::Tvc: sanitizeSetpointQuat(in.tvcQ, out); break;
+    case AttitudeSetpointSource::Tvc: sanitizeSetpointQuat(in.tvcOverride ? in.tvcOverrideQ : in.tvcQ, out); break;
     case AttitudeSetpointSource::Flaps: flapPointingSetpoint(in.flapAzimuth, in.flapPitch, in.qIs, out); break;
     default: zeroQ(out); break;
   }

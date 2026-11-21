@@ -193,8 +193,9 @@ enum class AttitudeSetpointSource : uint8_t { None = 0, Tvc, Flaps };
 /**
  * Selection by the controller phase table (src/safety/control_phase.hpp) as applied on the vehicle:
  * flapsStabilize = phase-table bellyflop set on AND the flap controller setting applied by FlapModeObserverTask is
- * BellyFlopMode Stabilize; tvcEnabled = phase-table TVC set on. Flaps win if both are on (cannot happen while
- * kTvcDuringBellyflopTransition is false; see docs/project/hardware-and-drivers.md section 9).
+ * BellyFlopMode Stabilize; tvcEnabled = phase-table TVC set on. Flaps win if both are on, which the phase table
+ * excludes since 2026-11-21 (in the bellyflop the kick's TVC set and the flap attitude control are exclusive; see
+ * docs/project/hardware-and-drivers.md section 9).
  */
 AttitudeSetpointSource selectAttitudeSetpointSource(bool tvcEnabled, bool flapsStabilize);
 
@@ -215,6 +216,10 @@ struct AttitudeSetpointInputs {
   bool tvcEnabled = false;     ///< phase table: TVC set (ControlAttitudeTvc) enabled
   bool flapsStabilize = false; ///< phase table bellyflop set on and flap setting mode Stabilize
   float tvcQ[4] = {0, 0, 0, 0}; ///< ControlAttitudeTvc setpoint topic (acc-to-att mapping), q part, body -> world
+  /// The TVC setpoint is written directly by a mission (bellyflop kick, MissionBellyflop::kickActive()); then
+  /// tvcOverrideQ replaces tvcQ when the TVC source is selected.
+  bool tvcOverride = false;
+  float tvcOverrideQ[4] = {0, 0, 0, 0};
   float flapAzimuth = 0, flapPitch = 0; ///< ControlAttitudeBellyFlopSetting azimuthAngle_Rad / pitchAngle_Rad
   float qIs[4] = {1, 0, 0, 0};          ///< current attitude estimate, body -> world
 };

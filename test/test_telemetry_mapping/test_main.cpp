@@ -5,6 +5,8 @@
 #include <string.h>
 #include <unity.h>
 
+#include <initializer_list>
+
 #include "comms/telemetry_mapping.hpp"
 
 using namespace VCTR;
@@ -525,10 +527,29 @@ void test_attitude_setpoint_selection() {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, sinf(M_PI / 4), out[2]);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, out[3]);
 
-  in.tvcEnabled = true; // both on: the flap setpoint
+  in.tvcEnabled = true; // both on (the phase table excludes it since 2026-11-21): the flap setpoint
   float out2[4];
   attitudeSetpoint(in, out2);
   for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(out[i], out2[i]);
+
+  // Bellyflop kick (2026-11-21): TVC on, flaps not in Stabilize, setpoint written by the mission -> the kick
+  // target (here the old fixed Quat(y, -90 deg)), not the mapping topic.
+  in.flapsStabilize = false;
+  in.tvcEnabled = true;
+  in.tvcOverride = true;
+  const float kick[4] = {cosf(M_PI / 4), 0.0f, -sinf(M_PI / 4), 0.0f};
+  memcpy(in.tvcOverrideQ, kick, sizeof kick);
+  attitudeSetpoint(in, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_FLOAT_WITHIN(1e-6f, kick[i], out[i]);
+  // Override without the TVC set on (kick ended, flaps took over) is ignored.
+  in.tvcEnabled = false;
+  in.flapsStabilize = true;
+  attitudeSetpoint(in, out2);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, cosf(M_PI / 4), out2[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, sinf(M_PI / 4), out2[2]);
+  in.flapsStabilize = false;
+  attitudeSetpoint(in, out2);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out2[i]);
 }
 
 void test_attitude_setpoint_sanitize() {
@@ -579,6 +600,18 @@ void test_flap_pointing_setpoint() {
   TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, qnorm(out));
   rotZ(out, z);
   TEST_ASSERT_FLOAT_WITHIN(1e-5f, -1.0f, z[2]);
+
+  // Large corrections (> about 151 deg, but not exactly opposite) were published as zero before 2026-11-21 (the
+  // unnormalised half-angle quaternion fell under sanitizeSetpointQuat's 0.5 threshold; bench: zero setpoint_q in
+  // early freefall). Upright, wanted 160 and 175 deg away: valid, body +Z on the wanted direction.
+  for (float deg : {120.0f, 155.0f, 160.0f, 175.0f, 179.5f}) {
+    const float pitch = float(M_PI / 2) - deg * float(M_PI) / 180.0f;
+    flapPointingSetpoint(0.7f, pitch, id, out);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, qnorm(out));
+    rotZ(out, z);
+    TEST_ASSERT_FLOAT_WITHIN(2e-3f, sinf(pitch), z[2]);
+    TEST_ASSERT_FLOAT_WITHIN(2e-3f, cosf(pitch) * cosf(0.7f), z[0]);
+  }
 
   // Invalid current attitude: no setpoint
   const float bad[4] = {0, 0, 0, 0};
