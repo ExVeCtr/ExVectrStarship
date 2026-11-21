@@ -35,6 +35,7 @@ private:
   const float FLAP_TEST_DURATION = 4.0f;
   const float FLAP_MAX_ANGLE = 90 * DEGREES;
   const float FLAP_MIN_ANGLE = 15 * DEGREES;
+  const float FLAP_SERVO_RATE_RADPS = 60 * DEGREES / 0.2f; // modelled servo rate, 300 deg/s
 
   Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> ctrlSubr_;
   Core::Topic_Publisher<CTRL::ControlAttitudeFlapSetting> trueFlapPub_;

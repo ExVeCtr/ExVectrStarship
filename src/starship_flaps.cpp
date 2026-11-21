@@ -57,10 +57,12 @@ void StarshipFlaps::taskInit() {
   servoBLPin_.enableOutput(false);
   servoBRPin_.enableOutput(false);
 
-  tlFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
-  trFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
-  blFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
-  brFlapSim_.setRadiansPerSecondLimit(60 * DEGREES / 0.3f);
+  // Modelled ("true") flap angle: generic 9 g servos, 60 deg per 0.2 s = 300 deg/s (owner 2026-11-21; was
+  // 60 deg per 0.3 s). Used for telemetry and as the simulator's flap input.
+  tlFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
+  trFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
+  blFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
+  brFlapSim_.setRadiansPerSecondLimit(FLAP_SERVO_RATE_RADPS);
 
   flapSettings_.flapTLAngle_Rad =
       0.0f; // Initialize the top left flap angle to 0 radians

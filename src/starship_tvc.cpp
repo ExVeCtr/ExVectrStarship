@@ -212,10 +212,19 @@ void StarshipTVC::taskThread() {
     auto thrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut) / 2 *
                         tvcThrustLimit_N_;
 
-    const float angleRateLimit = 60 * DEGREES / 0.1f;
+    // Slew limit of the modelled thrust angle = vane servo rate / servo-to-thrust gain (the servos move tvcFactor_
+    // times the thrust angle; review F6: the limit was 600 deg/s in thrust-angle space = 9000 deg/s of servo).
+    const float angleRateLimit = TVC_SERVO_RATE_RADPS / tvcFactor_;
     float angleXAxis = atan2(thrustVector(1), thrustVector(2));
     float angleYAxis = atan2(thrustVector(0), thrustVector(2));
     float thrustMag = thrustVector.magnitude();
+    if (!(isfinite(angleXAxis) && isfinite(angleYAxis) && isfinite(thrustMag))) {
+      // A non-finite TVC command must not latch NaN into the integrated actual angles (it stayed NaN until
+      // reboot): hold the previous angles and report no thrust for this tick.
+      angleXAxis = actualThrustXAngle;
+      angleYAxis = actualThrustYAngle;
+      thrustMag = 0.0f;
+    }
     float angleXDiff = angleXAxis - actualThrustXAngle;
     float angleYDiff = angleYAxis - actualThrustYAngle;
     if (angleXDiff > angleRateLimit * dTime)
@@ -230,8 +239,11 @@ void StarshipTVC::taskThread() {
     actualThrustYAngle += angleYDiff;
     actualThrustMag = thrustMag;
     actualTwistAngle = tvcTwistForce * thrustMagnitude / twistFactor;
+    if (!isfinite(actualTwistAngle))
+      actualTwistAngle = 0.0f;
   } else {
     actualThrustMag = 0;
+    actualTwistAngle = 0; // no stale roll torque after the actuators were disabled (review F13)
   }
   tvcActualThrustTopic_.publish({
       sin(actualThrustYAngle) * actualThrustMag,                           //

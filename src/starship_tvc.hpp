@@ -26,6 +26,8 @@ private:
   const float TVC_TEST_TWIST_TIME = 2;
   const int64_t TVC_TEST_TWIST_COUNT = 2;
 
+  /// Vane servo rate used by the modelled actual thrust (generic 9 g servo: 60 deg per 0.2 s, owner 2026-11-21).
+  static constexpr float TVC_SERVO_RATE_RADPS = 60.0f * 3.14159265f / 180.0f / 0.2f;
   float actualThrustXAngle = 0.0f;
   float actualThrustYAngle = 0.0f;
   float actualThrustMag = 0.0f;
