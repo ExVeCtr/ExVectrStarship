@@ -409,7 +409,8 @@ public:
 
   MissionPhase getCurrentMissionPhase() { return missionPhase_; }
 
-  /// Bellyflop controller set active (flap attitude control in BellyFlopMode Stabilize): bellyflop and freefall.
+  /// Bellyflop controller set active (flap attitude control in BellyFlopMode Stabilize): freefall and the
+  /// bellyflop after its powered kick (never together with the TVC set).
   bool bellyflopFlapsActive() const { return bellyflopFlaps_; }
 
   /// TVC set (ControlPositionStandard + ControlAttitudeTvc) enabled by the controller phase table (telemetry only).
@@ -455,10 +456,11 @@ public:
    * The one place where the mission controllers are switched (user decision 2026-11-20): the phase table of
    * Safety::controlPhaseFor, evaluated every tick from the active mission and its mode (level, not edge), so the
    * first and every later run of a mission get the same controllers. TVC set (position + TVC attitude controller):
-   * on only in the powered phases (waypoint, RTH Running); off in the countdown, bellyflop and freefall, where the
-   * disabled ControlAttitudeTvc publishes the neutral [0, 0, 0.1 N, 0]. It is reset (integral, delta-time,
-   * setpoint hold) on every enable and on a mission switch while enabled. Bellyflop set: flap attitude control
-   * (Stabilize) in bellyflop and freefall, read by FlapModeObserverTask.
+   * on only in the powered phases (waypoint, RTH Running, and the bellyflop kick with the thrust capped, 2026-11-21);
+   * off in the countdown, after the kick and in freefall, where the disabled ControlAttitudeTvc publishes the
+   * neutral [0, 0, 0.1 N, 0]. It is reset (integral, delta-time, setpoint hold) on every enable and on a mission
+   * switch while enabled. Bellyflop set: flap attitude control (Stabilize) in freefall and after the kick, read by
+   * FlapModeObserverTask. The thrust cap (StarshipTVC::thrustCap) is applied here every tick.
    */
   void applyControlPhase() {
     const bool switched = missionSwitchCount_ != lastSwitchSeen_;
@@ -1355,7 +1357,7 @@ public:
     if (vehicleMode == VehicleMode::VehicleMode_Running &&
         mission->getMissionState().missionMode ==
             MissionMode::MissionMode_Running) {
-      // Bellyflop controller set (flap attitude control) in bellyflop and freefall: the controller phase table
+      // Bellyflop controller set (flap attitude control) in freefall and after the bellyflop kick: the phase table
       // of VehicleSafetyAndControlTask (src/safety/control_phase.hpp). Before 2026-11-20 freefall only.
       if (vehicleSafetyAndControlTask.bellyflopFlapsActive()) {
         starshipFlopSetting.bellyFlopMode =

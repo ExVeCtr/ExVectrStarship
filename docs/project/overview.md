@@ -54,8 +54,18 @@ q_ref, accel_ref, [ω,q] → ControlAttitudeTvc (P + rate P + I) → [Fx, Fy, Fz
 → StarshipTVC mixer → vane angles + motor speeds
 ```
 
-- **Controller phases (user decision 2026-11-20):** one explicit table switches the controllers every tick (missions.md 6.2): TVC set (position + TVC attitude) on in the powered phases (waypoint, RTH), off in the countdown, bellyflop and freefall (neutral TVC command `[0,0,0.1 N,0]`); bellyflop set (flap attitude control, `Stabilize`) on in bellyflop and freefall. The TVC set is reset (integrals, setpoint hold) on every enable and on a mission switch.
-- **Bellyflop:** `MissionBellyflop` still unsubscribes the TVC controller from the mapper and commands a fixed −90° pitch attitude, but with the TVC set off in the bellyflop that command is inert: the pitch-over is unpowered (see Known safety gaps).
+- **Controller phases (user decisions 2026-11-20, 2026-11-21):** one explicit table switches the controllers every tick (missions.md 6.2): TVC set (position + TVC attitude) on in the powered phases (waypoint, RTH, and the bellyflop kick, ≤ 1 s, thrust capped at 11 N), off in the countdown, after the kick and in freefall (neutral TVC command `[0,0,0.1 N,0]`); bellyflop set (flap attitude control, `Stabilize`) on in freefall and in the bellyflop after the kick, never together with the TVC set. The TVC set is reset (integrals, setpoint hold) on every enable and on a mission switch.
+
+| Phase | TVC set (motors, vanes) | Flap attitude control |
+|---|---|---|
+| Countdown (Init, Startup) | off | off |
+| Waypoint hover / ascent | on | off (flaps Ascent) |
+| Bellyflop kick (Running, ≤ 1 s hard limit) | on, thrust ≤ 11 N, pitch-over setpoint | off (flaps Ascent) |
+| Bellyflop after the kick, freefall | off (motors 0 in freefall) | on (Stabilize) |
+| RTH | on | off (Upright during stabilisation) |
+| Landed, boot, SystemReset | off | off |
+
+- **Bellyflop:** `MissionBellyflop` is the powered kick (user decision 2026-11-21): the TVC attitude controller pitches the vehicle 90° about body +Y towards belly down with the motors on (thrust capped), then cuts the motors at 15° remaining angle, a 250°/s spin guard or the 1 s hard limit, and freefall's flap control takes over. All values are named constants in `src/safety/bellyflop_kick.hpp` ([missions.md](missions.md) §3).
 - **Flaps:** `FlapModeObserverTask` (10 Hz) picks the `BellyFlopMode` (Ascent / Upright / Stabilize) and target azimuth/pitch per mission. `ControlAttitudeFlaps` turns it into four flap angles. In freefall above 100 m it steers the belly toward home; below stop altitude + 20 m it pitches to 30°.
 
 ## Modes and safety
@@ -130,7 +140,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 - Radio loss or a single 0.5 s sensor dropout in flight cuts all actuators instead of attempting RTH or a controlled descent.
 - (Fixed 2026-11-20: a SystemReset during a mission no longer lets the chain continue, and the vehicle no longer latches Failure at every boot.)
 - (Fixed 2026-11-20: the first bellyflop after boot no longer differs from later ones; RTH after an abort or mag timeout from freefall now has its controllers.)
-- The bellyflop pitch-over is unpowered (TVC set off by the user's phase table). In the simulator the vehicle then does not pitch over in the 1 s transition (tilt 2.3°); real flights of the old firmware pitched over with TVC thrust 0. Confirm before a flight that uses the bellyflop ([missions.md](missions.md) Known issues).
+- The bellyflop kick (2026-11-21) is tuned in the simulator only, whose aerodynamics are known to be wrong (bench: tilt 2° → 75° in 0.95 s at 11 N, then belly-down and near horizontal). Review the kick in the first flight data ([missions.md](missions.md) Known issues).
 - Arming does not gate mission start.
 - Found on the bench 2026-11-20 (feature/review-fixes, not changed): toggling `SimulationMode` off keeps the arm state. The toggle sets Startup, but the inputs are all new in the same tick, so the vehicle returns to Ready before `vehicleArmingControl` sees Startup and auto-disarms. Seen: armed in simulation, `MissionAbort` reset and stop (arm state kept, as documented), `SimulationMode` off: Ready, `armed=true`, `simulation=false`. Send a disarm after leaving simulation; a fix (disarm on the toggle, as `SystemReset` does) needs the user's decision.
 - Altitude is not bounded by the out-of-bounds check.

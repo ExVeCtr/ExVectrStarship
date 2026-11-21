@@ -188,8 +188,8 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 - `src/main.cpp:168-172`: instantiates all four controllers. `CTRL::StarshipTVC` and `CTRL::StarshipFlaps` (actuator mapping) live in `src/starship_tvc.*` and `src/starship_flaps.*`, not in the library.
 - `src/main.cpp:1939-1961`: topic wiring. The position setpoint comes from the active mission (`:536`).
 - `src/main.cpp` `applyControlPhase()`: `enableControl` and `resetControlState()` of the position and TVC attitude controllers from the explicit phase table `Safety::controlPhaseFor` (`src/safety/control_phase.*`), every tick (since 2026-11-20; before, on mission-mode edges). See missions.md 6.2.
-- `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (bellyflop and freefall missions → Stabilize (bellyflop since 2026-11-20), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
-- `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (inert since 2026-11-20 while the phase table keeps the TVC controllers off during the bellyflop, `kTvcDuringBellyflopTransition`).
+- `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (freefall and the bellyflop after its powered kick → Stabilize (bellyflop since 2026-11-20, after the kick only since 2026-11-21), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
+- `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (`unsubscribeAttitudeSetpoint()` + `setAttitudeStateSetpoint()` every 10 ms) for the powered bellyflop kick (2026-11-21), and calls `enableControl(false)` itself at the kick end so the motors go neutral without waiting for the 10 Hz phase table.
 - `CTRL::PhysicsBodySim` is used inside `DSP::BodySimulator`. `SimplePID` is unused.
 
 ## Known issues & limitations
