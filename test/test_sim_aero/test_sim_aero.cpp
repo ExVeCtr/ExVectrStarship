@@ -718,6 +718,125 @@ static void test_control_axis_signs() {
   }
 }
 
+// Static torque derivatives (N m/deg) of the controller's mixer directions u0, u1, u2 around arbitrary neutral
+// angles (top t, bottom b, rad; evaluated at max(1, min(89 deg)) so the +-1 deg central difference stays inside the
+// 0..90 deg travel), falling straight down at speed v, body pitched by pDeg.
+struct AxisDeriv {
+  float yaw, pitch, roll; // d tau_x/du0, d tau_y/du1, d tau_z/du2
+};
+static AxisDeriv axisDerivs(const BodySimParams &base, float t, float b, float pDeg, float v) {
+  const float lo = 1 * kDeg, hi = 89 * kDeg, d = 1 * kDeg;
+  t = t < lo ? lo : (t > hi ? hi : t);
+  b = b < lo ? lo : (b > hi ? hi : b);
+  auto tau = [&](float u0, float u1, float u2) {
+    BodySimParams p = base;
+    p.applyActuatorRateLimits = false;
+    BodySimModel mm(p);
+    mm.setFlapInput(t + (-u0 - u1 + u2), t + (u0 - u1 - u2), b + (u0 + u1 + u2), b + (-u0 + u1 - u2));
+    mm.step();
+    mm.setAttitudeState(attOf(bellyDown(pDeg)));
+    mm.setPositionState({0, 0, -v, 0, 0, 100});
+    mm.computeAero();
+    return mm.loads().aeroTorque;
+  };
+  const Vector_F x0p = tau(d, 0, 0), x0m = tau(-d, 0, 0), x1p = tau(0, d, 0), x1m = tau(0, -d, 0),
+                 x2p = tau(0, 0, d), x2m = tau(0, 0, -d);
+  return {0.5f * (x0p(0) - x0m(0)), 0.5f * (x1p(1) - x1m(1)), 0.5f * (x2p(2) - x2m(2))};
+}
+
+static void test_neutral_sweep_effective_angle() {
+  // Report only (owner question 2026-11-21): where does the yaw (azimuth) response have the controller's sign
+  // (+) over the neutral-angle range, with the effective aerodynamic flap angle (a_eff = smoothmax(a, 20 deg))?
+  const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f;
+  BodySimParams p;
+  const float aoas[5] = {-20, -10, 0, 10, 20};
+  printf("SIMAERO a_eff check: a = 0/10/20/40/50/90 deg -> a_eff = %.2f %.2f %.2f %.2f %.2f %.2f deg\n",
+         BodySimModel(p).flapAeroAngle(0) / kDeg, BodySimModel(p).flapAeroAngle(10 * kDeg) / kDeg,
+         BodySimModel(p).flapAeroAngle(20 * kDeg) / kDeg, BodySimModel(p).flapAeroAngle(40 * kDeg) / kDeg,
+         BodySimModel(p).flapAeroAngle(50 * kDeg) / kDeg, BodySimModel(p).flapAeroAngle(90 * kDeg) / kDeg);
+  const char *names[3] = {"yaw d tau_x/du0", "pitch d tau_y/du1", "roll d tau_z/du2"};
+  static AxisDeriv grid[10][10][5];
+  for (int i = 0; i < 10; i++)
+    for (int j = 0; j < 10; j++)
+      for (int k = 0; k < 5; k++)
+        grid[i][j][k] = axisDerivs(p, i * 10 * kDeg, j * 10 * kDeg, aoas[k], v);
+  for (int ax = 0; ax < 3; ax++) {
+    printf("SIMAERO sweep %s at AoA 0, 1e-4 N m/deg; rows top 0..90, cols bottom 0..90; '*' = + at all AoA -20..+20\n",
+           names[ax]);
+    for (int i = 0; i < 10; i++) {
+      char line[400];
+      int n = snprintf(line, sizeof line, "SIMAERO   top %2d |", i * 10);
+      for (int j = 0; j < 10; j++) {
+        bool allPos = true;
+        float val0 = 0;
+        for (int k = 0; k < 5; k++) {
+          const AxisDeriv &g = grid[i][j][k];
+          const float val = ax == 0 ? g.yaw : (ax == 1 ? g.pitch : g.roll);
+          allPos = allPos && val > 0;
+          if (k == 2)
+            val0 = val;
+        }
+        n += snprintf(line + n, sizeof line - n, " %+6.0f%c", val0 * 1e4f, allPos ? '*' : ' ');
+      }
+      printf("%s\n", line);
+    }
+  }
+  printf("SIMAERO yaw d tau_x/du0 at neutral 50/40 vs AoA -20/-10/0/+10/+20: %+.5f %+.5f %+.5f %+.5f %+.5f N m/deg\n",
+         axisDerivs(p, 50 * kDeg, 40 * kDeg, -20, v).yaw, axisDerivs(p, 50 * kDeg, 40 * kDeg, -10, v).yaw,
+         axisDerivs(p, 50 * kDeg, 40 * kDeg, 0, v).yaw, axisDerivs(p, 50 * kDeg, 40 * kDeg, 10, v).yaw,
+         axisDerivs(p, 50 * kDeg, 40 * kDeg, 20, v).yaw);
+}
+
+static void test_candidate_effects_yaw_sign() {
+  // Report only: candidate flap/body interaction effects, one at a time, and their effect on the yaw sign at the
+  // neutral 50/40 deg, on pitch/roll authority and on the terminal speed (fixed calibration factor).
+  const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f;
+  struct Cand {
+    const char *name;
+    float side, cross, shield;
+  } cands[] = {
+      {"baseline (a_eff only)", 0, 0, 0},  {"(a) sidewash +0.5", 0.5f, 0, 0},  {"(a) sidewash +1", 1, 0, 0},
+      {"(a) sidewash +2", 2, 0, 0},        {"(a) sidewash -0.5", -0.5f, 0, 0}, {"(a) sidewash -1", -1, 0, 0},
+      {"(a) sidewash -2", -2, 0, 0},       {"(b) crossflow 0.5", 0, 0.5f, 0},  {"(b) crossflow 1", 0, 1, 0},
+      {"(c) shield 0.3", 0, 0, 0.3f},      {"(c) shield 0.5", 0, 0, 0.5f},     {"(c) shield 0.7", 0, 0, 0.7f},
+      {"(c) shield 0.9", 0, 0, 0.9f},
+  };
+  printf("SIMAERO candidates at neutral 50/40 (N m/deg) | yaw AoA -20/-10/0/+10/+20 | pitch AoA0 | roll AoA0 | terminal m/s (factor fixed)\n");
+  for (auto &c : cands) {
+    BodySimParams p;
+    p.flapSidewashGain = c.side;
+    p.flapBodyCrossflowGain = c.cross;
+    p.flapFoldShieldFactor = c.shield;
+    float y[5];
+    const float aoas[5] = {-20, -10, 0, 10, 20};
+    for (int k = 0; k < 5; k++)
+      y[k] = axisDerivs(p, kTopNeutral, kBottomNeutral, aoas[k], v).yaw;
+    const AxisDeriv d0 = axisDerivs(p, kTopNeutral, kBottomNeutral, 0, v);
+    NewSim s(p);
+    const float vt = runTerminalHeld(s, 20.0f, kTopNeutral, kBottomNeutral);
+    printf("SIMAERO   %-22s | %+.5f %+.5f %+.5f %+.5f %+.5f | %+.5f | %+.5f | %.2f\n", c.name, y[0], y[1], y[2], y[3],
+           y[4], d0.pitch, d0.roll, vt);
+  }
+  // The smallest shield factor that restores the sign at every AoA (0.7), recalibrated to 6.4 m/s, in the
+  // flap-controller replica (information for the owner; v ~ 1/sqrt(factor), two fixed-point iterations).
+  {
+    BodySimParams p;
+    p.flapFoldShieldFactor = 0.7f;
+    for (int it = 0; it < 3; it++) {
+      NewSim s(p);
+      const float vt = runTerminalHeld(s, 20.0f, kTopNeutral, kBottomNeutral);
+      p.aeroCalibration *= (vt / 6.4f) * (vt / 6.4f);
+    }
+    NewSim s(p);
+    const float vt = runTerminalHeld(s, 20.0f, kTopNeutral, kBottomNeutral);
+    const AxisDeriv d0 = axisDerivs(p, kTopNeutral, kBottomNeutral, 0, vt);
+    NewSim sc(p);
+    ClosedResult r = runClosedLoop(sc, "closed_pitch20_yaw20_shield07", 20, 20, vt, 15.0f);
+    printf("SIMAERO (c) shield 0.7 recalibrated: factor %.3f, terminal %.2f m/s, yaw/pitch/roll at AoA0 %+.5f %+.5f %+.5f N m/deg; replica start pitch +20 yaw +20: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
+           p.aeroCalibration, vt, d0.yaw, d0.pitch, d0.roll, r.pitchMean, r.pitchStd, r.bellyMax, r.azErrEnd, r.vEnd);
+  }
+}
+
 static void test_flap_geometry_and_cant() {
   BodySimParams p;
   BodySimModel m(p);
@@ -1086,6 +1205,8 @@ int main(int, char **) {
   RUN_TEST(test_flap_steps);
   RUN_TEST(test_static_flap_authority_table);
   RUN_TEST(test_control_axis_signs);
+  RUN_TEST(test_neutral_sweep_effective_angle);
+  RUN_TEST(test_candidate_effects_yaw_sign);
   RUN_TEST(test_flap_geometry_and_cant);
   RUN_TEST(test_vane_step);
   RUN_TEST(test_align_from_small_tilt);
