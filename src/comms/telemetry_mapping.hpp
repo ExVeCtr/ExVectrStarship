@@ -63,6 +63,9 @@ struct TelemetrySnapshot {
   float setpoint[6] = {0, 0, 0, 0, 0, 0}; ///< [Vx, Vy, Vz, Px, Py, Pz]
   int64_t missionTime_ns = 0;
   uint8_t waypointIndex = 0xFF; ///< current waypoint of the waypoint mission, 0xFF = another mission is active
+  /// Attitude setpoint of the active attitude controller, [w,x,y,z] body -> world (NWU). All 0 = none
+  /// (attitudeSetpoint()).
+  float setpointQ[4] = {0, 0, 0, 0};
 
   // Actuators
   float flaps[4] = {0, 0, 0, 0};     ///< true flap angles [TL, TR, BL, BR], rad
@@ -181,6 +184,43 @@ private:
 /// AIR_ACTUATORS from the newest and the previous sample; values of a missing sample (and prev_age) are NaN.
 /// Requires h.count() >= 1 (otherwise every value is NaN and t_us = 0).
 Packets::AirActuators makeAirActuators(const ActuatorHistory &h);
+
+// ---- attitude setpoint (MISSION.setpoint_q, AIR_MISSION.setpoint_q) ----
+
+/// Which attitude controller's setpoint is published.
+enum class AttitudeSetpointSource : uint8_t { None = 0, Tvc, Flaps };
+
+/**
+ * Selection by the controller phase table (src/safety/control_phase.hpp) as applied on the vehicle:
+ * flapsStabilize = phase-table bellyflop set on AND the flap controller setting applied by FlapModeObserverTask is
+ * BellyFlopMode Stabilize; tvcEnabled = phase-table TVC set on. Flaps win if both are on (cannot happen while
+ * kTvcDuringBellyflopTransition is false; see docs/project/hardware-and-drivers.md section 9).
+ */
+AttitudeSetpointSource selectAttitudeSetpointSource(bool tvcEnabled, bool flapsStabilize);
+
+/// Normalises q to unit length with w >= 0. Non-finite or near-zero (|q| < 0.5) input gives the zero quaternion
+/// (= no setpoint).
+void sanitizeSetpointQuat(const float in[4], float out[4]);
+
+/**
+ * The flap attitude controller (CTRL::ControlAttitudeFlaps, Stabilize) tracks only the direction of body +Z:
+ * azimuth = atan2(z_W, z_N) and pitch = elevation of body +Z in the NWU world frame (the controller's own
+ * definitions). Roll about body +Z is not controlled. The published quaternion is the current attitude qIs rotated
+ * by the shortest world-frame rotation that brings body +Z onto the wanted direction, so the uncontrolled roll
+ * follows the real vehicle. Output body -> world, unit, w >= 0; zero if qIs is invalid.
+ */
+void flapPointingSetpoint(float azimuth, float pitch, const float qIs[4], float out[4]);
+
+struct AttitudeSetpointInputs {
+  bool tvcEnabled = false;     ///< phase table: TVC set (ControlAttitudeTvc) enabled
+  bool flapsStabilize = false; ///< phase table bellyflop set on and flap setting mode Stabilize
+  float tvcQ[4] = {0, 0, 0, 0}; ///< ControlAttitudeTvc setpoint topic (acc-to-att mapping), q part, body -> world
+  float flapAzimuth = 0, flapPitch = 0; ///< ControlAttitudeBellyFlopSetting azimuthAngle_Rad / pitchAngle_Rad
+  float qIs[4] = {1, 0, 0, 0};          ///< current attitude estimate, body -> world
+};
+
+/// The attitude setpoint for telemetry: the selected source's setpoint, sanitised; zero if none is active.
+void attitudeSetpoint(const AttitudeSetpointInputs &in, float out[4]);
 
 /// AIR_MISSION, the air version of MISSION.
 Packets::AirMission makeAirMission(const TelemetrySnapshot &s);

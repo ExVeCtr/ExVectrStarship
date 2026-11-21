@@ -486,16 +486,151 @@ void test_legacy_telecommand_layout() {
   TEST_ASSERT_TRUE(LegacyTelecommandPacket::kPort < 0x80); // must pass the radio-path egress filters
 }
 
+// ---- attitude setpoint (MISSION / AIR_MISSION setpoint_q) ----
+
+static void rotZ(const float q[4], float z[3]) { // body +Z in world, R(q) third column
+  z[0] = 2 * (q[1] * q[3] + q[0] * q[2]);
+  z[1] = 2 * (q[2] * q[3] - q[0] * q[1]);
+  z[2] = 1 - 2 * (q[1] * q[1] + q[2] * q[2]);
+}
+
+static float qnorm(const float q[4]) { return sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]); }
+
+void test_attitude_setpoint_selection() {
+  TEST_ASSERT_EQUAL(int(AttitudeSetpointSource::None), int(selectAttitudeSetpointSource(false, false)));
+  TEST_ASSERT_EQUAL(int(AttitudeSetpointSource::Tvc), int(selectAttitudeSetpointSource(true, false)));
+  TEST_ASSERT_EQUAL(int(AttitudeSetpointSource::Flaps), int(selectAttitudeSetpointSource(false, true)));
+  TEST_ASSERT_EQUAL(int(AttitudeSetpointSource::Flaps), int(selectAttitudeSetpointSource(true, true)));
+
+  AttitudeSetpointInputs in;
+  const float tq[4] = {0.9f, 0.1f, -0.2f, 0.0f}; // not unit: published normalised
+  memcpy(in.tvcQ, tq, sizeof tq);
+  in.flapAzimuth = 0;
+  in.flapPitch = 0;
+  float out[4] = {9, 9, 9, 9};
+  attitudeSetpoint(in, out); // nothing active (idle, ground, countdown)
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+
+  in.tvcEnabled = true;
+  attitudeSetpoint(in, out);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, qnorm(out));
+  const float n = qnorm(tq);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_FLOAT_WITHIN(1e-6f, tq[i] / n, out[i]);
+
+  in.tvcEnabled = false;
+  in.flapsStabilize = true;
+  attitudeSetpoint(in, out); // identity -> body +Z to North: +90 deg about +Y
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, cosf(M_PI / 4), out[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, out[1]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, sinf(M_PI / 4), out[2]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, out[3]);
+
+  in.tvcEnabled = true; // both on: the flap setpoint
+  float out2[4];
+  attitudeSetpoint(in, out2);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(out[i], out2[i]);
+}
+
+void test_attitude_setpoint_sanitize() {
+  float out[4];
+  const float nanq[4] = {NAN, 0, 0, 0};
+  sanitizeSetpointQuat(nanq, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+  const float zero[4] = {0, 0, 0, 0};
+  sanitizeSetpointQuat(zero, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+  const float inf[4] = {INFINITY, 0, 0, 0};
+  sanitizeSetpointQuat(inf, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+  const float neg[4] = {-2.0f, 0, 0, 0}; // w < 0 flipped, scaled to unit
+  sanitizeSetpointQuat(neg, out);
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, out[0]);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, out[1]);
+}
+
+void test_flap_pointing_setpoint() {
+  // General attitude: the result's body +Z is the wanted direction and the correction is the shortest rotation.
+  const float qa[4] = {0.8f, 0.2f, -0.4f, 0.4f};
+  float qIs[4];
+  sanitizeSetpointQuat(qa, qIs);
+  const float az = 2.5f, pitch = -0.3f;
+  float out[4];
+  flapPointingSetpoint(az, pitch, qIs, out);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, qnorm(out));
+  TEST_ASSERT_TRUE(out[0] >= 0);
+  float z[3], z0[3];
+  rotZ(out, z);
+  rotZ(qIs, z0);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, cosf(pitch) * cosf(az), z[0]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, cosf(pitch) * sinf(az), z[1]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, sinf(pitch), z[2]);
+  // the controller's own definitions recover the inputs
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, az, atan2f(z[1], z[0]));
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, pitch, atan2f(z[2], sqrtf(z[0] * z[0] + z[1] * z[1])));
+  // shortest: rotation angle between qIs and out == angle between the two Z axes
+  const float dot = fabsf(out[0] * qIs[0] + out[1] * qIs[1] + out[2] * qIs[2] + out[3] * qIs[3]);
+  const float relAngle = 2 * acosf(fminf(1.0f, dot));
+  const float axisAngle = acosf(z0[0] * z[0] + z0[1] * z[1] + z0[2] * z[2]);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, axisAngle, relAngle);
+
+  // Opposite direction (upright, wanted straight down): a 180 deg rotation, still valid.
+  const float id[4] = {1, 0, 0, 0};
+  flapPointingSetpoint(0.0f, -M_PI / 2, id, out);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, qnorm(out));
+  rotZ(out, z);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, -1.0f, z[2]);
+
+  // Invalid current attitude: no setpoint
+  const float bad[4] = {0, 0, 0, 0};
+  flapPointingSetpoint(0.0f, 0.0f, bad, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+}
+
+void test_mission_setpoint_q_encoding() {
+  TelemetrySnapshot s = sample();
+  // default: no setpoint = all four zero, exactly, on both packets
+  auto m = roundTrip(makeMission(s));
+  auto a = roundTrip(makeAirMission(s));
+  for (int i = 0; i < 4; i++) {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.setpoint_q[i]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.setpoint_q[i]);
+  }
+  // unit quaternion: f32 on USB exact; air i16 limit 1.0 -> raw = round(v * 32767)
+  const float q[4] = {0.5f, 0.5f, -0.5f, 0.5f};
+  memcpy(s.setpointQ, q, sizeof q);
+  m = roundTrip(makeMission(s));
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(q[i], m.setpoint_q[i]);
+  uint8_t buf[Packets::AirMission::kMaxSize];
+  TEST_ASSERT_EQUAL_UINT(38, makeAirMission(s).encode(buf, sizeof buf));
+  const int16_t want[4] = {16384, 16384, -16384, 16384}; // 16383.5 rounds away from zero
+  for (int i = 0; i < 4; i++) {
+    const int16_t raw = int16_t(uint16_t(buf[30 + 2 * i]) | (uint16_t(buf[31 + 2 * i]) << 8));
+    TEST_ASSERT_EQUAL_INT16(want[i], raw);
+  }
+  a = roundTrip(makeAirMission(s));
+  for (int i = 0; i < 4; i++) TEST_ASSERT_FLOAT_WITHIN(1.0f / 32767, q[i], a.setpoint_q[i]);
+  // full scale: +-1.0 -> +-32767 (never the -32768 NaN sentinel)
+  const float id[4] = {1.0f, 0, 0, -1.0f};
+  memcpy(s.setpointQ, id, sizeof id);
+  makeAirMission(s).encode(buf, sizeof buf);
+  TEST_ASSERT_EQUAL_INT16(32767, int16_t(uint16_t(buf[30]) | (uint16_t(buf[31]) << 8)));
+  TEST_ASSERT_EQUAL_INT16(-32767, int16_t(uint16_t(buf[36]) | (uint16_t(buf[37]) << 8)));
+  a = roundTrip(makeAirMission(s));
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, a.setpoint_q[0]);
+  TEST_ASSERT_EQUAL_FLOAT(-1.0f, a.setpoint_q[3]);
+}
+
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
   TEST_ASSERT_EQUAL_UINT(28, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(30, Packets::AirMission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(38, Packets::AirMission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(50, Packets::Mission::kMaxSize);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x761D5378u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0xBFF82392u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -521,6 +656,10 @@ int main() {
   RUN_TEST(test_air_actuators_two_samples);
   RUN_TEST(test_air_actuators_saturation_and_nan);
   RUN_TEST(test_air_mission);
+  RUN_TEST(test_attitude_setpoint_selection);
+  RUN_TEST(test_attitude_setpoint_sanitize);
+  RUN_TEST(test_flap_pointing_setpoint);
+  RUN_TEST(test_mission_setpoint_q_encoding);
   RUN_TEST(test_packet_sizes_fit_budget);
   return UNITY_END();
 }

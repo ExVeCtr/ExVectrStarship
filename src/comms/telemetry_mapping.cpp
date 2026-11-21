@@ -197,6 +197,84 @@ Packets::AirActuators makeAirActuators(const ActuatorHistory &h) {
   return p;
 }
 
+// ---- attitude setpoint (MISSION / AIR_MISSION setpoint_q) ----
+
+namespace {
+
+void quatMul(const float a[4], const float b[4], float out[4]) {
+  out[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
+  out[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
+  out[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
+  out[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
+}
+
+void zeroQ(float out[4]) { out[0] = out[1] = out[2] = out[3] = 0.0f; }
+
+} // namespace
+
+void sanitizeSetpointQuat(const float in[4], float out[4]) {
+  const float n2 = in[0] * in[0] + in[1] * in[1] + in[2] * in[2] + in[3] * in[3];
+  if (!isfinite(n2) || n2 < 0.25f) { // also catches NaN components
+    zeroQ(out);
+    return;
+  }
+  const float k = (in[0] < 0.0f ? -1.0f : 1.0f) / sqrtf(n2);
+  for (int i = 0; i < 4; i++) out[i] = in[i] * k;
+}
+
+void flapPointingSetpoint(float azimuth, float pitch, const float qIs[4], float out[4]) {
+  float q[4];
+  sanitizeSetpointQuat(qIs, q);
+  if (q[0] == 0 && q[1] == 0 && q[2] == 0 && q[3] == 0) {
+    zeroQ(out);
+    return;
+  }
+  // Body +Z in world: third column of R(q).
+  const float a[3] = {2 * (q[1] * q[3] + q[0] * q[2]), 2 * (q[2] * q[3] - q[0] * q[1]),
+                      1 - 2 * (q[1] * q[1] + q[2] * q[2])};
+  // Wanted body +Z in world, inverse of the controller's azimuth/pitch definition.
+  const float cp = cosf(pitch);
+  const float b[3] = {cp * cosf(azimuth), cp * sinf(azimuth), sinf(pitch)};
+  const float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  float dq[4];
+  if (d < -0.999999f) {
+    // Opposite: rotate pi about any axis perpendicular to a.
+    float ax[3] = {0, -a[2], a[1]}; // a x (1,0,0)
+    if (ax[1] * ax[1] + ax[2] * ax[2] < 1e-6f) {
+      ax[0] = a[2];
+      ax[1] = 0;
+      ax[2] = -a[0]; // a x (0,1,0)
+    }
+    dq[0] = 0;
+    dq[1] = ax[0];
+    dq[2] = ax[1];
+    dq[3] = ax[2];
+  } else {
+    dq[0] = 1 + d;
+    dq[1] = a[1] * b[2] - a[2] * b[1];
+    dq[2] = a[2] * b[0] - a[0] * b[2];
+    dq[3] = a[0] * b[1] - a[1] * b[0];
+  }
+  float dqn[4], r[4];
+  sanitizeSetpointQuat(dq, dqn);
+  quatMul(dqn, q, r); // apply the world-frame correction after body -> world
+  sanitizeSetpointQuat(r, out);
+}
+
+AttitudeSetpointSource selectAttitudeSetpointSource(bool tvcEnabled, bool flapsStabilize) {
+  if (flapsStabilize) return AttitudeSetpointSource::Flaps;
+  if (tvcEnabled) return AttitudeSetpointSource::Tvc;
+  return AttitudeSetpointSource::None;
+}
+
+void attitudeSetpoint(const AttitudeSetpointInputs &in, float out[4]) {
+  switch (selectAttitudeSetpointSource(in.tvcEnabled, in.flapsStabilize)) {
+    case AttitudeSetpointSource::Tvc: sanitizeSetpointQuat(in.tvcQ, out); break;
+    case AttitudeSetpointSource::Flaps: flapPointingSetpoint(in.flapAzimuth, in.flapPitch, in.qIs, out); break;
+    default: zeroQ(out); break;
+  }
+}
+
 Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
   Packets::AirMission p;
   p.t_us = timeUs(s.t_ns);
@@ -207,6 +285,7 @@ Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
   p.waypoint = s.waypointIndex;
   copy3(&s.setpoint[3], p.setpoint_pos);
   copy3(&s.setpoint[0], p.setpoint_vel);
+  for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
   return p;
 }
 
@@ -218,6 +297,7 @@ Packets::Mission makeMission(const TelemetrySnapshot &s) {
   p.mission_time = static_cast<float>(static_cast<double>(s.missionTime_ns) * 1e-9);
   p.index = s.missionIndex;
   p.phase = static_cast<uint8_t>(s.missionPhase);
+  for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
   return p;
 }
 

@@ -413,6 +413,9 @@ public:
   /// Bellyflop controller set active (flap attitude control in BellyFlopMode Stabilize): bellyflop and freefall.
   bool bellyflopFlapsActive() const { return bellyflopFlaps_; }
 
+  /// TVC set (ControlPositionStandard + ControlAttitudeTvc) enabled by the controller phase table (telemetry only).
+  bool tvcControlActive() const { return controlPhase_.tvcEnabled(); }
+
   void switchMissionTo(MissionAbstract *mission, int64_t startTime = 0) {
     mission_->resetMission(); // Reset the mission
     mission_ = mission;       // Set the mission to the default mission
@@ -1412,6 +1415,10 @@ private:
   Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr_;
   Core::Simple_Subscriber<CTRL::ControlAttitudeFlapSetting> flapSubr_;
   Core::Simple_Subscriber<Math::Vector<float, 4>> tvcSubr_;
+  // Read-only copies of the attitude controllers' setpoint inputs (telemetry setpoint_q). Extra subscribers on
+  // the same topics; the controllers' own subscriptions are not touched.
+  Core::Simple_Subscriber<Math::Vector<float, 7>> tvcAttSetpointSubr_;
+  Core::Simple_Subscriber<CTRL::ControlAttitudeBellyFlopSetting> flopSettingSubr_;
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> gyroSubr_;
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> accSubr_;
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> magSubr_;
@@ -1427,6 +1434,8 @@ public:
     gnssSubr_.subscribe(gnss.getGNSSTopic());
     flapSubr_.subscribe(trueFlapSettingTopic);
     tvcSubr_.subscribe(starshipTVC.getTVCActualThrustTopic());
+    tvcAttSetpointSubr_.subscribe(controlMappingAccToAtt.getAttitudeTopic());
+    flopSettingSubr_.subscribe(bellyFlopControlTopic);
     gyroSubr_.subscribe(mpuDriver.getGyroTopic());
     accSubr_.subscribe(mpuDriver.getAccelTopic());
     thermoSubr_.subscribe(mpuDriver.getThermoTopic());
@@ -1462,6 +1471,24 @@ public:
     const auto &pos = posSubr_.getItem().data;
     for (int i = 0; i < 6; i++)
       s.pos[i] = pos(i);
+
+    // Attitude setpoint of the active attitude controller (src/comms/telemetry_mapping.hpp attitudeSetpoint).
+    {
+      Comms::AttitudeSetpointInputs in;
+      in.tvcEnabled = vt.tvcControlActive();
+      const auto &flop = flopSettingSubr_.getItem();
+      in.flapsStabilize =
+          vt.bellyflopFlapsActive() &&
+          flop.bellyFlopMode == CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Stabilize;
+      in.flapAzimuth = flop.azimuthAngle_Rad;
+      in.flapPitch = flop.pitchAngle_Rad;
+      const auto &tq = tvcAttSetpointSubr_.getItem();
+      for (int i = 0; i < 4; i++) {
+        in.tvcQ[i] = tq(3 + i);
+        in.qIs[i] = s.att[3 + i];
+      }
+      Comms::attitudeSetpoint(in, s.setpointQ);
+    }
 
     const auto &ground = groundSubr_.getItem();
     s.groundDistance = ground.timestamp != 0 ? ground.data(1) : NAN;
