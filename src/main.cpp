@@ -1276,6 +1276,7 @@ public:
           // topic of the body simulator
 
           bodySimulator.resetToStartPose(); // upright, at the origin, at rest
+          bodySimulator.setWind(0.0f, 0.0f); // every simulation starts without wind (SimWindSpeed sets it)
 
           bodySimulator.setPaused(
               false); // Unpause the body simulator to start the simulation
@@ -1294,6 +1295,7 @@ public:
           // position estimator
 
           bodySimulator.setPaused(true);
+          bodySimulator.setWind(0.0f, 0.0f);
 
           // Reset the system to normal mode
           vehicleMode_ =
@@ -1306,6 +1308,28 @@ public:
         }
       }
       break;
+
+    case TelecommandType::Telecommand_SimWindSpeed:
+    case TelecommandType::Telecommand_SimWindDirection: {
+      // Simulation-only world parameter (owner 2026-11-21): steady wind of the body simulator. Refused unless in
+      // simulation mode; it changes nothing but the simulated air (overview.md "Simulation mode").
+      constexpr int16_t kSimWindMagic = 0x57;
+      constexpr float kSimWindMaxMps = 20.0f;
+      const bool isSpeed = telecommand.type == TelecommandType::Telecommand_SimWindSpeed;
+      const float value = telecommand.paramFloat;
+      if (telecommand.paramInt != kSimWindMagic || !simulationMode_ || !isfinite(value)) {
+        LOG_MSG("Sim wind %s refused (%s)\n", isSpeed ? "speed" : "direction",
+                !simulationMode_ ? "not in simulation mode"
+                                 : (telecommand.paramInt != kSimWindMagic ? "bad magic" : "value not finite"));
+        break;
+      }
+      if (isSpeed)
+        bodySimulator.setWind(value < 0.0f ? 0.0f : (value > kSimWindMaxMps ? kSimWindMaxMps : value), NAN);
+      else
+        bodySimulator.setWind(NAN, atan2f(sinf(value), cosf(value)));
+      LOG_MSG("Sim wind: %.2f m/s toward %.1f deg (CCW from North)\n", double(bodySimulator.windSpeed()),
+              double(bodySimulator.windDirection() * 180.0f / float(M_PI)));
+    } break;
 
     default:
       break;
