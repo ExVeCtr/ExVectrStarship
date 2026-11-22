@@ -1,7 +1,7 @@
 // Host tests of src/safety/motor_interlock.cpp (T9b-2): pio test -e native -f test_motor_interlock
 // Fake clock (every call takes the time). Covers invariants I1-I4, I6, I7 and I9 of docs/t9b-design.md 3.4.3 at the
 // class level (I5, I7 and I8 end to end through the real RC taps: test_vehicle_network), the observed-transition
-// rule, D3-B, the D4-A re-arm, the gate AND (shim of StarshipTVC, incl. D16 and "no simulation input") and the
+// rule, D3-B, the D4-A re-arm, the gate AND (shim of StarshipTVC, no simulation input) and the
 // watchdog staleness rule.
 #include <unity.h>
 
@@ -283,15 +283,13 @@ static MotorGateInput allOn() {
 void test_gate_all_conditions_open() {
   const MotorGateResult r = evaluateMotorGate(allOn());
   TEST_ASSERT_TRUE(r.outputsEnabled);
-  TEST_ASSERT_TRUE(r.thrustModelEnabled);
 }
 
-void test_gate_closed_interlock_blocks_outputs_and_thrust_model() { // D16
+void test_gate_closed_interlock_blocks_outputs() {
   MotorGateInput i = allOn();
   i.interlockOpen = false;
   const MotorGateResult r = evaluateMotorGate(i);
   TEST_ASSERT_FALSE(r.outputsEnabled);
-  TEST_ASSERT_FALSE(r.thrustModelEnabled);
 }
 
 void test_gate_forced_off_blocks_even_with_open_interlock() {
@@ -299,25 +297,21 @@ void test_gate_forced_off_blocks_even_with_open_interlock() {
   i.forcedOff = true;
   const MotorGateResult r = evaluateMotorGate(i);
   TEST_ASSERT_FALSE(r.outputsEnabled);
-  TEST_ASSERT_FALSE(r.thrustModelEnabled);
 }
 
 void test_gate_every_other_condition_needed_for_outputs() {
   MotorGateInput i = allOn();
-  i.enableMotors = false; // (today's simulation: motors off, but the simulated vehicle keeps its thrust)
+  i.enableMotors = false;
   MotorGateResult r = evaluateMotorGate(i);
   TEST_ASSERT_FALSE(r.outputsEnabled);
-  TEST_ASSERT_TRUE(r.thrustModelEnabled);
   i = allOn();
   i.enableActuators = false;
   r = evaluateMotorGate(i);
   TEST_ASSERT_FALSE(r.outputsEnabled);
-  TEST_ASSERT_FALSE(r.thrustModelEnabled);
   i = allOn();
   i.testIdle = false;
   r = evaluateMotorGate(i);
   TEST_ASSERT_FALSE(r.outputsEnabled);
-  TEST_ASSERT_FALSE(r.thrustModelEnabled);
 }
 
 void test_gate_truth_table_outputs_imply_gate() { // exhaustive: outputs never enabled with a closed gate
@@ -334,7 +328,6 @@ void test_gate_truth_table_outputs_imply_gate() { // exhaustive: outputs never e
     }
     if (!i.interlockOpen || i.forcedOff) {
       TEST_ASSERT_FALSE(r.outputsEnabled);
-      TEST_ASSERT_FALSE(r.thrustModelEnabled);
     }
   }
 }
@@ -378,7 +371,7 @@ int main(int, char **) {
   RUN_TEST(test_out_of_order_and_negative_age_fail_closed);
   RUN_TEST(test_enabled_state_lease_extends_open_while_frames_flow);
   RUN_TEST(test_gate_all_conditions_open);
-  RUN_TEST(test_gate_closed_interlock_blocks_outputs_and_thrust_model);
+  RUN_TEST(test_gate_closed_interlock_blocks_outputs);
   RUN_TEST(test_gate_forced_off_blocks_even_with_open_interlock);
   RUN_TEST(test_gate_every_other_condition_needed_for_outputs);
   RUN_TEST(test_gate_truth_table_outputs_imply_gate);

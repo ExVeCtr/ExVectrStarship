@@ -98,20 +98,16 @@ struct MotorGateInput {
 };
 
 struct MotorGateResult {
-  bool outputsEnabled = false;      ///< motor PWM may be enabled and written (the AND at the output)
-  bool thrustModelEnabled = false;  ///< the modelled actual thrust (the body simulator's input) may be non-zero
+  bool outputsEnabled = false; ///< motor PWM may be enabled and written (the AND at the output)
 };
 
 /**
- * The AND at the lowest output level. The interlock and the forced-off flag gate BOTH results; no simulation flag
- * is an input (D16: the modelled thrust loses the gate exactly as hardware would lose thrust; the existing
- * enableMotors logic, which differs in simulation, is NOT part of the thrust model's gate).
+ * The AND at the lowest output level (motor PWM only). No simulation flag is an input, and the modelled actual
+ * thrust that the body simulator consumes is NOT gated (D16 rejected, design 1.3).
  */
 inline MotorGateResult evaluateMotorGate(const MotorGateInput &in) {
   MotorGateResult r;
-  const bool gate = in.interlockOpen && !in.forcedOff;
-  r.thrustModelEnabled = gate && in.enableActuators && in.testIdle;
-  r.outputsEnabled = r.thrustModelEnabled && in.enableMotors;
+  r.outputsEnabled = in.interlockOpen && !in.forcedOff && in.enableMotors && in.enableActuators && in.testIdle;
   return r;
 }
 

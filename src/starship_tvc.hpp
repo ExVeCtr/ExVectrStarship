@@ -155,9 +155,9 @@ public:
   bool interlockOpen(int64_t nowNs) const { return interlock_ != nullptr && interlock_->open(nowNs); }
 
   /**
-   * Watchdog action while the gate is closed: motor duty 0 on both outputs, the sticky closed flag set (taskThread
-   * honours it), and the modelled actual thrust set to zero and published once (the TVC task is event driven: it
-   * does not run if the controller stops publishing, design 2.4). Safe to call every 10 ms.
+   * Watchdog action while the gate is closed: motor duty 0 on both outputs and the sticky closed flag set
+   * (taskThread honours it). Covers the event-driven TVC task, which does not run if the controller stops
+   * publishing (design 2.4). Does not touch the modelled actual thrust (D16 rejected). Safe to call every 10 ms.
    */
   void forceMotorsOff();
 

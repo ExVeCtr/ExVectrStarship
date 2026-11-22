@@ -62,12 +62,6 @@ void StarshipTVC::forceMotorsOff() {
   motorsForcedOff_ = true;
   motorCW_.enableOutput(false); // duty 0 (the PWM_Output only writes 0 here; setValue below is never called while closed)
   motorCCW_.enableOutput(false);
-  if (actualThrustMag != 0.0f) {
-    // Controller stopped publishing: do not leave the last modelled thrust standing (D16).
-    actualThrustMag = 0.0f;
-    actualTwistAngle = 0.0f;
-    tvcActualThrustTopic_.publish({0.0f, 0.0f, 0.0f, 0.0f});
-  }
 }
 
 void StarshipTVC::taskThread() {
@@ -229,7 +223,7 @@ void StarshipTVC::taskThread() {
   // Lets update the actual thrust vector with what we expect to get from the
   // motors and servos. This is used for telemetry and simulation purposes.
   Math::Vector<float, 4> actualThrustVector = 0;
-  if (gate.thrustModelEnabled) { // D16: no modelled thrust while the gate is closed, as hardware loses thrust
+  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) { // thrust model: independent of the gate (D16 rejected)
     auto thrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut) / 2 *
                         tvcThrustLimit_N_;
 
