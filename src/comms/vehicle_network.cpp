@@ -30,6 +30,7 @@ static_assert(kHz % Packets::AirActuators::kAirRateHz == 0, "air rate must divid
 static_assert(kHz % Packets::AirMission::kAirRateHz == 0, "air rate must divide the tick rate");
 static_assert((VehicleNetwork::kAirActuatorsPhase % VehicleNetwork::kActuatorSampleTicks) == 0,
               "AIR_ACTUATORS must be sent on a sampling tick");
+static_assert(kHz % Packets::RcApplied::kUsbRateHz == 0, "USB rate must divide the tick rate");
 static_assert(LegacyTelecommandPacket::kPort < 0x80, "the legacy telecommand must pass the radio-path filters");
 
 } // namespace
@@ -54,12 +55,18 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
                                TelecommandSinkI &telecommands)
     : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
-      telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false) {
-  usbNode_.addLink(usbLink_);
+      telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false),
+      usbRcTap_(Safety::RcLink::Usb, controlSources_, rcMapper_, kVehicleNode),
+      uartRcTap_(Safety::RcLink::Uart, controlSources_, rcMapper_, kVehicleNode) {
+  const int usbIndex = usbNode_.addLink(usbLink_);
   const int uartIndex = uartNode_.addLink(uartLink_, uartFilter());
-  // Interpose the radio tap: UART link -> radioTap_ -> UART node (same link index).
+  // Interpose the taps (same link indices): USB link -> usbRcTap_ -> USB node,
+  // UART link -> uartRcTap_ -> radioTap_ -> UART node.
+  usbRcTap_.next = &usbNode_;
+  usbLink_.setSink(usbRcTap_, static_cast<uint8_t>(usbIndex));
   radioTap_.next = &uartNode_;
-  uartLink_.setSink(radioTap_, static_cast<uint8_t>(uartIndex));
+  uartRcTap_.next = &radioTap_;
+  uartLink_.setSink(uartRcTap_, static_cast<uint8_t>(uartIndex));
   startNs_ = time_.nowNs();
   // One transport for both links: a frame arriving on both is delivered once.
   usbNode_.setDataSink(mux_);
@@ -75,6 +82,25 @@ void VehicleNetwork::pollLinks() {
 void VehicleNetwork::pollNodes() {
   usbNode_.poll();
   uartNode_.poll();
+  // Control-source arbitration (T9b-1, observe only): a change resets the transition detectors.
+  controlSources_.update(time_.nowNs(), committed_);
+  if (controlSources_.sourceChangedSinceLast()) {
+    rcMapper_.onActiveChanged();
+    sourceChangePending_ = true;
+  }
+}
+
+bool VehicleNetwork::takeSourceChange(Safety::ControlSourceId &newActive) {
+  if (!sourceChangePending_) return false;
+  sourceChangePending_ = false;
+  newActive = controlSources_.active();
+  return true;
+}
+
+void VehicleNetwork::fillRcTelemetry(TelemetrySnapshot &s) {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) cs = controlSources_.live(); // comms task is the writer
+  Comms::fillRcTelemetry(s, cs, rcMapper_, time_.nowNs());
 }
 
 bool VehicleNetwork::due(uint32_t tick, uint16_t hz, uint32_t phase) {
@@ -101,6 +127,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::Gnss::kUsbRateHz, 3)) sendOn(usbNode_, gs, makeGnss(s));
   if (due(t, Packets::HandsetTelem::kUsbRateHz, 7)) sendOn(usbNode_, bc, makeHandsetTelem(s));
   if (calibrationDue(t)) sendOn(usbNode_, gs, makeCalibration(s)); // USB only (port 0x93), 0.5 Hz
+  if (due(t, Packets::RcApplied::kUsbRateHz, kRcAppliedPhase)) sendOn(usbNode_, gs, makeRcApplied(s)); // USB only (0x84)
 
   // Radio set on the UART (RX module -> air -> TX module -> ground station), air rates.
   if (t % kActuatorSampleTicks == 0) actuatorHistory_.push(makeActuatorSample(s));

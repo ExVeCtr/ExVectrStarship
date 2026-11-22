@@ -412,6 +412,57 @@ void test_vehicle_status_home_and_calib() {
   TEST_ASSERT_EQUAL_HEX8(0x17, p.calib_state);
 }
 
+void test_rc_telemetry_fields_and_rc_applied() {
+  using namespace VCTR::Safety;
+  ControlSourceTable t;
+  RcCommandMapper m;
+  RcFrame f;
+  f.flags = RcFrame::kFlagSourceOk;
+  for (auto &c : f.ch) c = 0;
+  f.ch[4] = 1000; f.ch[5] = 1000; f.ch[6] = -1000; f.ch[7] = 1000; f.ch[8] = RcFrame::kChInvalid;
+  const int64_t S = 1000000000LL;
+  ControlSourceId id;
+  TEST_ASSERT_TRUE(t.onRcFrame(0, RcLink::Usb, 1, f, 10 * S, &id));
+  m.onAccepted(id, f, 10 * S);
+  t.update(10 * S, false);
+  t.onRcFrame(1, RcLink::Usb, 1, f, 10 * S); // one reject
+  TelemetrySnapshot s = sample();
+  ControlSourceSnapshot cs;
+  TEST_ASSERT_TRUE(t.snapshot(cs));
+  fillRcTelemetry(s, cs, m, 10 * S + 250000000LL);
+  auto p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_UINT8(2, static_cast<uint8_t>(p.ctrl_source)); // USB
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, p.rc_age);
+  TEST_ASSERT_EQUAL_HEX16(Packets::VehicleStatus::kCtrlFlagsBenchFresh, p.ctrl_flags);
+  TEST_ASSERT_EQUAL_UINT8(1, p.rc_rejected);
+  auto a = roundTrip(makeRcApplied(s));
+  TEST_ASSERT_EQUAL_UINT(18, Packets::RcApplied::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT8(0x84, Packets::RcApplied::kPort);
+  TEST_ASSERT_EQUAL_UINT8(1, a.sa);
+  TEST_ASSERT_EQUAL_UINT8(2, a.sb);
+  TEST_ASSERT_EQUAL_UINT8(0, a.sc);
+  TEST_ASSERT_EQUAL_UINT8(1, a.sd);
+  TEST_ASSERT_EQUAL_UINT8(0, a.se); // invalid decodes to RELEASED
+  TEST_ASSERT_EQUAL_HEX8(kSafeSeenScReal, a.safe_seen);
+  TEST_ASSERT_TRUE(isnan(a.radio_age));
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, a.bench_age);
+  TEST_ASSERT_EQUAL_UINT8(1, a.rejects[1]);
+  // no source: safe decode, NaN age, ctrl_source NONE
+  ControlSourceTable t2;
+  ControlSourceSnapshot c2;
+  t2.snapshot(c2);
+  RcCommandMapper m2;
+  TelemetrySnapshot s2 = sample();
+  fillRcTelemetry(s2, c2, m2, 5 * S);
+  p = roundTrip(makeVehicleStatus(s2));
+  a = roundTrip(makeRcApplied(s2));
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(p.ctrl_source));
+  TEST_ASSERT_TRUE(isnan(p.rc_age));
+  TEST_ASSERT_EQUAL_UINT8(0, a.sa);
+  TEST_ASSERT_EQUAL_UINT8(255, a.sb);
+  TEST_ASSERT_EQUAL_UINT8(255, a.sc);
+}
+
 void test_vehicle_status_t9b_none_values() {
   auto p = roundTrip(makeVehicleStatus(sample()));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Packets::ControlSource::kNone), static_cast<uint8_t>(p.ctrl_source));
@@ -854,6 +905,7 @@ int main() {
   RUN_TEST(test_attitude_setpoint_sanitize);
   RUN_TEST(test_flap_pointing_setpoint);
   RUN_TEST(test_mission_setpoint_q_encoding);
+  RUN_TEST(test_rc_telemetry_fields_and_rc_applied);
   RUN_TEST(test_packet_sizes_fit_budget);
   return UNITY_END();
 }

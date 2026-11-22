@@ -120,7 +120,9 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.mode = static_cast<uint8_t>(s.mode);
   p.mission_mode = static_cast<uint8_t>(s.missionMode);
   p.mission_phase = static_cast<uint8_t>(s.missionPhase);
-  p.ctrl_source = Packets::ControlSource::kNone; // T9b: RC control sources do not exist yet
+  p.ctrl_source = s.ctrlSource == 1   ? Packets::ControlSource::kRadio
+                  : s.ctrlSource == 2 ? Packets::ControlSource::kUsb
+                                      : Packets::ControlSource::kNone;
   uint8_t f = 0;
   if (s.armed) f |= Packets::VehicleStatus::kFlagsArmed;
   if (s.simulation) f |= Packets::VehicleStatus::kFlagsSimulation;
@@ -135,17 +137,63 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.sensor_state = packSensorState(s.sensors);
   p.last_req_id = 0;     // T9b: no REQUEST handling yet
   p.last_req_status = 0;
-  p.rc_age = nanf_();    // T9b: no RC_STATE yet
+  p.rc_age = s.rcAgeS;
   p.home_epoch = s.homeEpoch;
   p.calib_state = packCalibState(s.calibGyroValid, s.calibAccelValid, s.calibMagValid, s.calibSessionActive,
                                  s.readyToArm);
-  // T9b-0: command-path fields do not exist on the vehicle yet, so they carry their "none" values
-  p.ctrl_flags = 0;
+  // T9b-1: ctrl_flags carries only the control-source bits so far; the other command-path fields are "none"
+  p.ctrl_flags = s.ctrlFlags;
   p.go_refusal = 0;     // 0 = none
   p.degraded_bits = 0;
   p.mission_profile = 255; // 255 = no profile latched
-  p.rc_rejected = 0;
+  p.rc_rejected = s.rcRejected;
   return p;
+}
+
+Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s) {
+  Packets::RcApplied p;
+  p.t_us = timeUs(s.t_ns);
+  p.sa = s.rcApplied.sa;
+  p.sb = s.rcApplied.sb;
+  p.sc = s.rcApplied.sc;
+  p.sd = s.rcApplied.sd;
+  p.se = s.rcApplied.se;
+  p.safe_seen = s.rcApplied.safeSeen;
+  p.radio_age = s.rcApplied.radioAgeS;
+  p.bench_age = s.rcApplied.benchAgeS;
+  for (int i = 0; i < 4; i++) p.rejects[i] = s.rcApplied.rejects[i];
+  return p;
+}
+
+void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
+                     int64_t nowNs) {
+  using Safety::ControlSourceId;
+  using Safety::ControlSourceTable;
+  const auto ageS = [&](ControlSourceId id) {
+    const int64_t a = cs.ageNs(id, nowNs);
+    return a < 0 ? nanf_() : static_cast<float>(static_cast<double>(a) * 1e-9);
+  };
+  s.ctrlSource = static_cast<uint8_t>(cs.active);
+  s.rcAgeS = ageS(cs.active);
+  uint16_t f = 0;
+  if (cs.fresh(ControlSourceId::Radio, nowNs, ControlSourceTable::kCtrlTimeoutNs))
+    f |= Packets::VehicleStatus::kCtrlFlagsRadioFresh;
+  if (cs.fresh(ControlSourceId::Bench, nowNs, ControlSourceTable::kCtrlTimeoutNs))
+    f |= Packets::VehicleStatus::kCtrlFlagsBenchFresh;
+  if (cs.latched) f |= Packets::VehicleStatus::kCtrlFlagsSourceLatched;
+  s.ctrlFlags = f;
+  s.rcRejected = cs.rejectedTotal;
+
+  const Safety::RcDecoded d = m.decoded(cs.active); // None -> all invalid -> safe values
+  s.rcApplied.sa = d.saSafe();
+  s.rcApplied.sb = d.sb;
+  s.rcApplied.sc = d.sc;
+  s.rcApplied.sd = d.sdSafe();
+  s.rcApplied.se = d.seSafe();
+  s.rcApplied.safeSeen = m.safeSeen(cs.active);
+  s.rcApplied.radioAgeS = ageS(ControlSourceId::Radio);
+  s.rcApplied.benchAgeS = ageS(ControlSourceId::Bench);
+  for (int i = 0; i < 4; i++) s.rcApplied.rejects[i] = cs.rejects[i];
 }
 
 uint8_t packCalibState(bool gyroValid, bool accelValid, bool magValid, bool sessionActive, bool readyToArm) {

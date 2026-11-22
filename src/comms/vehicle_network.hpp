@@ -32,6 +32,9 @@
 #include "ExVectrNetwork/transport/PacketPort.hpp"
 #include "ExVectrNetwork/transport/PortMux.hpp"
 
+#include "rc_ingress_tap.hpp"
+#include "safety/control_source.hpp"
+#include "safety/rc_mapper.hpp"
 #include "telemetry_mapping.hpp"
 
 namespace VCTR {
@@ -119,6 +122,18 @@ public:
   /// NetworkStatus the ground station gets over USB reflects the USB node, so a dead UART is invisible there;
   /// VEHICLE_STATUS.flags UART_PEER_SEEN carries this. Vehicle behaviour never depends on it (safety.md 4.1).
   bool isUartPeerSeen() const;
+  /// T9b-1 control sources (observe only): RC_STATE of (2, UART) = RADIO and (0, USB) = BENCH, see
+  /// rc_ingress_tap.hpp and safety/control_source.hpp. pollNodes() runs the arbitration each tick.
+  const Safety::ControlSourceTable &controlSources() const { return controlSources_; }
+  const Safety::RcCommandMapper &rcMapper() const { return rcMapper_; }
+  /// Input of the source latch: interlock open, mission pending or Running. Nothing sets it before T9b-2.
+  void setCommitted(bool committed) { committed_ = committed; }
+  /// True once after each change of the active source; `newActive` receives the new source (for the log line).
+  bool takeSourceChange(Safety::ControlSourceId &newActive);
+  /// Fills the RC fields of the snapshot (ctrl_source, rc_age, ctrl_flags, rc_rejected, RC_APPLIED).
+  void fillRcTelemetry(TelemetrySnapshot &s);
+  /// RC_APPLIED rate: 10 Hz on USB only (schema rate_usb), tick phase 5.
+  static constexpr uint32_t kRcAppliedPhase = 5;
   /// A present node reported another network version or schema hash than ours.
   bool anyIncompatiblePeer() const;
 
@@ -160,6 +175,11 @@ private:
     void onFrame(const network::FrameView &f, uint8_t linkIndex) override;
   };
   RadioTap radioTap_;
+  Safety::ControlSourceTable controlSources_;
+  Safety::RcCommandMapper rcMapper_;
+  RcIngressTap usbRcTap_, uartRcTap_; ///< per-link RC_STATE decoding (T9b-1)
+  bool committed_ = false;
+  bool sourceChangePending_ = false;
   int64_t startNs_ = 0;
   uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
   ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks

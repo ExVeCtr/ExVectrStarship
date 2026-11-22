@@ -18,6 +18,8 @@
 
 #include "ExVectrPackets/gen/all.hpp"
 
+#include "safety/control_source.hpp"
+#include "safety/rc_mapper.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
 
@@ -103,6 +105,19 @@ struct TelemetrySnapshot {
   float attStd[3] = {0, 0, 0}; ///< rad, about the world axes (attitudeStdWorld)
   float velStd[3] = {0, 0, 0}; ///< m/s
   float posStd[3] = {0, 0, 0}; ///< m
+
+  // Control sources (T9b-1, observe only; filled by fillRcTelemetry from the comms task)
+  uint8_t ctrlSource = 0;                ///< VehicleStatus.ctrl_source: 0 NONE, 1 RADIO, 2 USB (bench)
+  float rcAgeS = __builtin_nanf("");     ///< age of the last accepted RC_STATE of the active source, s, NaN = none
+  uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
+  uint8_t rcRejected = 0;                ///< wrapping count of rejected RC_STATE frames
+  /// RC_APPLIED content (USB only)
+  struct RcAppliedView {
+    uint8_t sa = 0, sb = 255, sc = 255, sd = 0, se = 0; ///< decoded; SA/SD/SE invalid -> 0, SB/SC invalid -> 255
+    uint8_t safeSeen = 0;
+    float radioAgeS = __builtin_nanf(""), benchAgeS = __builtin_nanf("");
+    uint8_t rejects[4] = {0, 0, 0, 0};
+  } rcApplied;
 };
 
 // ---- flight-software owned bit fields and helpers ----
@@ -177,6 +192,12 @@ Packets::Estimator makeEstimator(const TelemetrySnapshot &s);
 /// raw_frame SENSOR; offsets and matrices copied, the mag offset converted gauss -> T (x 1e-4); the matrices are
 /// unit-free, so the ground station gets cal = M * (raw - offset) in SI from the IMU_RAW values.
 Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
+/// RC_APPLIED (0x84, USB only, 10 Hz) from snapshot.rcApplied.
+Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s);
+/// Fills snapshot.ctrlSource, rcAgeS, ctrlFlags, rcRejected and rcApplied from the control-source state and the
+/// mapper's decode (T9b-1). Ages come from `nowNs` and the records' receive times.
+void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
+                     int64_t nowNs);
 
 // ---- AIR_ACTUATORS: two samples per packet ----
 

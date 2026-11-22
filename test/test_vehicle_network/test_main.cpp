@@ -14,6 +14,7 @@
 //  - no heap use after construction.
 #include <unity.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -416,6 +417,8 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT32(10, usb.n[Packets::Gnss::kPort]);
   TEST_ASSERT_EQUAL_UINT32(2, usb.n[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirPose::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(10, usb.n[Packets::RcApplied::kPort]);  // T9b-1: 10 Hz, USB only
+  TEST_ASSERT_EQUAL_UINT32(0, rig->gsUart.counter.n[Packets::RcApplied::kPort]);
   TEST_ASSERT_EQUAL_UINT32(1, usb.n[Packets::Calibration::kPort]); // 0.5 Hz: tick 17 of the first 2 s
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Calibration::kPort]);
   TEST_ASSERT_EQUAL_UINT8(0xFF, usb.lastDst[Packets::HandsetTelem::kPort]);
@@ -461,6 +464,147 @@ void test_calibration_rate() {
   for (uint32_t t = 0; t < 1000; t++) n += VehicleNetwork::calibrationDue(t) ? 1 : 0; // 10 s
   TEST_ASSERT_EQUAL_INT(5, n);
   TEST_ASSERT_EQUAL_UINT16(0, Packets::Calibration::kUsbRateHz); // rate lives in the vehicle (0.5 Hz)
+}
+
+// ---------------------------------------------------------------- T9b-1: RC ingress taps and control sources
+
+static uint8_t rcSeqCounter[4] = {};
+/// Sends an RC_STATE (34 bytes) from `p` to the vehicle; `len` != 34 sends a malformed payload.
+static void sendRc(Peer &p, uint8_t idx, int16_t sa = -1000, int16_t sd = -1000, uint8_t flags = 1, size_t len = 34) {
+  Packets::RcState rc;
+  rc.flags = flags;
+  for (int i = 0; i < 16; i++) rc.ch[i] = 0;
+  rc.ch[4] = sa;
+  rc.ch[5] = 1000;
+  rc.ch[6] = 0;
+  rc.ch[7] = sd;
+  rc.ch[8] = -1000;
+  uint8_t buf[40] = {};
+  rc.encode(buf, sizeof buf);
+  rcSeqCounter[idx]++;
+  TEST_ASSERT_TRUE(p.node.send(VehicleNetwork::kVehicleNode, Packets::RcState::kPort, buf, len, wire::Qos::Control, true));
+  p.poll();
+  rig->net.pollLinks();
+}
+
+static void settle() {
+  rig->net.pollNodes();
+}
+
+void test_rc_radio_is_node2_on_uart() {
+  memset(rcSeqCounter, 0, sizeof rcSeqCounter);
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(tx, 0, 1000, 1000);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Radio, (int)rig->net.controlSources().active());
+  Safety::ControlSourceId id;
+  TEST_ASSERT_TRUE(rig->net.takeSourceChange(id));
+  TEST_ASSERT_FALSE(rig->net.takeSourceChange(id));
+  const Safety::RcDecoded d = rig->net.rcMapper().decoded(Safety::ControlSourceId::Radio);
+  TEST_ASSERT_EQUAL_UINT8(1, d.sa);
+  TEST_ASSERT_EQUAL_UINT8(2, d.sb);
+  TEST_ASSERT_EQUAL_UINT8(1, d.sc);
+  TEST_ASSERT_EQUAL_UINT8(1, d.sd);
+  TEST_ASSERT_EQUAL_UINT8(0, d.se);
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_UINT8(1, s.ctrlSource);
+  TEST_ASSERT_TRUE(s.rcAgeS >= 0.0f && s.rcAgeS < 0.01f);
+  TEST_ASSERT_TRUE(s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsRadioFresh);
+  TEST_ASSERT_FALSE(s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsBenchFresh);
+  // the radio rule still sees the node 2 data frame
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
+}
+
+void test_rc_bench_is_node0_on_usb_and_wins_nothing_over_radio() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(rig->gsUsb, 1);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Bench, (int)rig->net.controlSources().active());
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_UINT8(2, s.ctrlSource); // ctrl_source USB
+  sendRc(tx, 0);
+  settle();
+  rig->clk.advanceMs(10);
+  sendRc(tx, 0);
+  sendRc(rig->gsUsb, 1);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Bench, (int)rig->net.controlSources().active()); // hysteresis
+  for (int i = 0; i < 15; i++) {
+    rig->clk.advanceMs(40);
+    sendRc(tx, 0);
+    sendRc(rig->gsUsb, 1);
+    settle();
+  }
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Radio, (int)rig->net.controlSources().active());
+}
+
+void test_rc_wrong_node_or_link_rejected_and_counted() {
+  Peer txOnUsb(&rig->usbDown, &rig->usbUp, rig->clk, 2, wire::Role::LinkTx);
+  Peer other(&rig->uartDown, &rig->uartUp, rig->clk, 1 + 4, wire::Role::LinkTx); // some other node on the UART
+  sendRc(rig->gsUart, 2);  // (0, UART): GS RC must never arrive here
+  sendRc(txOnUsb, 3);      // (2, USB)
+  sendRc(other, 3);        // (5, UART)
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)rig->net.controlSources().active());
+  TEST_ASSERT_EQUAL_UINT8(3, rig->net.controlSources().rejectCounts()[1]);
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_UINT8(3, s.rcRejected);
+  TEST_ASSERT_EQUAL_UINT8(3, s.rcApplied.rejects[1]);
+  TEST_ASSERT_TRUE(isnan(s.rcAgeS));
+  TEST_ASSERT_TRUE(isnan(s.rcApplied.radioAgeS) && isnan(s.rcApplied.benchAgeS));
+}
+
+void test_rc_source_ok_clear_and_short_frames_rejected() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(tx, 0, -1000, -1000, 0);        // SOURCE_OK clear
+  sendRc(tx, 0, -1000, -1000, 1, 20);    // short
+  sendRc(tx, 0, -1000, -1000, 1, 33);    // one byte short
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)rig->net.controlSources().active());
+  TEST_ASSERT_EQUAL_UINT8(1, rig->net.controlSources().rejectCounts()[3]);
+  TEST_ASSERT_EQUAL_UINT8(2, rig->net.controlSources().rejectCounts()[0]);
+  sendRc(tx, 0); // a good one is accepted
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Radio, (int)rig->net.controlSources().active());
+}
+
+void test_rc_frames_do_not_use_the_shared_mux_sequence_state() {
+  // RC_STATE of node 0 on the UART (rejected) must not make the bench copy on USB look like a duplicate.
+  sendRc(rig->gsUart, 2);
+  sendRc(rig->gsUsb, 1);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Bench, (int)rig->net.controlSources().active());
+}
+
+void test_rc_heartbeats_and_other_ports_are_not_rc() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  tx.node.sendHeartbeat();
+  tx.poll();
+  sendData(tx, 0x11);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)rig->net.controlSources().active());
+  TEST_ASSERT_EQUAL_UINT8(0, rig->net.controlSources().live().rejectedTotal);
+}
+
+void test_rc_source_lost_after_2s() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(tx, 0);
+  settle();
+  rig->clk.advanceMs(2000);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Radio, (int)rig->net.controlSources().active());
+  rig->clk.t += 1;
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)rig->net.controlSources().active());
+  rig->clk.advanceMs(500);
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_UINT8(0, s.ctrlSource);
+  TEST_ASSERT_TRUE(isnan(s.rcAgeS));
+  TEST_ASSERT_TRUE(s.rcApplied.radioAgeS > 2.0f); // the per-source ages keep counting
 }
 
 void test_nothing_draining_links_drops_frames_without_blocking() {
@@ -568,6 +712,13 @@ int main() {
   RUN_TEST(test_telemetry_sets_and_rates);
   RUN_TEST(test_task_timing_rate);
   RUN_TEST(test_calibration_rate);
+  RUN_TEST(test_rc_radio_is_node2_on_uart);
+  RUN_TEST(test_rc_bench_is_node0_on_usb_and_wins_nothing_over_radio);
+  RUN_TEST(test_rc_wrong_node_or_link_rejected_and_counted);
+  RUN_TEST(test_rc_source_ok_clear_and_short_frames_rejected);
+  RUN_TEST(test_rc_frames_do_not_use_the_shared_mux_sequence_state);
+  RUN_TEST(test_rc_heartbeats_and_other_ports_are_not_rc);
+  RUN_TEST(test_rc_source_lost_after_2s);
   RUN_TEST(test_nothing_draining_links_drops_frames_without_blocking);
   RUN_TEST(test_incompatible_peer_flag);
   RUN_TEST(test_no_heap_after_construction);

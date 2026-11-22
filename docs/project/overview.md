@@ -107,6 +107,8 @@ Zeroing and the system reset are separate. Zeroing runs the existing `enableZero
 
 ### Intended RC mapping for reset and zeroing (T9b requirement, not implemented)
 
+**Status (T9b-1, observe only):** the vehicle already decodes `RC_STATE` per link, keeps the control-source table (RADIO = node 2 on the UART, BENCH = node 0 on USB) and the SA..SE decode with the safe-seen bits, and reports `ctrl_source`, `rc_age`, `rc_rejected` and the USB-only `RC_APPLIED`. **No switch acts on anything yet** and the failure rule (table below) is unchanged. Details and the bench check: [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms).
+
 Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch **SE**:
 - **Short press** (released within 1 s): `SystemReset` behaviour (state reset, no zeroing).
 - **Held longer than 1 s:** starts zeroing and continues while SE is held; zeroing ends on release.
