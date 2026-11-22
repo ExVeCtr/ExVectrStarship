@@ -136,6 +136,40 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.last_req_id = 0;     // T9b: no REQUEST handling yet
   p.last_req_status = 0;
   p.rc_age = nanf_();    // T9b: no RC_STATE yet
+  p.home_epoch = s.homeEpoch;
+  p.calib_state = packCalibState(s.calibGyroValid, s.calibAccelValid, s.calibMagValid, s.calibSessionActive,
+                                 s.readyToArm);
+  return p;
+}
+
+uint8_t packCalibState(bool gyroValid, bool accelValid, bool magValid, bool sessionActive, bool readyToArm) {
+  return static_cast<uint8_t>((gyroValid ? 1u : 0u) | (accelValid ? 2u : 0u) | (magValid ? 4u : 0u) |
+                              (sessionActive ? 8u : 0u) | (readyToArm ? 16u : 0u));
+}
+
+Packets::AirGnss makeAirGnss(const TelemetrySnapshot &s) {
+  Packets::AirGnss p;
+  p.t_us = timeUs(s.t_ns);
+  if (!s.gnssHaveData) {
+    p.latitude = p.longitude = static_cast<double>(nanf_());
+    p.altitude = nanf_();
+    for (int i = 0; i < 3; i++) p.vel[i] = nanf_();
+    return p;
+  }
+  p.latitude = s.latitude;
+  p.longitude = s.longitude;
+  p.altitude = s.altitude;
+  copy3(s.gnssVel, p.vel);
+  return p;
+}
+
+Packets::AirGnssInfo makeAirGnssInfo(const TelemetrySnapshot &s) {
+  Packets::AirGnssInfo p;
+  p.t_us = timeUs(s.t_ns);
+  p.fix_type = s.gnssFixType;
+  p.satellites = s.satellites;
+  p.h_acc = s.gnssHaveData ? s.hAcc : nanf_();
+  p.v_acc = s.gnssHaveData ? s.vAcc : nanf_();
   return p;
 }
 
@@ -162,6 +196,7 @@ Packets::Actuators makeActuators(const TelemetrySnapshot &s) {
   Packets::Actuators p;
   p.t_us = timeUs(s.t_ns);
   for (int i = 0; i < 4; i++) p.flaps[i] = s.flaps[i];
+  p.roll_torque = s.tvcThrust[3]; // same source as AIR_ACTUATORS.roll_torque (makeActuatorSample)
   tvcDeflection(s.tvcThrust, p.tvc);
   p.thrust = sqrtf(s.tvcThrust[0] * s.tvcThrust[0] + s.tvcThrust[1] * s.tvcThrust[1] +
                    s.tvcThrust[2] * s.tvcThrust[2]);
@@ -306,6 +341,8 @@ Packets::Mission makeMission(const TelemetrySnapshot &s) {
   p.index = s.missionIndex;
   p.phase = static_cast<uint8_t>(s.missionPhase);
   for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
+  p.mission_mode = static_cast<uint8_t>(s.missionMode); // as AIR_MISSION
+  p.waypoint = s.waypointIndex;                         // 255 = not the waypoint mission
   return p;
 }
 
@@ -317,7 +354,7 @@ Packets::Gnss makeGnss(const TelemetrySnapshot &s) {
   p.altitude = s.altitude;
   copy3(s.gnssVel, p.vel);
   p.satellites = s.satellites;
-  p.fix_type = s.gnssValid ? 3 : 0; // the driver exposes no u-blox fix type: 3 = valid (>= 5 satellites)
+  p.fix_type = s.gnssFixType; // real UBX-NAV-PVT fixType
   p.h_acc = s.hAcc;
   p.v_acc = s.vAcc;
   p.s_acc = s.sAcc;

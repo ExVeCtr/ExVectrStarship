@@ -413,7 +413,7 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT32(20, usb.n[Packets::VehicleStatus::kPort]);
   TEST_ASSERT_EQUAL_UINT32(20, usb.n[Packets::Mission::kPort]);
   TEST_ASSERT_EQUAL_UINT32(20, usb.n[Packets::Estimator::kPort]);
-  TEST_ASSERT_EQUAL_UINT32(5, usb.n[Packets::Gnss::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(10, usb.n[Packets::Gnss::kPort]);
   TEST_ASSERT_EQUAL_UINT32(2, usb.n[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirPose::kPort]);
   TEST_ASSERT_EQUAL_UINT32(1, usb.n[Packets::Calibration::kPort]); // 0.5 Hz: tick 17 of the first 2 s
@@ -422,11 +422,15 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Pose::kPort]);
   // Radio set on the UART (air rates), nothing from the USB-only range
   TEST_ASSERT_EQUAL_UINT32(5, uart.n[Packets::VehicleStatus::kPort]);
-  TEST_ASSERT_EQUAL_UINT32(VehicleNetwork::kAirPoseRateHz, uart.n[Packets::AirPose::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(Packets::AirPose::kAirRateHz, uart.n[Packets::AirPose::kPort]);
   TEST_ASSERT_EQUAL_UINT32(25, uart.n[Packets::AirPose::kPort]);
   TEST_ASSERT_EQUAL_UINT32(2, uart.n[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT32(25, uart.n[Packets::AirActuators::kPort]);
   TEST_ASSERT_EQUAL_UINT32(5, uart.n[Packets::AirMission::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(10, uart.n[Packets::AirGnss::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(1, uart.n[Packets::AirGnssInfo::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirGnss::kPort]);     // air set only (USB has GNSS)
+  TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirGnssInfo::kPort]);
   TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirActuators::kPort]); // air set only (USB has ACTUATORS)
   TEST_ASSERT_EQUAL_UINT32(0, usb.n[Packets::AirMission::kPort]);   // air set only (USB has MISSION)
   uint32_t uartTotal = 0, usbOnly = 0;
@@ -435,7 +439,7 @@ void test_telemetry_sets_and_rates() {
     if (p >= 0x80) usbOnly += uart.n[p];
   }
   TEST_ASSERT_EQUAL_UINT32(0, usbOnly);
-  TEST_ASSERT_EQUAL_UINT32(62, uartTotal);
+  TEST_ASSERT_EQUAL_UINT32(73, uartTotal); // 5 + 25 + 25 + 5 + 2 + 10 + 1
   // Vehicle heartbeat on both links
   const NodeEntry *hu = rig->gsUsb.node.entry(1);
   const NodeEntry *hr = rig->gsUart.node.entry(1);

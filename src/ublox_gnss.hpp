@@ -73,6 +73,10 @@ namespace VCTR
             /// Read back after configuration (UBX-CFG-GNSS): GPS and Galileo on, everything else off.
             bool constellationsAsIntended() const { return SNSR::constellationsAsIntended(readGnss_); }
 
+            /// Fix type of the last PVT (UBX-NAV-PVT fixType: 0 none, 1 dead reckoning, 2 2D, 3 3D, 4 GNSS + DR,
+            /// 5 time only). Telemetry only (AIR_GNSS_INFO, GNSS); 0 until the first measurement.
+            uint8_t fixType() const { return fixType_; }
+
             /// The configuration sequence has ended, done or failed (no module, reopen failed).
             bool configFinished() const { return config_.done() || config_.failed(); }
 
@@ -114,6 +118,7 @@ namespace VCTR
             int txPin_;
 
             uint8_t numSats_ = 0;
+            uint8_t fixType_ = 0;
 
             // Values used to determine true fix
             uint8_t minNumSats_ = 5;

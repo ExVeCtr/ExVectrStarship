@@ -258,6 +258,28 @@ static void test_arm_gate() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CalibrationInvalid), uint8_t(decideArm(Validity())));
 }
 
+// VEHICLE_STATUS.calib_state bit 4 uses the same gate as the Arm command (decideArm) plus mode Ready / no zeroing.
+static void test_ready_to_arm_telemetry() {
+  const Validity good = goodValidity();
+  TEST_ASSERT_TRUE(readyToArm(good, true, false));
+  TEST_ASSERT_FALSE(readyToArm(good, false, false)); // not in Ready
+  TEST_ASSERT_FALSE(readyToArm(good, true, true));   // zeroing window active: Arm is refused
+  Validity bad = good;
+  bad.accel = Reason::LiveCheck;
+  TEST_ASSERT_FALSE(readyToArm(bad, true, false));
+  TEST_ASSERT_FALSE(readyToArm(Validity(), true, false));
+  // Always agrees with decideArm when mode Ready and no zeroing
+  for (int g = 0; g < 2; g++)
+    for (int a = 0; a < 2; a++)
+      for (int m = 0; m < 2; m++) {
+        Validity v;
+        v.gyro = g ? Reason::Ok : Reason::NotCalibrated;
+        v.accel = a ? Reason::Ok : Reason::Default;
+        v.mag = m ? Reason::Ok : Reason::KeyMissing;
+        TEST_ASSERT_EQUAL(decideArm(v) == GateRefusal::None, readyToArm(v, true, false));
+      }
+}
+
 static void test_mission_begin_gate() {
   const Validity good = goodValidity();
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -18)));
@@ -366,6 +388,7 @@ int main(int, char **) {
   RUN_TEST(test_command_preconditions);
   RUN_TEST(test_countdown_end_decision);
   RUN_TEST(test_arm_gate);
+  RUN_TEST(test_ready_to_arm_telemetry);
   RUN_TEST(test_mission_begin_gate);
   RUN_TEST(test_disarm_in_ready_invariant);
   RUN_TEST(test_gyro_bias_apply_rule);

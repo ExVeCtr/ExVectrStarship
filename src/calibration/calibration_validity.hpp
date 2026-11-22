@@ -173,6 +173,16 @@ inline GateRefusal decideArm(const Validity &v) {
   return v.allOk() ? GateRefusal::None : GateRefusal::CalibrationInvalid;
 }
 
+/**
+ * "Ready to arm" for telemetry (VEHICLE_STATUS.calib_state bit 4): exactly what the Arm command would accept now.
+ * Arm is accepted outside an estimator zeroing window with all three calibrations good (decideArm), and an armed
+ * vehicle is disarmed again outside mode Ready (Startup, SensorInit, SensorCalib, Failure), so Arm is only useful in
+ * Ready. Uses decideArm, no duplicated validity logic.
+ */
+inline bool readyToArm(const Validity &v, bool modeReady, bool zeroingActive) {
+  return modeReady && !zeroingActive && decideArm(v) == GateRefusal::None;
+}
+
 /// MissionBegin from Ready: all three calibrations good, and a countdown (paramInt seconds, negative) long enough for
 /// the gyro run in the Initialisation phase (paramInt <= kMinCountdownParamInt). Validity is reported first.
 inline GateRefusal decideMissionBegin(const Validity &v, int16_t paramInt) {

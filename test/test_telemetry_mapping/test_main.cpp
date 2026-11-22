@@ -55,6 +55,8 @@ static TelemetrySnapshot sample() {
   s.altitude = 324.7f;
   s.satellites = 9;
   s.gnssValid = true;
+  s.gnssFixType = 3;
+  s.gnssHaveData = true;
   s.hAcc = 1.5f;
   s.vAcc = 2.5f;
   s.sAcc = 0.2f;
@@ -309,7 +311,141 @@ void test_gnss_radians() {
   TEST_ASSERT_EQUAL_FLOAT(1.5f, p.h_acc);
   TEST_ASSERT_EQUAL_FLOAT(2.5f, p.v_acc);
   s.gnssValid = false;
-  TEST_ASSERT_EQUAL_UINT8(0, roundTrip(makeGnss(s)).fix_type);
+  s.gnssFixType = 2; // the REAL u-blox fix type is sent, not a 0/3 derived from validity
+  TEST_ASSERT_EQUAL_UINT8(2, roundTrip(makeGnss(s)).fix_type);
+}
+
+void test_air_gnss() {
+  TelemetrySnapshot s = sample();
+  s.gnssVel[0] = 1.234f; // north
+  s.gnssVel[1] = -2.5f;  // west
+  s.gnssVel[2] = -40.0f; // up
+  TEST_ASSERT_EQUAL_UINT(22, Packets::AirGnss::kMaxSize);
+  TEST_ASSERT_EQUAL_HEX8(0x24, Packets::AirGnss::kPort);
+  auto p = roundTrip(makeAirGnss(s));
+  TEST_ASSERT_EQUAL_UINT32(timeUs(s.t_ns), p.t_us);
+  // 1e-7 deg steps (1.745e-9 rad), altitude 1 mm, velocity 0.01 m/s
+  TEST_ASSERT_DOUBLE_WITHIN(1.8e-9, s.latitude, p.latitude);
+  TEST_ASSERT_DOUBLE_WITHIN(1.8e-9, s.longitude, p.longitude);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 324.7f, p.altitude);
+  TEST_ASSERT_FLOAT_WITHIN(0.006f, 1.234f, p.vel[0]);
+  TEST_ASSERT_FLOAT_WITHIN(0.006f, -2.5f, p.vel[1]);
+  TEST_ASSERT_FLOAT_WITHIN(0.006f, -40.0f, p.vel[2]);
+  // Saturation of the velocity (+-327.66 m/s), exact wire bytes of a known value
+  s.gnssVel[0] = 1000.0f;
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 327.67f, roundTrip(makeAirGnss(s)).vel[0]);
+  uint8_t buf[22];
+  s.gnssVel[0] = 1.0f;
+  s.latitude = 50.0 * M_PI / 180.0;
+  makeAirGnss(s).encode(buf, sizeof buf);
+  const int32_t lat = int32_t(uint32_t(buf[4]) | (uint32_t(buf[5]) << 8) | (uint32_t(buf[6]) << 16) | (uint32_t(buf[7]) << 24));
+  TEST_ASSERT_EQUAL_INT32(500000000, lat); // 50 deg * 1e7
+  TEST_ASSERT_EQUAL_INT16(100, int16_t(uint16_t(buf[16]) | (uint16_t(buf[17]) << 8)));
+  // No GNSS measurement yet: NaN sentinels, all values decode as NaN
+  s.gnssHaveData = false;
+  p = roundTrip(makeAirGnss(s));
+  TEST_ASSERT_TRUE(isnan(p.latitude));
+  TEST_ASSERT_TRUE(isnan(p.longitude));
+  TEST_ASSERT_TRUE(isnan(p.altitude));
+  for (int i = 0; i < 3; i++) TEST_ASSERT_TRUE(isnan(p.vel[i]));
+}
+
+void test_air_gnss_info() {
+  TelemetrySnapshot s = sample();
+  s.gnssFixType = 3;
+  s.satellites = 17;
+  TEST_ASSERT_EQUAL_UINT(10, Packets::AirGnssInfo::kMaxSize);
+  TEST_ASSERT_EQUAL_HEX8(0x25, Packets::AirGnssInfo::kPort);
+  auto p = roundTrip(makeAirGnssInfo(s));
+  TEST_ASSERT_EQUAL_UINT8(3, p.fix_type);
+  TEST_ASSERT_EQUAL_UINT8(17, p.satellites);
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 1.5f, p.h_acc); // 1 cm steps
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 2.5f, p.v_acc);
+  // Accuracy beyond the range saturates, NaN = unknown (65535)
+  s.hAcc = 1000.0f;
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 655.34f, roundTrip(makeAirGnssInfo(s)).h_acc);
+  s.gnssHaveData = false;
+  s.gnssFixType = 0;
+  p = roundTrip(makeAirGnssInfo(s));
+  TEST_ASSERT_EQUAL_UINT8(0, p.fix_type);
+  TEST_ASSERT_TRUE(isnan(p.h_acc));
+  TEST_ASSERT_TRUE(isnan(p.v_acc));
+  uint8_t buf[10];
+  makeAirGnssInfo(s).encode(buf, sizeof buf);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, buf[6]);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, buf[7]);
+}
+
+void test_pack_calib_state() {
+  TEST_ASSERT_EQUAL_HEX8(0x00, packCalibState(false, false, false, false, false));
+  TEST_ASSERT_EQUAL_HEX8(0x01, packCalibState(true, false, false, false, false));
+  TEST_ASSERT_EQUAL_HEX8(0x02, packCalibState(false, true, false, false, false));
+  TEST_ASSERT_EQUAL_HEX8(0x04, packCalibState(false, false, true, false, false));
+  TEST_ASSERT_EQUAL_HEX8(0x08, packCalibState(false, false, false, true, false));
+  TEST_ASSERT_EQUAL_HEX8(0x10, packCalibState(false, false, false, false, true));
+  TEST_ASSERT_EQUAL_HEX8(0x07, packCalibState(true, true, true, false, false));
+  TEST_ASSERT_EQUAL_HEX8(0x17, packCalibState(true, true, true, false, true));  // all valid and ready
+  TEST_ASSERT_EQUAL_HEX8(0x0F, packCalibState(true, true, true, true, false));  // session active, not ready
+  TEST_ASSERT_EQUAL_HEX8(0x1F, packCalibState(true, true, true, true, true));
+  TEST_ASSERT_EQUAL_HEX8(0x05, packCalibState(true, false, true, false, false)); // accel invalid
+  // bits 5-7 are always zero
+  TEST_ASSERT_EQUAL_HEX8(0, packCalibState(true, true, true, true, true) & 0xE0);
+}
+
+void test_vehicle_status_home_and_calib() {
+  TelemetrySnapshot s = sample();
+  auto p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_UINT(30, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT8(0, p.home_epoch); // no position reference yet
+  TEST_ASSERT_EQUAL_HEX8(0, p.calib_state);
+  s.homeEpoch = 7;
+  s.calibGyroValid = s.calibAccelValid = true;
+  s.calibMagValid = false;
+  s.calibSessionActive = true;
+  p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_UINT8(7, p.home_epoch);
+  TEST_ASSERT_EQUAL_HEX8(0x0B, p.calib_state);
+  s.calibMagValid = true;
+  s.calibSessionActive = false;
+  s.readyToArm = true;
+  p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_HEX8(0x17, p.calib_state);
+}
+
+void test_home_epoch_counter() {
+  HomeEpoch h;
+  TEST_ASSERT_EQUAL_UINT8(0, h.value());
+  h.referenceSet();
+  TEST_ASSERT_EQUAL_UINT8(1, h.value());
+  h.referenceSet();
+  TEST_ASSERT_EQUAL_UINT8(2, h.value());
+  for (int i = 0; i < 253; i++) h.referenceSet();
+  TEST_ASSERT_EQUAL_UINT8(255, h.value());
+  h.referenceSet(); // wraps to 1, never back to 0 = "no home"
+  TEST_ASSERT_EQUAL_UINT8(1, h.value());
+}
+
+void test_actuators_roll_torque_and_mission_fields() {
+  TelemetrySnapshot s = sample(); // tvcThrust[3] = 0.2
+  auto a = roundTrip(makeActuators(s));
+  TEST_ASSERT_EQUAL_UINT(40, Packets::Actuators::kMaxSize);
+  TEST_ASSERT_EQUAL_FLOAT(0.2f, a.roll_torque); // unquantised f32
+  // Same source as AIR_ACTUATORS.roll_torque
+  TEST_ASSERT_EQUAL_FLOAT(makeActuatorSample(s).rollTorque, a.roll_torque);
+  ActuatorHistory h;
+  h.push(makeActuatorSample(s));
+  TEST_ASSERT_FLOAT_WITHIN(0.00001f, a.roll_torque, makeAirActuators(h).roll_torque[0]);
+  // MISSION.mission_mode / waypoint exactly as AIR_MISSION
+  TEST_ASSERT_EQUAL_UINT(52, Packets::Mission::kMaxSize);
+  s.waypointIndex = 2;
+  auto m = roundTrip(makeMission(s));
+  auto am = roundTrip(makeAirMission(s));
+  TEST_ASSERT_EQUAL_UINT8(3, m.mission_mode); // Running
+  TEST_ASSERT_EQUAL_UINT8(2, m.waypoint);
+  TEST_ASSERT_EQUAL_UINT8(am.mission_mode, m.mission_mode);
+  TEST_ASSERT_EQUAL_UINT8(am.waypoint, m.waypoint);
+  s.waypointIndex = 0xFF; // another mission is active
+  TEST_ASSERT_EQUAL_UINT8(255, roundTrip(makeMission(s)).waypoint);
 }
 
 void test_handset_telem() {
@@ -655,15 +791,21 @@ void test_mission_setpoint_q_encoding() {
 
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
-  TEST_ASSERT_EQUAL_UINT(28, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(30, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirMission::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(50, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(52, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(22, Packets::AirGnss::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(10, Packets::AirGnssInfo::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT16(25, Packets::AirPose::kAirRateHz);
+  TEST_ASSERT_EQUAL_UINT16(10, Packets::AirGnss::kAirRateHz);
+  TEST_ASSERT_EQUAL_UINT16(1, Packets::AirGnssInfo::kAirRateHz);
+  TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0xBFF82392u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x414DE27Au, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -679,6 +821,12 @@ int main() {
   RUN_TEST(test_actuators);
   RUN_TEST(test_mission_time_seconds);
   RUN_TEST(test_gnss_radians);
+  RUN_TEST(test_air_gnss);
+  RUN_TEST(test_air_gnss_info);
+  RUN_TEST(test_pack_calib_state);
+  RUN_TEST(test_vehicle_status_home_and_calib);
+  RUN_TEST(test_home_epoch_counter);
+  RUN_TEST(test_actuators_roll_torque_and_mission_fields);
   RUN_TEST(test_handset_telem);
   RUN_TEST(test_course_over_ground);
   RUN_TEST(test_mode_text);

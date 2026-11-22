@@ -325,6 +325,10 @@ private:
   // and the "valid zero since boot" rule for Ready. missionZeroing_ is the zeroing requested by the active
   // mission's Initialisation mode (unchanged behaviour). The estimators are in zeroing mode while either holds.
   Safety::EstimatorZeroing zeroing_;
+  // Telemetry cache (VEHICLE_STATUS home_epoch / calib_state), written by updateTelemetryCache() every task run.
+  Comms::HomeEpoch homeEpoch_;
+  bool calibGyroValid_ = false, calibAccelValid_ = false, calibMagValid_ = false;
+  bool calibSessionActive_ = false, readyToArm_ = false;
   Safety::LogRateLimit zeroRefusedLog_{1 * Core::SECONDS};
   Safety::LogRateLimit zeroBlockedLog_{1 * Core::SECONDS};
   bool missionZeroing_ = false;
@@ -417,6 +421,17 @@ public:
 
   /// The ZeroEstimators / boot-zero window is active (VEHICLE_STATUS flag ZEROING).
   bool estimatorZeroingActive() const { return zeroing_.active(); }
+
+  /// Telemetry only: the cached calibration state bits and the home epoch (VEHICLE_STATUS calib_state, home_epoch).
+  /// The validity is evaluated by the safety task (10 Hz, updateTelemetryCache()), not by the telemetry task.
+  void fillTelemetryCache(Comms::TelemetrySnapshot &s) const {
+    s.homeEpoch = homeEpoch_.value();
+    s.calibGyroValid = calibGyroValid_;
+    s.calibAccelValid = calibAccelValid_;
+    s.calibMagValid = calibMagValid_;
+    s.calibSessionActive = calibSessionActive_;
+    s.readyToArm = readyToArm_;
+  }
 
   MissionAbstract *getCurrentMission() { return mission_; }
 
@@ -715,6 +730,7 @@ public:
     }
 
     calibrationHousekeeping();
+    updateTelemetryCache();
 
     if (!systemsInitialised()) {
       starshipTVC.enableActuators(false); // Disable actuators
@@ -785,6 +801,10 @@ public:
     posEstTask.enableZeroingMode(want);
     imuTask.enableZeroingMode(want);
     bodySimulator.enableZeroingMode(want);
+    // The position reference (GNSS reference point of the position KF) moves only in zeroing mode: when it ends the
+    // reference is set (home_epoch).
+    if (zeroingApplied_ && !want)
+      homeEpoch_.referenceSet();
     zeroingApplied_ = want;
   }
 
@@ -1087,6 +1107,16 @@ public:
 
   /// Per-tick calibration upkeep: results of the automatic gyro run, the end of a calibration session (back to
   /// Startup), and the warning line while a calibration is invalid.
+  /// Telemetry only (safety.md rule 9: no vehicle behaviour reads these). Same gate function as the Arm command.
+  void updateTelemetryCache() {
+    const Calibration::Validity v = currentCalibrationValidity();
+    calibGyroValid_ = v.gyro == Calibration::Reason::Ok;
+    calibAccelValid_ = v.accel == Calibration::Reason::Ok;
+    calibMagValid_ = v.mag == Calibration::Reason::Ok;
+    calibSessionActive_ = calibrationService.anyBusy() || calibrationService.gyroRunActive();
+    readyToArm_ = Calibration::readyToArm(v, vehicleMode_ == VehicleMode::VehicleMode_Ready, zeroing_.active());
+  }
+
   void calibrationHousekeeping() {
     Calibration::GyroRunDone done;
     if (calibrationService.takeGyroRunDone(done))
@@ -1899,6 +1929,7 @@ public:
                           ? static_cast<uint8_t>(missionWaypointTask.currentWaypointIndex())
                           : uint8_t(0xFF);
     s.zeroing = vt.estimatorZeroingActive();
+    vt.fillTelemetryCache(s);
 
     const auto &att = attSubr_.getItem().data;
     for (int i = 0; i < 7; i++)
@@ -1949,6 +1980,8 @@ public:
       s.gnssVel[i] = g.velocity(i);
     s.satellites = g.numSats;
     s.gnssValid = g.positionValid;
+    s.gnssHaveData = gnssSubr_.getItem().timestamp != 0;
+    s.gnssFixType = gnss.fixType();
     s.hAcc = g.positionCov(0);
     s.vAcc = g.positionCov(2);
     s.sAcc = g.velocityCov(0);

@@ -9,6 +9,7 @@ void SNSR::UbloxSerialGNSS::_getData()
 
     auto time = Core::NowNs();
     numSats_ = gnss_.getSIV();
+    fixType_ = gnss_.getFixType();
 
     float positionDeviation = (float)gnss_.getHorizontalAccEst() / 1000.0f;
     float altitudeDeviation = (float)gnss_.getVerticalAccEst() / 1000.0f;

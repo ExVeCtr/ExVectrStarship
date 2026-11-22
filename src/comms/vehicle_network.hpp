@@ -82,9 +82,10 @@ public:
   static constexpr uint32_t kCalibrationPeriodTicks = 2 * kTickHz;
   /// AIR_ACTUATORS: one actuator sample every 2 ticks (50 Hz, 20 ms), two samples per packet at 25 Hz.
   static constexpr uint32_t kActuatorSampleTicks = 2;
-  /// AIR_POSE rate on the UART (owner request 2026-11-22, was 10 Hz): every 4 ticks = 40 ms. Equals the schema
-  /// `rate_air` of AIR_POSE from ExVectrPackets feature/gnss-home on (the pinned library still says 10).
-  static constexpr uint16_t kAirPoseRateHz = 25;
+  /// Send phases of the GNSS air packets (ticks): AIR_GNSS 10 Hz on ticks = 3 mod 10, AIR_GNSS_INFO 1 Hz on tick 31
+  /// of each second (3 mod 4: no other air packet shares the tick with AIR_GNSS_INFO).
+  static constexpr uint32_t kAirGnssPhase = 3;
+  static constexpr uint32_t kAirGnssInfoPhase = 31;
   static constexpr uint32_t kAirActuatorsPhase = 6; ///< send tick phase (a sampling tick, so the newest is fresh)
   /// True on the ticks where CALIBRATION is due on USB (every kCalibrationPeriodTicks, phase 17).
   static bool calibrationDue(uint32_t tick);

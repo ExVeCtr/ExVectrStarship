@@ -54,6 +54,12 @@ struct TelemetrySnapshot {
   bool incompatible = false;  ///< a present node reported another network version or schema hash
   bool uartPeerSeen = false;  ///< valid frame from the ship node (3) on the UART within 3 s (information only)
   bool zeroing = false;       ///< estimator zeroing window active (boot zero or ZeroEstimators)
+  uint8_t homeEpoch = 0;      ///< HomeEpoch::value(): 0 = no position reference yet, then increments per re-set
+
+  // Calibration state (VEHICLE_STATUS.calib_state), cached by the safety task from Calibration::Validity
+  bool calibGyroValid = false, calibAccelValid = false, calibMagValid = false;
+  bool calibSessionActive = false; ///< a calibration session or the automatic gyro run is collecting or fitting
+  bool readyToArm = false;         ///< Calibration::readyToArm(): the conditions the Arm command accepts
 
   // Estimates (attitude/position topic switches: estimators, or the body simulator in simulation mode)
   float att[7] = {0, 0, 0, 1, 0, 0, 0}; ///< [wx, wy, wz, qw, qx, qy, qz]
@@ -78,6 +84,8 @@ struct TelemetrySnapshot {
   float gnssVel[3] = {0, 0, 0};       ///< NWU, m/s
   uint8_t satellites = 0;
   bool gnssValid = false;
+  uint8_t gnssFixType = 0;            ///< real u-blox UBX-NAV-PVT fixType (0 none, 2 2D, 3 3D, 4 GNSS+DR, 5 time only)
+  bool gnssHaveData = false;          ///< at least one GNSS measurement received (else AIR_GNSS values are NaN)
   float hAcc = 0, vAcc = 0, sAcc = 0; ///< 1 sigma, m, m, m/s
 
   // Raw sensors (sensor frame)
@@ -98,6 +106,27 @@ struct TelemetrySnapshot {
 };
 
 // ---- flight-software owned bit fields and helpers ----
+
+/**
+ * VEHICLE_STATUS.home_epoch: 0 until the vehicle has a position reference (home), then a counter that increments each
+ * time the reference is re-set. The reference is the GNSS reference point of the position KF, which moves only while
+ * the estimators are in zeroing mode, so the vehicle calls referenceSet() when the zeroing mode ENDS (falling edge of
+ * VehicleSafetyAndControlTask::applyEstimatorZeroing(): boot zero, ZeroEstimators, mission Initialisation zeroing,
+ * and an aborted window, which also moved the reference). The first call gives 1; after 255 the counter wraps to 1
+ * (never back to 0 = "no home").
+ */
+class HomeEpoch {
+public:
+  void referenceSet() { value_ = value_ == 255 ? 1 : static_cast<uint8_t>(value_ + 1); }
+  uint8_t value() const { return value_; }
+
+private:
+  uint8_t value_ = 0;
+};
+
+/// VEHICLE_STATUS.calib_state: bit0 gyro valid, bit1 accel valid, bit2 mag valid, bit3 session active, bit4 ready to
+/// arm, bits 5-7 zero.
+uint8_t packCalibState(bool gyroValid, bool accelValid, bool magValid, bool sessionActive, bool readyToArm);
 
 /// failure_bits: bit 0 sensor, 1 attitude, 2 position, 3 position out of bounds, 4 attitude out of bounds,
 /// 5 radio connection loss.
@@ -133,6 +162,11 @@ void modeText(VehicleMode mode, MissionPhase phase, bool armed, bool simulation,
 
 Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s);
 Packets::AirPose makeAirPose(const TelemetrySnapshot &s);
+/// AIR_GNSS: position (rad), altitude (m), NWU velocity. Without any GNSS measurement all values are NaN (the
+/// generated codec's sentinels); an invalid fix still sends the receiver's values (fix_type in AIR_GNSS_INFO tells).
+Packets::AirGnss makeAirGnss(const TelemetrySnapshot &s);
+/// AIR_GNSS_INFO: real fix type, satellites, h/v accuracy (NaN = unknown when no measurement was received).
+Packets::AirGnssInfo makeAirGnssInfo(const TelemetrySnapshot &s);
 Packets::Pose makePose(const TelemetrySnapshot &s);
 Packets::Actuators makeActuators(const TelemetrySnapshot &s);
 Packets::Mission makeMission(const TelemetrySnapshot &s);
