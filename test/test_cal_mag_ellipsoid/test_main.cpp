@@ -115,7 +115,7 @@ static void test_sphere_mode_shows_residual() {
   const MagEllipsoidResult rs = sph.evaluate();
   printf("# sphere mode: result %s rms %.3f%% max %.3f%% ratio %.3f\n", toString(rs.result), rs.residualRms * 100,
          rs.residualMax * 100, rs.axisRatio);
-  TEST_ASSERT_TRUE(rs.residualRms > 0.03); // clearly above the 1.5 % limit
+  TEST_ASSERT_TRUE(rs.residualRms > 0.015); // clearly above the 1.5 % warn level
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailResidual), uint8_t(rs.result));
   TEST_ASSERT_EQUAL_DOUBLE(rs.A[0], rs.A[4]); // A = s I
   TEST_ASSERT_EQUAL_DOUBLE(0.0, rs.A[1]);
@@ -295,10 +295,63 @@ static void test_buffer_capacity() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(fit.evaluate().result));
 }
 
+/// Sphere data with Gaussian field noise of the given relative sigma (noise per axis = rel * R gives a length rms of
+/// about rel), evaluated with the default limits or with maxResidualMax overridden.
+static MagEllipsoidResult noisyFit(double rel, uint32_t seed, double maxMax = -1) {
+  static float buf3[600][3];
+  MagEllipsoidConfig cfg;
+  if (maxMax > 0)
+    cfg.maxResidualMax = maxMax;
+  MagEllipsoidFit fit(buf3, 600, cfg);
+  Rng rng(seed);
+  feed(fit, rng, 8000, rel * kR, nullptr);
+  return fit.evaluate();
+}
+
+static void test_residual_pass_warn_fail_bands() {
+  // Clean: rms well under 1.5 % -> Pass, no residual warning.
+  MagEllipsoidResult r = noisyFit(0.005, 21);
+  printf("# band 0.5%%: %s rms %.3f%% max %.3f%%\n", toString(r.result), r.residualRms * 100, r.residualMax * 100);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
+  TEST_ASSERT_TRUE(r.checks & kMagCheckResidualNominal);
+  // The owner's tumble: rms about 2.9 % -> Warn, still applicable, with the noise reason.
+  r = noisyFit(0.029, 22);
+  printf("# band 2.9%%: %s rms %.3f%% max %.3f%% reason '%s'\n", toString(r.result), r.residualRms * 100,
+         r.residualMax * 100, magFailReason(r));
+  TEST_ASSERT_TRUE(r.residualRms > 0.025 && r.residualRms < 0.032);
+  TEST_ASSERT_TRUE(r.residualMax < 0.10);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Warn), uint8_t(r.result));
+  TEST_ASSERT_TRUE(acceptable(r.result));
+  TEST_ASSERT_NOT_NULL(strstr(magFailReason(r), "field noise or disturbance during the tumble (rms 2."));
+  // rms 4 % -> FailResidual.
+  r = noisyFit(0.04, 23);
+  printf("# band 4%%: %s rms %.3f%% max %.3f%%\n", toString(r.result), r.residualRms * 100, r.residualMax * 100);
+  TEST_ASSERT_TRUE(r.residualRms > 0.035);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailResidual), uint8_t(r.result));
+  TEST_ASSERT_FALSE(acceptable(r.result));
+}
+
+static void test_residual_max_limit() {
+  // The same 2.9 % data has a worst inlier of about 8 %: it passes the 10 % limit and fails a 5 % limit.
+  MagEllipsoidResult ok = noisyFit(0.029, 22);
+  TEST_ASSERT_TRUE(ok.residualMax > 0.05 && ok.residualMax < 0.10);
+  MagEllipsoidResult bad = noisyFit(0.029, 22, 0.05);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailResidual), uint8_t(bad.result));
+  // A worst inlier above the max limit (rms still under 3.5 %) fails: limit set just under the observed max.
+  MagEllipsoidResult tight = noisyFit(0.029, 22, ok.residualMax * 0.9);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailResidual), uint8_t(tight.result));
+  MagEllipsoidConfig def;
+  TEST_ASSERT_EQUAL_DOUBLE(0.10, def.maxResidualMax);
+  TEST_ASSERT_EQUAL_DOUBLE(0.035, def.maxResidualRms);
+  TEST_ASSERT_EQUAL_DOUBLE(0.015, def.warnResidualRms);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_recovers_soft_and_hard_iron);
   RUN_TEST(test_sphere_mode_shows_residual);
+  RUN_TEST(test_residual_pass_warn_fail_bands);
+  RUN_TEST(test_residual_max_limit);
   RUN_TEST(test_outliers_rejected);
   RUN_TEST(test_too_many_outliers_fail);
   RUN_TEST(test_sphere_data_gives_sI);
