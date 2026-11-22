@@ -438,7 +438,7 @@ public:
     failureState_.sensorFailure = false;
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
-    failureState_.radioConnectionLoss = false;
+    failureState_.controlSourceLost = false;
     failureState_.interlockWatchdog = false;
 
     mission_ = &defaultMission_; // Set the mission to the default mission
@@ -752,14 +752,21 @@ public:
     // missionWaypointTask.setNextMission(&defaultMission_);
   }
 
+  /// "Committed" (design 3.1.3): the motor interlock is open, or a mission chain is pending, or the mode is Running.
+  /// Latches the control source (VehicleNetwork::setCommitted) and enables the control failsafe (checkForFailures).
+  bool isCommitted(int64_t now) {
+    return vehicleComms.motorInterlock().open(now) || missionChain_.pending() ||
+           vehicleMode_ == VehicleMode::VehicleMode_Running;
+  }
+
   /// Motor interlock supervision (T9b-2), every run, before anything can return early: the latch input of the
   /// control source (interlock open, mission chain pending or Running), the D4-A re-arm while in Failure, and a log
   /// line on every gate change. The gate itself is evaluated at the motor outputs and by the watchdog, not here.
   void superviseMotorInterlock() {
     const int64_t now = Core::NowNs();
     auto &il = vehicleComms.motorInterlock();
+    vehicleComms.setCommitted(isCommitted(now));
     const bool open = il.open(now);
-    vehicleComms.setCommitted(open || missionChain_.pending() || vehicleMode_ == VehicleMode::VehicleMode_Running);
     if (vehicleMode_ == VehicleMode::VehicleMode_Failure)
       il.requireRearm(Safety::MotorInterlock::RearmReason::Failure); // D4-A: a failsafe needs a new toggle
     if (open != interlockOpenLogged_) {
@@ -1612,12 +1619,16 @@ public:
   }
 
   void checkForFailures() {
-    // Radio connection loss (user decision 2026-11-20): no radio packet (a DATA frame from node 0 or node 2 on
-    // the UART; heartbeats, node 3 and USB never count) for 2 s, or none at all within the 10 s boot grace
-    // (VehicleNetwork::isRadioLinkAlive). The ground station on USB does not influence it.
-    if (!vehicleComms.isRadioLinkAlive()) {
+    // Control failsafe (T9b-3, the ONE rule, safety.md 4.1): while committed (interlock open, mission pending or
+    // Running) the accepted RC_STATE of the latched control source is older than 2 s (or there is no source) =>
+    // failsafe, latched in mode Failure until SystemReset. Not committed (on the ground, disarmed, nothing pending)
+    // losing every source only sets ctrl_source NONE (D2-B). General link health, heartbeats, GS REQUESTs and
+    // telecommands never keep it alive and never trigger it; the ground station on USB is never a failure
+    // condition. No simulation dependence.
+    if (vehicleComms.controlSourceLost(isCommitted(Core::NowNs()))) {
+      if (!failureState_.controlSourceLost) LOG_MSG("Failsafe: control source lost (no accepted RC_STATE for 2 s)\n");
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
-      failureState_.radioConnectionLoss = true;
+      failureState_.controlSourceLost = true;
     }
 
     // Motor-interlock watchdog (T9b-2): the 100 Hz task that closes the motor outputs has not run for 100 ms.
@@ -1850,7 +1861,7 @@ public:
     failureState_.positionFailure = false;
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
-    failureState_.radioConnectionLoss = false;
+    failureState_.controlSourceLost = false;
     failureState_.interlockWatchdog = false;
     sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
     sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
@@ -2267,8 +2278,7 @@ public:
     }*/
 
     if (accSub.isDataNew() || true) {
-      // A radio packet really seen within 2 s (no boot grace): the failure predicate isRadioLinkAlive() is true
-      // during the 10 s boot grace and would count a connection that never existed.
+      // A radio packet really seen within 2 s: general link health, information only (display, counter).
       bool connected = vehicleComms.isRadioPacketRecent();
       if (!lastConnectionState && connected) {
         connectionCounter++;

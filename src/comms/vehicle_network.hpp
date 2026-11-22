@@ -16,9 +16,10 @@
  *   informational only (node table, incompatibility flag).
  * - isUartPeerSeen(): any valid frame from node 3 on the UART within kUartPeerTimeoutNs (3 s), the
  *   VEHICLE_STATUS UART_PEER_SEEN flag. Information only.
- * - isGroundStationPresent(): any valid frame from node 0 on either link within kGsTimeoutNs (2 s). This is the
- *   observable of the existing radioConnectionLoss failure, as NetworkNode::isNodeReachable(0) with its 2 s
- *   timeout was on the old SX1280 link.
+ * - isGroundStationPresent(): any valid frame from node 0 on either link within kGsTimeoutNs (2 s). Information
+ *   only: the ground station is never a failure condition.
+ * - controlSourceLost(): the ONE control failsafe rule (T9b-3): committed and the accepted RC_STATE of the latched
+ *   source is older than 2 s. General link health (any valid frame, isRadioPacketRecent) is information only.
  * - TEMPORARY (removed in T9b): the legacy Telecommand on port LegacyTelecommandPacket::kPort, from node 0 only,
  *   is handed unchanged to the TelecommandSinkI (main.cpp publishes it on the existing telecommand topic).
  */
@@ -53,15 +54,12 @@ public:
   static constexpr uint8_t kVehicleNode = 1;
   static constexpr uint8_t kGroundStationNode = 0;
   static constexpr uint32_t kTickHz = 100; ///< sendTelemetry() call rate: the fastest USB rate
-  /// Ground-station presence timeout: the 2 s of the old NetworkNode(1, datalink, 2 s). Information only since
-  /// 2026-11-20 (VEHICLE_STATUS gs_present); radioConnectionLoss uses isRadioLinkAlive().
+  /// Ground-station presence timeout: the 2 s of the old NetworkNode(1, datalink, 2 s). Information only
+  /// (VEHICLE_STATUS gs_present).
   static constexpr int64_t kGsTimeoutNs = 2000000000LL;
   static constexpr uint8_t kRouterNode = 2; ///< the ExVectrLink TX module (Router, Pocket side of the air link)
-  /// Radio link timeout (radioConnectionLoss): no radio packet (see isRadioLinkAlive) for longer than this.
+  /// General link health window: a "radio packet" (see isRadioPacketRecent) at most this old. Information only.
   static constexpr int64_t kRadioTimeoutNs = 2000000000LL;
-  /// Boot grace of the radio link check: before the first radio packet the link counts as alive for this long
-  /// after construction (boot), so the RX module and the air link can come up.
-  static constexpr int64_t kRadioStartupGraceNs = 10000000000LL;
   static constexpr uint8_t kShipNode = 3; ///< the ExVectrLink RX module (ship radio node) on the UART
   /// UART_PEER_SEEN window: any valid frame from node 3 on the UART within this time (information only).
   static constexpr int64_t kUartPeerTimeoutNs = 3000000000LL;
@@ -103,21 +101,22 @@ public:
   }
 
   /// Any valid frame from node 0 (ground station) on USB or UART within kGsTimeoutNs. Information only
-  /// (VEHICLE_STATUS gs_present, display); it no longer drives radioConnectionLoss.
+  /// (VEHICLE_STATUS gs_present, display).
   bool isGroundStationPresent() const;
-  /// Radio link rule (user decision 2026-11-20, drives radioConnectionLoss): a "radio packet" is a valid DATA frame
-  /// that arrives on the UART with source node 0 (ground station, relayed by the Router) or node 2 (Router /
-  /// Pocket: RC_STATE, LINK_STATS ...), i.e. from the far side of the air link. Heartbeats of any node, frames
-  /// from node 3 (the ship node itself) and everything on USB never count. Alive while the last radio packet is at
-  /// most kRadioTimeoutNs old; before the first radio packet since boot, alive only during the boot grace
-  /// (kRadioStartupGraceNs after construction).
-  bool isRadioLinkAlive() const;
-  /// A radio packet (see isRadioLinkAlive) really arrived within kRadioTimeoutNs; NO boot grace. For telemetry
-  /// "connected" and the connection counter (review 2026-11-20: the failure predicate above is true during the
-  /// boot grace before any packet, which made the display report a connection that never existed).
+  /// General link health (information only, never a failure, abort or motor cut; safety.md 4.1): a "radio packet"
+  /// is a valid DATA frame that arrives on the UART with source node 0 (ground station, relayed by the Router) or
+  /// node 2 (Router / Pocket). Heartbeats of any node, frames from node 3 and everything on USB never count. True
+  /// while the last radio packet is at most kRadioTimeoutNs old (no boot grace). Used for the OLED link indicator
+  /// and the connection counter only.
   bool isRadioPacketRecent() const;
-  /// A radio packet (see isRadioLinkAlive) has arrived since boot.
+  /// A radio packet (see isRadioPacketRecent) has arrived since boot.
   bool radioPacketSeen() const { return radioTap_.seen; }
+  /// The control failsafe condition (T9b-3, the ONE rule): `committed` (interlock open, mission pending or Running,
+  /// computed by the caller at the moment of the check) and the latched control source is NONE or its last accepted
+  /// RC_STATE is older than 2 s. Not committed: false (D2-B). Reads a seqlock snapshot of the table, so it is safe
+  /// from the safety task. Only accepted RC_STATE refreshes the source: heartbeats, LINK_STATS, REQUESTs and
+  /// telecommands never do.
+  bool controlSourceLost(bool committed) const;
   /// A valid frame from the ship node (node 3) arrived on the UART (not USB) within kUartPeerTimeoutNs. Read from
   /// the UART node's node table (last frame time per source), so no raw byte polling. Information only: the
   /// NetworkStatus the ground station gets over USB reflects the USB node, so a dead UART is invisible there;
@@ -171,7 +170,7 @@ private:
   network::PortMux<2> mux_;
   network::PacketPort<LegacyTelecommandPacket> telecommandPort_; ///< TEMPORARY (T9b)
 
-  /// Sits between the UART link and the UART node: records radio packets (isRadioLinkAlive), forwards every frame.
+  /// Sits between the UART link and the UART node: records radio packets (isRadioPacketRecent), forwards every frame.
   struct RadioTap : network::FrameSinkI {
     network::FrameSinkI *next = nullptr;
     bool seen = false;
@@ -185,7 +184,6 @@ private:
   RcIngressTap usbRcTap_, uartRcTap_; ///< per-link RC_STATE decoding (T9b-1)
   bool committed_ = false;
   bool sourceChangePending_ = false;
-  int64_t startNs_ = 0;
   uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
   ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks
 };

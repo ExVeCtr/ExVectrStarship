@@ -10,9 +10,9 @@
  *   BENCH = node 0 on USB (the ground station's virtual radio on the vehicle's USB).
  * Every other RC_STATE is rejected and counted per reason (RcReject).
  *
- * T9b-1 is OBSERVE ONLY: nothing acts on the active source yet and the failure rule is unchanged.
- * `committed` (interlock open, mission chain pending or mode Running) is an input that update() already honours
- * (the active source latches), but main.cpp passes false until the interlock exists (T9b-2).
+ * `committed` (interlock open, mission chain pending or mode Running) is an input of update() (the active source
+ * latches) and of failsafeDue(), the one control failsafe rule (T9b-3): committed and the latched source is None
+ * or older than 2 s. VehicleNetwork::controlSourceLost() evaluates it on a snapshot for main.cpp's checkForFailures.
  *
  * Arbitration (update): while not committed the radio is preferred while it is fresh (last accepted state at most
  * kCtrlTimeoutNs old). A handover back to RADIO from BENCH needs kHandoverNs of continuous radio states (a gap
@@ -74,6 +74,14 @@ struct ControlSourceSnapshot {
     const int64_t a = ageNs(id, nowNs);
     return a >= 0 && a <= timeoutNs;
   }
+  /// The control failsafe condition (T9b-3, design 3.1.3, safety.md 4.1): committed and the active (latched) source
+  /// is None or older than `timeoutNs`. Not committed: never due (D2-B, losing every source only sets NONE).
+  /// Pure function of the snapshot, so the safety task evaluates it on a consistent seqlock copy.
+  bool failsafeDue(int64_t nowNs, bool committed, int64_t timeoutNs) const {
+    if (!committed) return false;
+    if (active == ControlSourceId::None) return true;
+    return !fresh(active, nowNs, timeoutNs);
+  }
 };
 
 class ControlSourceTable {
@@ -114,8 +122,8 @@ public:
   /// Bit 0 RADIO fresh, bit 1 BENCH fresh (also for the ignored source).
   uint8_t freshMask(int64_t nowNs) const;
   const uint8_t *rejectCounts() const { return cur_.rejects; }
-  /// The control failsafe condition (NOT wired in T9b-1): committed and the active source is None or older than
-  /// kCtrlTimeoutNs.
+  /// The control failsafe condition (wired in T9b-3): committed and the active source is None or older than
+  /// kCtrlTimeoutNs. Comms task only (live view); other tasks use ControlSourceSnapshot::failsafeDue.
   bool failsafeDue(int64_t nowNs, bool committed) const;
 
   /// Seqlock read of the published state. False only if the writer was busy on every retry (never on a

@@ -27,7 +27,7 @@ uint32_t packFailureBits(const FailureState &f) {
   if (f.positionFailure) b |= 1u << 2;
   if (f.positionOutOfBounds) b |= 1u << 3;
   if (f.attitudeOutOfBounds) b |= 1u << 4;
-  if (f.radioConnectionLoss) b |= 1u << 5;
+  if (f.controlSourceLost) b |= 1u << 5;
   if (f.interlockWatchdog) b |= 1u << 13;
   return b;
 }
@@ -145,7 +145,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   // T9b-1/T9b-2: ctrl_flags carries the control-source bits and INTERLOCK_NEED_TOGGLE so far; the other command-path fields are "none"
   p.ctrl_flags = s.ctrlFlags;
   p.go_refusal = 0;     // 0 = none
-  p.degraded_bits = 0;
+  p.degraded_bits = s.degradedBits;
   p.mission_profile = 255; // 255 = no profile latched
   p.rc_rejected = s.rcRejected;
   return p;

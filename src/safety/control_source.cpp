@@ -109,9 +109,7 @@ void ControlSourceTable::update(int64_t nowNs, bool committed) {
 }
 
 bool ControlSourceTable::failsafeDue(int64_t nowNs, bool committed) const {
-  if (!committed) return false;
-  if (cur_.active == ControlSourceId::None) return true;
-  return !cur_.fresh(cur_.active, nowNs, kCtrlTimeoutNs);
+  return cur_.failsafeDue(nowNs, committed, kCtrlTimeoutNs);
 }
 
 void ControlSourceTable::publish() {

@@ -60,7 +60,7 @@ namespace VCTR
         bool positionOutOfBounds;
         bool attitudeOutOfBounds;
 
-        bool radioConnectionLoss;
+        bool controlSourceLost;
 
         bool interlockWatchdog; // T9b-2: the 100 Hz motor-interlock watchdog did not run for 100 ms (bit 13)
 

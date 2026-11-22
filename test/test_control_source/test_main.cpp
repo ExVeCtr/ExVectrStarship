@@ -1,6 +1,6 @@
-// Host tests of src/safety/control_source.cpp (T9b-1): pio test -e native -f test_control_source
+// Host tests of src/safety/control_source.cpp (T9b-1, T9b-3): pio test -e native -f test_control_source
 // Covers the (src, link) table, the sequence rule per source, SOURCE_OK, freshness, radio priority, the 0.5 s
-// handover hysteresis, the latching input, the failsafe predicate (not wired) and the seqlock snapshot.
+// handover hysteresis, the latching input, the control failsafe predicate (T9b-3: timing, rejected frames, D2-B, ignored source) and the seqlock snapshot.
 #include <unity.h>
 
 #include <atomic>
@@ -236,6 +236,76 @@ void test_failsafe_predicate() {
   TEST_ASSERT_TRUE(t->failsafeDue(3 * S + 1, true));
 }
 
+// T9b-3 acceptance: 10 Hz safety tick, the failsafe is due 2.0-2.1 s after the last accepted state of the latched source.
+void test_failsafe_timing_on_10hz_tick() {
+  int64_t last = 0;
+  for (int64_t n = 0; n <= 100; n++) { // radio at 25 Hz for 4 s, committed from 1 s
+    const int64_t now = n * 40 * MS;
+    radio(now);
+    last = now;
+    t->update(now, now >= 1 * S);
+  }
+  int64_t dueAt = -1;
+  for (int64_t now = last; now <= last + 3 * S; now += 100 * MS) { // radio silent, 10 Hz ticks
+    t->update(now, true);
+    ControlSourceSnapshot s;
+    TEST_ASSERT_TRUE(t->snapshot(s));
+    TEST_ASSERT_EQUAL(t->failsafeDue(now, true), s.failsafeDue(now, true, ControlSourceTable::kCtrlTimeoutNs));
+    if (t->failsafeDue(now, true)) {
+      dueAt = now - last;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE(dueAt > 2 * S && dueAt <= 2 * S + 100 * MS);
+}
+
+// Only accepted RC_STATE keeps the latched source alive: rejected frames (SOURCE_OK clear, wrong key, stale
+// sequence, bad length) from either source never refresh it.
+void test_failsafe_not_kept_alive_by_rejected_frames() {
+  radio(1 * S);
+  t->update(1 * S, false);
+  t->update(1 * S, true);
+  TEST_ASSERT_EQUAL((int)ControlSourceId::Radio, (int)t->active());
+  RcFrame bad = okFrame(0);
+  bad.flags = 0; // SOURCE_OK clear
+  uint8_t seq = 100;
+  for (int64_t now = 1 * S + 40 * MS; now <= 4 * S; now += 40 * MS) {
+    t->onRcFrame(2, RcLink::Uart, seq++, bad, now);        // Pocket gone, module still sends SOURCE_OK clear
+    t->onRcFrame(0, RcLink::Uart, seq++, okFrame(0), now); // GS RC on the radio: never accepted
+    t->onMalformed();
+    t->update(now, true);
+  }
+  TEST_ASSERT_TRUE(t->failsafeDue(4 * S, true));
+}
+
+// D2-B: not committed, every source gone: ctrl_source NONE, no failsafe, whatever the time; the latch only
+// matters once committed. A source coming back is picked up again.
+void test_not_committed_all_sources_gone_is_none_not_failsafe() {
+  radio(1 * S);
+  t->update(1 * S, false);
+  TEST_ASSERT_EQUAL((int)ControlSourceId::Radio, (int)t->active());
+  t->update(10 * S, false);
+  TEST_ASSERT_EQUAL((int)ControlSourceId::None, (int)t->active());
+  TEST_ASSERT_FALSE(t->failsafeDue(10 * S, false));
+  TEST_ASSERT_FALSE(t->failsafeDue(1000 * S, false));
+  radio(11 * S);
+  t->update(11 * S, false);
+  TEST_ASSERT_EQUAL((int)ControlSourceId::Radio, (int)t->active());
+}
+
+// Committed with the other (ignored) source fresh: only the latched source's silence counts.
+void test_failsafe_ignores_fresh_other_source() {
+  radio(1 * S);
+  t->update(1 * S, false);
+  t->update(1 * S, true);
+  for (int64_t now = 1 * S; now <= 4 * S; now += 40 * MS) {
+    bench(now);
+    t->update(now, true);
+  }
+  TEST_ASSERT_EQUAL((int)ControlSourceId::Radio, (int)t->active());
+  TEST_ASSERT_TRUE(t->failsafeDue(4 * S, true));
+}
+
 void test_snapshot_matches_live_and_age_helpers() {
   radio(1 * S, okFrame(123));
   t->update(1 * S, false);
@@ -294,6 +364,10 @@ int main() {
   RUN_TEST(test_committed_latches_the_active_source);
   RUN_TEST(test_latch_with_nothing_active_stays_none);
   RUN_TEST(test_failsafe_predicate);
+  RUN_TEST(test_failsafe_timing_on_10hz_tick);
+  RUN_TEST(test_failsafe_not_kept_alive_by_rejected_frames);
+  RUN_TEST(test_not_committed_all_sources_gone_is_none_not_failsafe);
+  RUN_TEST(test_failsafe_ignores_fresh_other_source);
   RUN_TEST(test_snapshot_matches_live_and_age_helpers);
   RUN_TEST(test_snapshot_never_torn_under_concurrent_writes);
   return UNITY_END();

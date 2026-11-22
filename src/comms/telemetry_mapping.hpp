@@ -52,7 +52,7 @@ struct TelemetrySnapshot {
   bool armed = false;
   bool simulation = false;
   bool motorsEnabled = false; ///< motor outputs enabled by the existing logic (StarshipTVC motors && actuators)
-  bool gsPresent = false;     ///< ground station node 0 present (the radioConnectionLoss observable)
+  bool gsPresent = false;     ///< ground station node 0 present (information only)
   bool incompatible = false;  ///< a present node reported another network version or schema hash
   bool uartPeerSeen = false;  ///< valid frame from the ship node (3) on the UART within 3 s (information only)
   bool zeroing = false;       ///< estimator zeroing window active (boot zero or ZeroEstimators)
@@ -111,6 +111,7 @@ struct TelemetrySnapshot {
   float rcAgeS = __builtin_nanf("");     ///< age of the last accepted RC_STATE of the active source, s, NaN = none
   uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (INTERLOCK_NEED_TOGGLE, RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
   uint8_t rcRejected = 0;                ///< wrapping count of rejected RC_STATE frames
+  uint8_t degradedBits = 0;              ///< VehicleStatus.degraded_bits (T9b-3: UART_HEARTBEAT_LOST only; information, never latched)
   /// RC_APPLIED content (USB only)
   struct RcAppliedView {
     uint8_t sa = 0, sb = 255, sc = 255, sd = 0, se = 0; ///< decoded; SA/SD/SE invalid -> 0, SB/SC invalid -> 255

@@ -113,9 +113,9 @@ public:
 
   /// Ground station (node 0) heard on USB or UART within 2 s. Information only (gs_present).
   bool isGroundStationPresent() const { return net_.isGroundStationPresent(); }
-  /// Radio link alive (VehicleNetwork::isRadioLinkAlive): the radioConnectionLoss observable.
-  bool isRadioLinkAlive() const { return net_.isRadioLinkAlive(); }
-  /// A radio packet really arrived within 2 s, no boot grace (VehicleNetwork::isRadioPacketRecent): "connected".
+  /// The control failsafe condition (VehicleNetwork::controlSourceLost): the ONE rule, see there.
+  bool controlSourceLost(bool committed) const { return net_.controlSourceLost(committed); }
+  /// A radio packet really arrived within 2 s (VehicleNetwork::isRadioPacketRecent): "connected", information only.
   bool isRadioPacketRecent() const { return net_.isRadioPacketRecent(); }
 
   void taskInit() override;

@@ -4,8 +4,9 @@
 // nodes standing in for what the RX module forwards (node 0 data, node 3 heartbeats). Covers:
 //  - ground-station presence (gs_present, information only): 2 s timeout, any valid frame from node 0 on
 //    either link, nothing else counts;
-//  - the radio link rule (radioConnectionLoss): DATA frames from node 0 or 2 on the UART only, 2 s timeout,
-//    10 s boot grace before the first radio packet; heartbeats, node 3 and USB never count;
+//  - general link health (isRadioPacketRecent, information only): DATA frames from node 0 or 2 on the UART only,
+//    2 s, no boot grace; heartbeats, node 3 and USB never count;
+//  - the control failsafe (controlSourceLost, T9b-3): only accepted RC_STATE of the latched source keeps it alive;
 //  - the TEMPORARY legacy telecommand adapter: from node 0 only, unchanged struct, delivered once when it arrives
 //    on both links;
 //  - telemetry sets: USB set at the USB rates on USB, radio set at the air rates on the UART, no USB-only port on
@@ -199,7 +200,7 @@ void test_other_nodes_never_give_gs_presence() {
   TEST_ASSERT_FALSE(rig->net.isGroundStationPresent());
 }
 
-// ---------------------------------------------------------------- radio link (radioConnectionLoss observable)
+// ---------------------------------------------------------------- general link health (information only)
 
 static void sendData(Peer &p, uint8_t port = 0x10) {
   const uint8_t b[4] = {1, 2, 3, 4};
@@ -208,51 +209,33 @@ static void sendData(Peer &p, uint8_t port = 0x10) {
   rig->net.pollLinks();
 }
 
-void test_radio_boot_grace_without_any_radio_packet() {
+void test_radio_no_boot_grace_nothing_seen_is_not_recent() {
   rig->pollAll();
   TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive()); // boot grace
-  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent()); // but nothing was ever received: not "connected"
-  rig->clk.advanceMs(10000);                      // exactly 10 s after construction: still in the grace
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
-  rig->clk.t += 1;
-  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive()); // no radio packet within the grace: lost
+  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent()); // nothing was ever received: not "connected"
 }
 
 void test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout() {
   Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx); // Router / Pocket RC_STATE
-  rig->clk.advanceMs(20000);                                               // grace long over
-  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  rig->clk.advanceMs(20000);
   TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
   sendData(tx);
   TEST_ASSERT_TRUE(rig->net.radioPacketSeen());
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
   TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
-  rig->clk.advanceMs(2000); // exactly 2 s: alive
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  rig->clk.advanceMs(2000); // exactly 2 s: recent
   TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
-  rig->clk.t += 1; // just over: lost
-  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
+  rig->clk.t += 1; // just over: not recent
   TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
   rig->clk.advanceMs(5000); // restart after a gap
   sendData(tx);
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
 }
 
 void test_radio_node0_data_on_uart_keeps_alive() {
   rig->clk.advanceMs(20000);
   TEST_ASSERT_TRUE(rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0)); // relayed by the Router
   rig->pollAll();
-  TEST_ASSERT_TRUE(rig->net.isRadioLinkAlive());
-}
-
-void test_radio_after_first_packet_grace_no_longer_applies() {
-  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
-  sendData(tx); // first packet at t = 0 s after boot
   TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
-  rig->clk.advanceMs(2001);
-  TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
-  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive()); // within the 10 s boot window, but the 2 s rule applies
 }
 
 void test_radio_heartbeats_node3_and_usb_never_count() {
@@ -279,7 +262,6 @@ void test_radio_heartbeats_node3_and_usb_never_count() {
   TEST_ASSERT_TRUE(rig->net.uartNode().isPresent(3));
   TEST_ASSERT_TRUE(rig->net.isGroundStationPresent()); // gs_present (information) still works
   TEST_ASSERT_FALSE(rig->net.radioPacketSeen());
-  TEST_ASSERT_FALSE(rig->net.isRadioLinkAlive());
   TEST_ASSERT_FALSE(rig->net.isRadioPacketRecent());
 }
 
@@ -607,6 +589,114 @@ void test_rc_source_lost_after_2s() {
   TEST_ASSERT_TRUE(s.rcApplied.radioAgeS > 2.0f); // the per-source ages keep counting
 }
 
+
+// ---------------------------------------------------------------- T9b-3: the control failsafe (the one rule)
+
+/// Committed, RADIO latched; then the Pocket goes off: heartbeats of the modules, node 0 data (GS REQUEST or
+/// telecommand over the radio) and node 2 non-RC data keep arriving. Only accepted RC_STATE counts.
+void test_control_failsafe_only_accepted_rc_state_keeps_it_alive() {
+  memset(rcSeqCounter, 0, sizeof rcSeqCounter);
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  Peer rx(&rig->uartDown, &rig->uartUp, rig->clk, 3, wire::Role::LinkRx);
+  sendRc(tx, 0);
+  settle(); // the source is selected while not committed, then latched
+  rig->net.setCommitted(true);
+  settle();
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true));
+  // Pocket off: 40 ms steps for 2.0 s, everything except RC_STATE keeps arriving
+  for (int i = 0; i < 50; i++) {
+    rig->clk.advanceMs(40);
+    if (i % 5 == 0) {
+      tx.node.sendHeartbeat();
+      rx.node.sendHeartbeat();
+      tx.poll();
+      rx.poll();
+      sendData(tx, 0x11);  // node 2 data that is not RC_STATE (LINK_STATS)
+      rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0); // GS command over the radio
+      sendRc(rig->gsUart, 2);       // GS RC on the UART: rejected
+    }
+    settle();
+  }
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent()); // general link health is fine ...
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Radio, (int)rig->net.controlSources().active());
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true)); // ... exactly 2.0 s after the last state: not yet
+  rig->clk.advanceMs(100);
+  settle();
+  TEST_ASSERT_TRUE(rig->net.controlSourceLost(true)); // 2.0-2.1 s: failsafe
+  TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent()); // link health never decided anything
+  // a state coming back means the source is fresh again (the latch of the failure itself lives in main.cpp)
+  sendRc(tx, 0);
+  settle();
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true));
+}
+
+void test_control_failsafe_not_committed_never_due() { // D2-B
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(tx, 0);
+  settle();
+  rig->clk.advanceMs(5000);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)rig->net.controlSources().active());
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(false));
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(false));
+  // committed with no source at all (for example a mission started without any RC): due at once
+  TEST_ASSERT_TRUE(rig->net.controlSourceLost(true));
+}
+
+void test_control_failsafe_gs_absent_while_radio_active_is_nothing() {
+  memset(rcSeqCounter, 0, sizeof rcSeqCounter);
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  sendRc(tx, 0);
+  settle();
+  rig->net.setCommitted(true);
+  for (int i = 0; i < 100; i++) { // 4 s of Pocket RC at 25 Hz, no ground station on either link
+    sendRc(tx, 0);
+    settle();
+    rig->clk.advanceMs(40);
+  }
+  TEST_ASSERT_FALSE(rig->net.isGroundStationPresent());
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true));
+}
+
+void test_control_failsafe_bench_source_timing() { // the GS as the bench source (lease released = RC stops)
+  memset(rcSeqCounter, 0, sizeof rcSeqCounter);
+  sendRc(rig->gsUsb, 1);
+  settle();
+  rig->net.setCommitted(true);
+  settle();
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Bench, (int)rig->net.controlSources().active());
+  rig->clk.advanceMs(2000);
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true));
+  rig->clk.advanceMs(1);
+  TEST_ASSERT_TRUE(rig->net.controlSourceLost(true));
+}
+
+void test_degraded_uart_heartbeat_lost_is_information_only() {
+  memset(rcSeqCounter, 0, sizeof rcSeqCounter);
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  Peer rx(&rig->uartDown, &rig->uartUp, rig->clk, 3, wire::Role::LinkRx);
+  rx.node.sendHeartbeat();
+  rx.poll();
+  sendRc(tx, 0);
+  settle();
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_HEX8(0, s.degradedBits);
+  for (int i = 0; i < 80; i++) { // RC keeps arriving, the ship node is silent for 3.2 s
+    rig->clk.advanceMs(40);
+    sendRc(tx, 0);
+    settle();
+  }
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_HEX8(Packets::VehicleStatus::kDegradedBitsUartHeartbeatLost, s.degradedBits);
+  TEST_ASSERT_FALSE(rig->net.controlSourceLost(true)); // never a failsafe
+  rx.node.sendHeartbeat(); // recovers by itself
+  rx.poll();
+  rig->net.pollLinks();
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_EQUAL_HEX8(0, s.degradedBits);
+}
+
 // ---------------------------------------------------------------- T9b-2: interlock fed through the real taps
 
 /// One RC frame from `p` followed by a comms tick, then 40 ms.
@@ -766,10 +856,9 @@ int main() {
   RUN_TEST(test_gs_heartbeat_on_usb_gives_presence_for_2s);
   RUN_TEST(test_gs_data_on_uart_gives_presence);
   RUN_TEST(test_other_nodes_never_give_gs_presence);
-  RUN_TEST(test_radio_boot_grace_without_any_radio_packet);
+  RUN_TEST(test_radio_no_boot_grace_nothing_seen_is_not_recent);
   RUN_TEST(test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout);
   RUN_TEST(test_radio_node0_data_on_uart_keeps_alive);
-  RUN_TEST(test_radio_after_first_packet_grace_no_longer_applies);
   RUN_TEST(test_radio_heartbeats_node3_and_usb_never_count);
   RUN_TEST(test_uart_peer_seen_from_node3_on_uart_for_3s);
   RUN_TEST(test_uart_peer_seen_ignores_usb_and_other_nodes);
@@ -790,6 +879,11 @@ int main() {
   RUN_TEST(test_rc_frames_do_not_use_the_shared_mux_sequence_state);
   RUN_TEST(test_rc_heartbeats_and_other_ports_are_not_rc);
   RUN_TEST(test_rc_source_lost_after_2s);
+  RUN_TEST(test_control_failsafe_only_accepted_rc_state_keeps_it_alive);
+  RUN_TEST(test_control_failsafe_not_committed_never_due);
+  RUN_TEST(test_control_failsafe_gs_absent_while_radio_active_is_nothing);
+  RUN_TEST(test_control_failsafe_bench_source_timing);
+  RUN_TEST(test_degraded_uart_heartbeat_lost_is_information_only);
   RUN_TEST(test_interlock_radio_toggle_opens_and_boot_enabled_never_opens);
   RUN_TEST(test_interlock_source_ok_clear_frames_are_no_data);
   RUN_TEST(test_interlock_gs_rc_on_uart_is_ignored);

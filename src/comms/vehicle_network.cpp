@@ -67,7 +67,6 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
   radioTap_.next = &uartNode_;
   uartRcTap_.next = &radioTap_;
   uartLink_.setSink(uartRcTap_, static_cast<uint8_t>(uartIndex));
-  startNs_ = time_.nowNs();
   // One transport for both links: a frame arriving on both is delivered once.
   usbNode_.setDataSink(mux_);
   uartNode_.setDataSink(mux_);
@@ -82,7 +81,7 @@ void VehicleNetwork::pollLinks() {
 void VehicleNetwork::pollNodes() {
   usbNode_.poll();
   uartNode_.poll();
-  // Control-source arbitration (T9b-1, observe only): a change resets the transition detectors.
+  // Control-source arbitration (T9b-1): a change resets the transition detectors.
   const int64_t now = time_.nowNs();
   controlSources_.update(now, committed_);
   if (controlSources_.sourceChangedSinceLast()) {
@@ -104,6 +103,12 @@ void VehicleNetwork::fillRcTelemetry(TelemetrySnapshot &s) {
   Safety::ControlSourceSnapshot cs;
   if (!controlSources_.snapshot(cs)) cs = controlSources_.live(); // comms task is the writer
   Comms::fillRcTelemetry(s, cs, rcMapper_, time_.nowNs(), motorInterlock_.needToggle(time_.nowNs()));
+  // Degraded (information only, clears by itself, never a failure): the ship node (3) was not heard on the UART
+  // for 3 s while RADIO RC_STATE is arriving. Any valid frame from node 3 counts (heartbeat or LINK_STATS), so this
+  // is "UART_HEARTBEAT_LOST" in the broad sense. LINK_STATS_LOST (bit 1) and TOF_LOST (bit 0) are T9b-6.
+  s.degradedBits = 0;
+  if ((s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsRadioFresh) && !isUartPeerSeen())
+    s.degradedBits |= Packets::VehicleStatus::kDegradedBitsUartHeartbeatLost;
 }
 
 bool VehicleNetwork::due(uint32_t tick, uint16_t hz, uint32_t phase) {
@@ -163,9 +168,10 @@ bool VehicleNetwork::isRadioPacketRecent() const {
   return radioTap_.seen && time_.nowNs() - radioTap_.lastNs <= kRadioTimeoutNs;
 }
 
-bool VehicleNetwork::isRadioLinkAlive() const {
-  if (radioTap_.seen) return isRadioPacketRecent();
-  return time_.nowNs() - startNs_ <= kRadioStartupGraceNs;
+bool VehicleNetwork::controlSourceLost(bool committed) const {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) return false; // writer busy on all 8 retries (not expected: cooperative scheduler); the next 10 Hz check decides
+  return cs.failsafeDue(time_.nowNs(), committed, Safety::ControlSourceTable::kCtrlTimeoutNs);
 }
 
 bool VehicleNetwork::isUartPeerSeen() const {

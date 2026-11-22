@@ -69,7 +69,7 @@ void test_failure_bits() {
   f.sensorFailure = true;
   TEST_ASSERT_EQUAL_HEX32(0x01, packFailureBits(f));
   f = {};
-  f.radioConnectionLoss = true;
+  f.controlSourceLost = true;
   TEST_ASSERT_EQUAL_HEX32(0x20, packFailureBits(f));
   f.positionOutOfBounds = true;
   f.attitudeOutOfBounds = true;
@@ -115,7 +115,7 @@ void test_time_us_wraps() {
 
 void test_vehicle_status() {
   TelemetrySnapshot s = sample();
-  s.failures.radioConnectionLoss = true;
+  s.failures.controlSourceLost = true;
   auto p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_INT64(s.t_ns, p.t_ns);
   TEST_ASSERT_EQUAL_UINT32(timeUs(s.t_ns), p.t_us);
