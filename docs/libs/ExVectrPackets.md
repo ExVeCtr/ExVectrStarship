@@ -19,7 +19,7 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 | Port | Packet | Set | Rate on the vehicle | Content (SI) |
 |---|---|---|---|---|
 | 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags (incl. `UART_PEER_SEEN`, node 3 heard on the UART within 3 s, information only; `ZEROING`, estimator zeroing window active; the byte is now full), failure bits, sensor states |
-| 0x21 | `AirPose` | radio | 10 Hz UART | q (i16), position (i32, 1 mm), velocity (i16, 0.01 m/s), fixed point, 30 B |
+| 0x21 | `AirPose` | radio | 25 Hz UART (constant in the vehicle; schema 10 Hz in the pinned version) | q (i16), position (i32, 1 mm), velocity (i16, 0.01 m/s), fixed point, 30 B |
 | 0x22 | `AirActuators` | radio | 25 Hz UART, 2 samples each (50 samples/s) | newest and previous (about 20 ms older, `prev_age`) actuator sample: TVC deflection, roll torque, thrust, flaps; i16/u16 fixed point, 38 B |
 | 0x23 | `AirMission` | radio | 5 Hz UART | mission time (i32 ms), mission mode, phase, index, waypoint, position setpoint (i32 1 mm), velocity setpoint (i16 0.01 m/s), attitude setpoint `setpoint_q` (i16, as `AirPose.q`; all 0 = none), 38 B |
 | 0x03 | `HandsetTelem` | USB + radio | 2 Hz each | display values for the Pocket (dst 0xFF) |

@@ -181,5 +181,5 @@ Use it on the bench for every Development verification (see [../development-work
 ## Telemetry and display
 
 - Downlink rates and ports: [codebase-structure.md](../codebase-structure.md#data-flow-topic-graph).
-- USB carries the full telemetry set (pose 100 Hz, actuators incl. flap angles 50 Hz, status/mission 20 Hz, GNSS, debug packets) and the console as `LOG_TEXT`; the UART to the RX module carries the radio set (status 5 Hz, `AIR_POSE` 10 Hz, `HANDSET_TELEM` 2 Hz). USB serial is binary: use the ground station, not a serial monitor.
+- USB carries the full telemetry set (pose 100 Hz, actuators incl. flap angles 50 Hz, status/mission 20 Hz, GNSS, debug packets) and the console as `LOG_TEXT`; the UART to the RX module carries the radio set (status 5 Hz, `AIR_POSE` 25 Hz, `HANDSET_TELEM` 2 Hz). USB serial is binary: use the ground station, not a serial monitor.
 - The 128×32 OLED shows velocity/position per axis, satellite count, position accuracy, tilt, heading and link status.

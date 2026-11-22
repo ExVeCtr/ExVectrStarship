@@ -422,7 +422,8 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Pose::kPort]);
   // Radio set on the UART (air rates), nothing from the USB-only range
   TEST_ASSERT_EQUAL_UINT32(5, uart.n[Packets::VehicleStatus::kPort]);
-  TEST_ASSERT_EQUAL_UINT32(10, uart.n[Packets::AirPose::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(VehicleNetwork::kAirPoseRateHz, uart.n[Packets::AirPose::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(25, uart.n[Packets::AirPose::kPort]);
   TEST_ASSERT_EQUAL_UINT32(2, uart.n[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT32(25, uart.n[Packets::AirActuators::kPort]);
   TEST_ASSERT_EQUAL_UINT32(5, uart.n[Packets::AirMission::kPort]);
@@ -434,7 +435,7 @@ void test_telemetry_sets_and_rates() {
     if (p >= 0x80) usbOnly += uart.n[p];
   }
   TEST_ASSERT_EQUAL_UINT32(0, usbOnly);
-  TEST_ASSERT_EQUAL_UINT32(47, uartTotal);
+  TEST_ASSERT_EQUAL_UINT32(62, uartTotal);
   // Vehicle heartbeat on both links
   const NodeEntry *hu = rig->gsUsb.node.entry(1);
   const NodeEntry *hr = rig->gsUart.node.entry(1);

@@ -281,13 +281,13 @@ The packets are the generated ExVectrPackets classes (schema hash 0xBFF82392, by
 | 0x92 | `TASK_TIMING` | 5 Hz | – | 0 |
 | 0x93 | `CALIBRATION` | 0.5 Hz (every 2 s, `VehicleNetwork::kCalibrationPeriodTicks`; the schema rate is 0) | – | 0 |
 | 0x03 | `HANDSET_TELEM` | 2 Hz | 2 Hz | 0xFF |
-| 0x21 | `AIR_POSE` | – | 10 Hz | 0 |
+| 0x21 | `AIR_POSE` | – | 25 Hz (`VehicleNetwork::kAirPoseRateHz`, every 4 ticks) | 0 |
 | 0x22 | `AIR_ACTUATORS` (two samples per packet) | – | 25 Hz | 0 |
 | 0x23 | `AIR_MISSION` | – | 5 Hz | 0 |
 | 0x02 | `LOG_TEXT` | as printed | – | 0 |
 | – | heartbeat | 1 Hz | 1 Hz | 0xFF |
 
-UART total about 2.0 kB/s including framing (air downlink: about 2.14 kB/s of 6.15 kB/s entry capacity, 35 % since `AIR_MISSION.setpoint_q`, see ExVectrPackets `docs/telemetry-sets.md`); USB about 18 kB/s plus log text. Bench check 2026-11-20 over the air: 24.6 `AIR_ACTUATORS`/s and 4.8 `AIR_MISSION`/s arrived at the ground station, `prev_age` 17.5-22.5 ms (mean 20.0 ms).
+UART total about 2.8 kB/s including framing (6.1 % of the 46.08 kB/s of 460800 baud 8N1; about 3.15 kB/s, 6.8 %, with the planned `AIR_GNSS` packets; was 2.19 kB/s with AIR_POSE at 10 Hz). Air downlink: about 2.7 kB/s of entries of 6.15 kB/s entry capacity (about 44 %; AIR_POSE 25 Hz since 2026-11-22; before 35 % since `AIR_MISSION.setpoint_q`, see ExVectrPackets `docs/telemetry-sets.md`); USB about 18 kB/s plus log text. Bench check 2026-11-20 over the air: 24.6 `AIR_ACTUATORS`/s and 4.8 `AIR_MISSION`/s arrived at the ground station, `prev_age` 17.5-22.5 ms (mean 20.0 ms).
 
 **Sources** (`TelemetryProvider`, main.cpp; read-only, in the telemetry task): attitude and position from the topic switches (estimators, or the body simulator in simulation mode, as everything downstream sees them), ground distance from the ground topic switch, GNSS from `gnss`, flap angles from `trueFlapSettingTopic`, TVC from `StarshipTVC::getTVCActualThrustTopic()`, raw sensors from the MPU9250, QMC5883 and BME280 topics, standard deviations from the estimators' covariances, mode/mission/failures from `VehicleSafetyAndControlTask`.
 

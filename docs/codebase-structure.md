@@ -112,7 +112,7 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x02 | `LOG_TEXT` (console) | down | as printed | – |
 | 0x03 | `HANDSET_TELEM` (dst 0xFF) | down | 2 Hz | 2 Hz |
 | 0x20 | `VEHICLE_STATUS` | down | 20 Hz | 5 Hz |
-| 0x21 | `AIR_POSE` | down | – | 10 Hz |
+| 0x21 | `AIR_POSE` | down | – | 25 Hz |
 | 0x22 | `AIR_ACTUATORS` (2 samples per packet) | down | – | 25 Hz |
 | 0x23 | `AIR_MISSION` | down | – | 5 Hz |
 | 0x7F | legacy `Telecommand`, **TEMPORARY until T9b**, from node 0 only | up | yes | yes |
