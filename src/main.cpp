@@ -39,6 +39,8 @@
 #include "safety/estimator_zeroing.hpp"
 #include "safety/control_phase.hpp"
 #include "safety/mission_abort.hpp"
+#include "safety/motor_interlock.hpp"
+#include "safety/rc_command.hpp"
 #include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
@@ -286,6 +288,42 @@ MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(),
                                   controlAttitudeTvc, controlMappingAccToAtt);
 
 /**
+ * Hard motor interlock watchdog (T9b-2, docs/t9b-design.md 3.4.2). 100 Hz, priority above every controller (the
+ * controllers run at 100..110), independent of the controller publications: the TVC task is event driven and does
+ * not run if the controller stops, so this task closes the motor outputs on its own. While the gate is closed it
+ * calls StarshipTVC::forceMotorsOff() every run (duty 0, sticky closed flag, modelled thrust 0); while open it
+ * releases the flag. The safety task latches a failsafe if this task has not run for 100 ms
+ * (Safety::interlockWatchdogStale). Reads no simulation flag.
+ */
+class MotorInterlockWatchdog : public Core::Task_Periodic {
+public:
+  static constexpr uint16_t kPriority = 120;
+  static constexpr int64_t kPeriodNs = 10 * Core::MILLISECONDS;
+
+  MotorInterlockWatchdog() : Task_Periodic("Motor interlock watchdog", kPeriodNs) {
+    Core::getSystemScheduler().addTask(*this);
+    setPriority(kPriority);
+  }
+
+  void taskThread() override {
+    const int64_t now = Core::NowNs();
+    lastRunNs_ = now;
+    if (starshipTVC.interlockOpen(now)) {
+      starshipTVC.releaseMotorsForce();
+    } else {
+      starshipTVC.forceMotorsOff();
+    }
+  }
+
+  /// Time of the last run, 0 if it never ran.
+  int64_t lastRunNs() const { return lastRunNs_; }
+
+private:
+  int64_t lastRunNs_ = 0;
+};
+MotorInterlockWatchdog motorInterlockWatchdog;
+
+/**
  * This class takes care of enabling, disabling and setting the actuators for
  * the rocket. It also prepares the system for mission start and signals when
  * something is wrong.
@@ -316,7 +354,16 @@ private:
 
   MissionMode lastMissionMode_ = MissionMode::MissionMode_Idle;
 
-  bool vehicleArmed_ = false;
+  // RC command path (T9b-4): the pure intent layer, its telemetry cache and the removed-telecommand counter.
+  Safety::RcCommandLogic rcLogic_;
+  uint16_t cmdFlags_ = 0;          ///< VEHICLE_STATUS ctrl_flags bits owned by the vehicle logic
+  uint8_t missionProfile_ = 255;   ///< SB position latched at the last go, 255 = none
+  uint32_t removedTelecommands_ = 0;
+  Safety::LogRateLimit removedTelecommandLog_{5 * Core::SECONDS};
+  Safety::LogRateLimit goRefusedLog_{2 * Core::SECONDS};
+  Safety::LogRateLimit scRefusedLog_{2 * Core::SECONDS};
+  Safety::LogRateLimit seRefusedLog_{2 * Core::SECONDS};
+  bool interlockOpenLogged_ = false; ///< last logged gate state (superviseMotorInterlock)
   bool allSystemsInitialised_ = false;
   bool simulationMode_ = false;
   SNSR::GnssConfigWarning gnssConfigWarning_; ///< GNSS configuration warning line (information only)
@@ -365,24 +412,6 @@ private:
 
   MissionPhase missionPhase_ = MissionPhase::MissionPhase_Idle;
 
-  // Log rate limit of the auto-disarm messages (logging only, no effect on the
-  // arm logic): once when the reason changes, then every DISARM_LOG_PERIOD.
-  static constexpr int64_t DISARM_LOG_PERIOD = 5 * Core::SECONDS;
-  int lastDisarmReason_ = 0; // 0 none, 1 failure, 2 calib, 3 startup, 4 init, 5 calibration invalid
-  int64_t lastDisarmLogNs_ = 0;
-
-  /// True if the auto-disarm message for `reason` should be logged now.
-  bool disarmLogDue(int reason) {
-    const int64_t now = Core::NowNs();
-    if (reason != lastDisarmReason_ ||
-        now - lastDisarmLogNs_ >= DISARM_LOG_PERIOD) {
-      lastDisarmReason_ = reason;
-      lastDisarmLogNs_ = now;
-      return true;
-    }
-    return false;
-  }
-
 public:
   VehicleSafetyAndControlTask()
       : Task_Periodic("Vehicle Safety and Control", 0.1 * Core::SECONDS) {
@@ -400,7 +429,8 @@ public:
     failureState_.sensorFailure = false;
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
-    failureState_.radioConnectionLoss = false;
+    failureState_.controlSourceLost = false;
+    failureState_.interlockWatchdog = false;
 
     mission_ = &defaultMission_; // Set the mission to the default mission
 
@@ -417,7 +447,9 @@ public:
   /// The live simulation flag (the flap fault model reads it at apply time).
   const bool *simulationFlag() const { return &simulationMode_; }
 
-  bool isVehicleArmed() { return vehicleArmed_; }
+  /// ARMED in the telemetry (T9b-4, D5 as implemented: the legacy arm state and its power limit are gone): the motor
+  /// interlock is open (SD enabled, transition observed, state at most 1 s old).
+  bool isVehicleArmed() { return vehicleComms.motorInterlock().open(Core::NowNs()); }
 
   /// The ZeroEstimators / boot-zero window is active (VEHICLE_STATUS flag ZEROING).
   bool estimatorZeroingActive() const { return zeroing_.active(); }
@@ -429,6 +461,9 @@ public:
     s.calibGyroValid = calibGyroValid_;
     s.calibAccelValid = calibAccelValid_;
     s.calibMagValid = calibMagValid_;
+    s.cmdFlags = cmdFlags_;
+    s.goRefusal = static_cast<uint8_t>(rcLogic_.lastGoRefusal());
+    s.missionProfile = missionProfile_;
     s.calibSessionActive = calibSessionActive_;
     s.readyToArm = readyToArm_;
   }
@@ -511,9 +546,9 @@ public:
   }
 
   /**
-   * "On the ground: reset and stop" (Safety::AbortAction::ResetAndStop), shared by the MissionAbort telecommand and the
+   * "On the ground: reset and stop" (Safety::AbortAction::ResetAndStop), shared by the SA abort and the
    * calibration abort of the countdown: TVC actuators and motors off, everything disabled, the mission chain reset and
-   * the active mission reset to Idle, failures cleared (so the vehicle goes Startup -> Ready), nothing follows. An
+   * the active mission reset to Idle, latches NOT cleared, vehicle back to Startup -> Ready, nothing follows. An
    * automatic gyro run that belonged to the countdown is cancelled.
    */
   void resetAndStopOnGround() {
@@ -524,8 +559,12 @@ public:
     // chain on the next tick. The mission stays the active one, in Idle.
     missionChain_.reset();
     mission_->resetMission();
-    clearFailures();
+    // T9b-4: ResetAndStop must NOT clear latches (only the SE short press does). The vehicle is Running here (decideAbort
+    // ignores every other mode), so no failure flag is set; only the sensor states are re-initialised so that the
+    // vehicle goes Startup -> Ready again.
+    reinitialiseSensorStates();
     cancelCountdownGyroRun();
+    vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::Abort); // D4-A
   }
 
   void cancelCountdownGyroRun() {
@@ -536,21 +575,23 @@ public:
   }
 
   /// Starts the automatic gyro bias run for a zeroing window ending at windowEndNs (boot zero, ZeroEstimators,
-  /// countdown Initialisation): only if the window holds the 5 s still window plus the reserve (planGyroRun).
+  /// countdown Initialisation): only if the window holds the still window of the run kind plus the reserve and slack
+  /// (planGyroRun: Startup 5 s window, Countdown 3 s window).
   /// Returns true if the run started.
   bool startGyroRunForWindow(int64_t windowEndNs, bool countdown) {
     const int64_t now = Core::NowNs();
-    const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs);
+    const Calibration::GyroRunKind kind = countdown ? Calibration::GyroRunKind::Countdown : Calibration::GyroRunKind::Startup;
+    const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs, kind);
     if (!plan.run) {
       LOG_MSG("Gyro bias run skipped: the zeroing window is shorter than %.0f s\n",
-              double(Calibration::kGyroRunMinWindowNs) / Core::SECONDS);
+              double(Calibration::gyroRunMinWindowNs(kind)) / Core::SECONDS);
       return false;
     }
     // A finished run that was not taken yet is delivered first, with the flags of the run that produced it.
     Calibration::GyroRunDone pending;
     if (calibrationService.takeGyroRunDone(pending))
       onGyroRunDone(pending);
-    if (!calibrationService.startGyroRun(now, plan.deadlineNs)) {
+    if (!calibrationService.startGyroRun(now, plan.deadlineNs, Calibration::gyroRunWindowNs(kind))) {
       LOG_MSG("Gyro bias run NOT started: a calibration session is busy\n");
       return false;
     }
@@ -604,7 +645,7 @@ public:
     } else {
       gyroRunState = Calibration::GyroRunState::Failed;
       char why[160];
-      DSP::Calib::describeGyroRun(r, DSP::Calib::GyroBiasConfig(), why, sizeof why);
+      DSP::Calib::describeGyroRun(r, calibrationService.gyroRunConfig(), why, sizeof why);
       Core::printW("Calibration: gyro bias run FAILED (%s, %lu restarts, checks 0x%x; %s): gyro calibration invalid until a "
                    "run passes (ZeroEstimators, vehicle still)\n",
                    DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks, why);
@@ -681,6 +722,265 @@ public:
     lastMissionMode_ = MissionMode::MissionMode_Idle;
   }
 
+
+  // ---- RC command path (T9b-4, docs/t9b-design.md 3.2, 3.3; the decisions are the pure Safety::RcCommandLogic) ----
+
+  /// D12 "on the ground" (SE reset, SC change): see Safety::onGround.
+  bool onGroundNow(int64_t now) {
+    Safety::GroundContext g;
+    g.interlockOpen = vehicleComms.motorInterlock().open(now);
+    g.motorsEnabled = starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled();
+    g.modeGround = vehicleMode_ == VehicleMode::VehicleMode_Startup || vehicleMode_ == VehicleMode::VehicleMode_Ready ||
+                   vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
+    g.modeFailure = vehicleMode_ == VehicleMode::VehicleMode_Failure;
+    g.modeRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
+    g.chainPending = missionChain_.pending();
+    const MissionMode mm = mission_->getMissionState().missionMode;
+    g.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
+    return Safety::onGround(g);
+  }
+
+  /// SA released while a chain is pending or Running: the abort decision, every tick (idempotent). On the ground it
+  /// is reset and stop, in flight RTH (user decision 2026-11-20, docs/project/missions.md 6.2). Never clears a latch.
+  void applyAbort() {
+    const auto pos = posEstSubr.getItem().data;
+    Safety::AbortInput in;
+    in.vehicleRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
+    in.active = activeMissionKind();
+    in.mode = modeIn(mission_->getMissionState().missionMode);
+    const Safety::AbortAction action = Safety::decideAbort(in);
+    switch (action) {
+    case Safety::AbortAction::StartRth:
+      // The chain stays pending until RTH ends (RTH-end shutdown and the interlock re-arm as after a normal RTH). The
+      // TVC set is enabled and reset by applyControlPhase() later in this tick.
+      missionSelection_ = 0;
+      switchMissionTo(&defaultMission_);
+      break;
+    case Safety::AbortAction::ResetAndStop:
+      resetAndStopOnGround(); // shared with the calibration abort of the countdown
+      break;
+    case Safety::AbortAction::KeepRth:
+    case Safety::AbortAction::Ignore:
+      return; // nothing to do, nothing to log (this runs every tick while SA is released)
+    }
+    const float speed = sqrtf(pos(0) * pos(0) + pos(1) * pos(1) + pos(2) * pos(2));
+    LOG_MSG("SA released: %s (alt %.2f m, speed %.2f m/s)\n", Safety::toString(action), double(pos(5)), double(speed));
+  }
+
+  /// Go accepted by RcCommandLogic (Ready, no latch, no zeroing, SC = applied mode, SB profile 2, no request in
+  /// progress, observed SA edge). The calibration gates stay as they were for MissionBegin: all three calibrations
+  /// good and the countdown gyro run started. The interlock is NOT a precondition (owner 2026-11-21); the motors
+  /// are enabled for the mission exactly as in flight, the simulation flag is not looked at.
+  void beginMissionFromGo(uint8_t profile) {
+    if (!missionBeginCalibrationOk(Safety::kGoCountdownParamInt)) {
+      rcLogic_.noteGoRefused(Safety::GoRefusal::NotReady); // reason logged by missionBeginCalibrationOk
+      return;
+    }
+    if (!startCountdownGyroRun(Safety::kGoCountdownParamInt)) {
+      rcLogic_.noteGoRefused(Safety::GoRefusal::RequestBusy);
+      return;
+    }
+    const int64_t startTime = int64_t(Safety::kGoCountdownParamInt) * Core::SECONDS;
+    missionSelection_ = 1;
+    switchMissionTo(&missionWaypointTask, startTime);
+    missionChain_.begin(); // the configured chain may advance from now on
+    vehicleMode_ = VehicleMode::VehicleMode_Running;
+    missionProfile_ = profile;
+    starshipTVC.enableMotors(true); // same in simulation and real mode (safety.md rule 9)
+    LOG_MSG("GO: mission begin, profile %u, countdown %d s\n", unsigned(profile), -int(Safety::kGoCountdownParamInt));
+  }
+
+  /// SE short press on the ground with the interlock closed: the system reset (user decision 2026-11-20): the mission
+  /// state becomes the state after boot, in simulation and in real mode alike. Failures and latches are cleared,
+  /// actuators and motors off, an active zeroing window aborted, simulation mode NOT changed, the interlock needs a
+  /// new SD off -> on (D4-A). Nothing starts again without a new go.
+  void systemResetFromSe() {
+    vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to startup
+    allSystemsInitialised_ = false;                  // Reset the system initialisation flag
+    starshipTVC.enableActuators(false);              // Disable actuators
+    vehicleShutdownControl(true);                    // Disable everything
+    // The whole mission chain is reset to the state after boot; it is never continued.
+    resetMissionsToBootState();
+    clearFailures();
+    // State reset only: the estimators are NOT zeroed or re-referenced (ZeroEstimators does that). Without an active
+    // zeroing window the valid-zero record is kept and the vehicle returns to Ready without a new zero. An ACTIVE
+    // window (fixed or SE hold) is aborted and the zero becomes invalid (the estimators hold a partial zero); the
+    // automatic 10 s zero then runs again in Startup before Ready.
+    // Simulation mode only (a documented sim/flight difference, overview.md "Simulation mode"): the simulated body
+    // is the world, not an estimator, and is put back to its start pose so a run that ended tilted or away from the
+    // origin does not carry over into the next one. In real mode nothing physical can be reset.
+    if (simulationMode_) {
+      bodySimulator.resetToStartPose();
+      LOG_MSG("System reset: simulated body back to its start pose\n");
+    }
+    if (zeroing_.abort()) {
+      LOG_MSG("Estimator zeroing aborted by system reset: zero invalid, auto zero runs again\n");
+    }
+    calibrationService.cancelGyroRun(); // the run belonged to the aborted window or countdown
+    countdownGyroRun_ = false;
+    // Sim flap faults do not carry over into the next run. The simulated wind and gusts DO persist across the reset on
+    // purpose (a run series in the same wind); they are cleared when simulation mode is switched.
+    if (starshipFlaps.simFaults().any())
+      LOG_MSG("Sim fault: all flap faults cleared (system reset)\n");
+    starshipFlaps.simFaults().clear();
+    applyEstimatorZeroing();
+
+    starshipTVC.enableMotors(false);      // Disable motors
+    starshipFlaps.enableActuators(false); // Disable actuators
+    vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::SystemReset); // D4-A
+    missionProfile_ = 255;
+    rcLogic_.noteReset();
+    LOG_MSG("System reset (SE short press)\n");
+  }
+
+  /// SC selected simulation or real (an observed change, on the ground, not committed, decided by decideSc). The
+  /// simulation only switches the sensor / estimator topics to the body simulator; it gates nothing (safety.md rule 9,
+  /// no motor, arm, interlock or go logic reads the flag). The interlock needs a new SD off -> on (D4-A).
+  void setSimulationMode(bool on) {
+    simulationMode_ = on;
+    vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::ModeChange); // D4-A
+    if (starshipFlaps.simFaults().any())
+      LOG_MSG("Sim fault: all flap faults cleared (simulation mode switched)\n");
+    starshipFlaps.simFaults().clear(); // faults never survive a simulation mode switch
+
+    if (simulationMode_) {
+      positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic());      // body simulator position
+      attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic());   // body simulator attitude
+      groundTopicSwitch.subscribe(bodySimulator.getGroundTopic());          // body simulator ground distance
+      bodySimulator.resetToStartPose(); // upright, at the origin, at rest
+      bodySimulator.clearWind();        // every simulation starts without wind and gusts (SimWind*/SimGust* set them)
+      bodySimulator.setPaused(false);   // Unpause the body simulator to start the simulation
+    } else {
+      positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
+      attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
+      groundTopicSwitch.subscribe(posEstTask.getGroundDistanceEstTopic());
+      bodySimulator.setPaused(true);
+      bodySimulator.clearWind();
+
+      // Reset the system to normal mode
+      vehicleMode_ = VehicleMode::VehicleMode_Startup;
+      allSystemsInitialised_ = false;
+      starshipTVC.enableActuators(false);
+      vehicleShutdownControl(true);
+    }
+    LOG_MSG("Simulation mode %s (SC)\n", simulationMode_ ? "ON" : "OFF");
+  }
+
+  /// RC command step (T9b-4), every 10 Hz tick before anything else: consumes the edge events of the active source
+  /// (RcCommandMapper), lets Safety::RcCommandLogic decide and applies the intents. Safe direction first (abort,
+  /// hold abort), then the unsafe ones. The safety commands are no longer telecommands.
+  void applyRcCommands() {
+    const int64_t now = Core::NowNs();
+    auto &mapper = vehicleComms.rcMapper();
+    Safety::ControlSourceId src = Safety::ControlSourceId::None;
+    Safety::RcPollInput in;
+    in.nowNs = now;
+    in.haveSource = vehicleComms.activeSourceFresh(now, Safety::RcCommandMapper::kEdgeMaxAgeNs, src) &&
+                    src == mapper.active();
+    if (in.haveSource)
+      in.decoded = mapper.decoded(src);
+    in.chainPendingOrRunning = missionChain_.pending() || vehicleMode_ == VehicleMode::VehicleMode_Running;
+    in.interlockOpen = vehicleComms.motorInterlock().open(now);
+    in.committed = isCommitted(now);
+    in.onGround = onGroundNow(now);
+    in.simulationApplied = simulationMode_;
+    in.modeFailure = vehicleMode_ == VehicleMode::VehicleMode_Failure;
+    in.zeroingHoldActive = zeroing_.holdActive();
+    in.go.modeReady = vehicleMode_ == VehicleMode::VehicleMode_Ready;
+    in.go.latched = in.modeFailure || anyFailureLatched();
+    in.go.zeroingActive = zeroing_.active();
+    in.go.zeroValid = zeroing_.zeroedSinceBoot();
+    in.go.requestBusy = calibrationService.anyBusy() || calibrationService.gyroRunActive() ||
+                        vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
+
+    const Safety::RcIntents out = rcLogic_.evaluate(mapper, in);
+
+    if (out.abortLevel)
+      applyAbort();
+
+    if (out.hold == Safety::HoldAction::Abort) {
+      zeroing_.holdAbort();
+      vehicleMode_ = VehicleMode::VehicleMode_Startup; // a partial zero: a new complete zero before Ready
+      LOG_MSG("SE hold zeroing aborted: the motor interlock opened, zero invalid, auto zero runs again\n");
+      applyEstimatorZeroing();
+    }
+
+    if (out.goRefused != Safety::GoRefusal::None) {
+      if (goRefusedLog_.due(now))
+        LOG_MSG("GO refused: %s\n", Safety::toString(out.goRefused));
+    } else if (out.go) {
+      beginMissionFromGo(out.goProfile);
+    }
+
+    if (out.sc == Safety::ScAction::EnterSimulation || out.sc == Safety::ScAction::EnterReal) {
+      setSimulationMode(out.sc == Safety::ScAction::EnterSimulation);
+    } else if (out.sc == Safety::ScAction::Refused && scRefusedLog_.due(now)) {
+      LOG_MSG("SC change refused (committed, not on the ground, or failsafe latched)\n");
+    }
+
+    if (out.se == Safety::SeAction::Reset) {
+      systemResetFromSe();
+    } else if (out.se == Safety::SeAction::Refused && seRefusedLog_.due(now)) {
+      LOG_MSG("SE reset refused: only on the ground with the interlock closed\n");
+    }
+
+    switch (out.hold) {
+    case Safety::HoldAction::Start: {
+      Safety::ZeroRequestContext ctx;
+      ctx.initialised = allSystemsInitialised_;
+      ctx.armed = in.interlockOpen;
+      ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
+      const MissionMode mm = mission_->getMissionState().missionMode;
+      ctx.onGround = (vehicleMode_ == VehicleMode::VehicleMode_Startup || vehicleMode_ == VehicleMode::VehicleMode_Ready) &&
+                     (mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished);
+      const auto r = zeroing_.holdStart(ctx, now);
+      rcLogic_.holdStartResult(Safety::accepted(r) || r == Safety::ZeroRequestResult::Started, now);
+      if (r == Safety::ZeroRequestResult::Started) {
+        LOG_MSG("SE hold: estimator zeroing while held (keep the vehicle still)\n");
+        applyEstimatorZeroing();
+      } else {
+        LOG_MSG("SE hold zeroing refused: %s\n", Safety::toString(r));
+      }
+      break;
+    }
+    case Safety::HoldAction::Refresh:
+      zeroing_.holdRefresh(out.holdNs);
+      break;
+    case Safety::HoldAction::Release:
+      applyHoldEnd(zeroing_.holdRelease(out.holdNs));
+      break;
+    default:
+      break;
+    }
+
+    // Telemetry cache (VEHICLE_STATUS ctrl_flags bits owned by the vehicle logic).
+    uint16_t f = 0;
+    if (Safety::RcCommandLogic::scMismatch(in.haveSource, in.decoded.sc, simulationMode_))
+      f |= Packets::VehicleStatus::kCtrlFlagsScMismatch;
+    if (zeroing_.holdActive())
+      f |= Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing;
+    if (rcLogic_.seRefusedActive(now))
+      f |= Packets::VehicleStatus::kCtrlFlagsSeRefused;
+    if (vehicleMode_ == VehicleMode::VehicleMode_Failure)
+      f |= Packets::VehicleStatus::kCtrlFlagsFailsafeLatched; // latched until the SE reset (T9b-6 adds the abort latch)
+    cmdFlags_ = f;
+  }
+
+  /// What the end of an SE hold means for the vehicle: a valid zero is recorded by EstimatorZeroing; a hold that ran
+  /// less than 1 s (or was aborted) leaves a partial zero, so the vehicle goes back to Startup for a complete one.
+  void applyHoldEnd(Safety::EstimatorZeroing::HoldEnd e) {
+    using HE = Safety::EstimatorZeroing::HoldEnd;
+    if (e == HE::None) return;
+    if (e == HE::Valid) {
+      LOG_MSG("SE hold zeroing ended: valid zero recorded (%.1f s)\n", double(zeroing_.lastHoldRanNs()) / Core::SECONDS);
+    } else {
+      vehicleMode_ = VehicleMode::VehicleMode_Startup; // partial zero: the automatic zero runs again
+      LOG_MSG("SE hold zeroing ended after %.1f s (< 1 s or aborted): zero invalid, auto zero runs again\n",
+              double(zeroing_.lastHoldRanNs()) / Core::SECONDS);
+    }
+    applyEstimatorZeroing();
+  }
+
   void taskInit() override {
     gnssSubr.subscribe(gnss.getGNSSTopic());
     gyroSubr.subscribe(gyroTransformTopic.getOutputTopic());
@@ -712,8 +1012,39 @@ public:
     // missionWaypointTask.setNextMission(&defaultMission_);
   }
 
+  /// "Committed" (design 3.1.3): the motor interlock is open, or a mission chain is pending, or the mode is Running.
+  /// Latches the control source (VehicleNetwork::setCommitted) and enables the control failsafe (checkForFailures).
+  bool isCommitted(int64_t now) {
+    return vehicleComms.motorInterlock().open(now) || missionChain_.pending() ||
+           vehicleMode_ == VehicleMode::VehicleMode_Running;
+  }
+
+  /// Motor interlock supervision (T9b-2), every run, before anything can return early: the latch input of the
+  /// control source (interlock open, mission chain pending or Running), the D4-A re-arm while in Failure, and a log
+  /// line on every gate change. The gate itself is evaluated at the motor outputs and by the watchdog, not here.
+  void superviseMotorInterlock() {
+    const int64_t now = Core::NowNs();
+    auto &il = vehicleComms.motorInterlock();
+    vehicleComms.setCommitted(isCommitted(now));
+    const bool open = il.open(now);
+    if (vehicleMode_ == VehicleMode::VehicleMode_Failure)
+      il.requireRearm(Safety::MotorInterlock::RearmReason::Failure); // D4-A: a failsafe needs a new toggle
+    if (open != interlockOpenLogged_) {
+      interlockOpenLogged_ = open;
+      if (open) {
+        LOG_MSG("Motor interlock OPEN (SD enabled, transition observed)\n");
+      } else {
+        static const char *const why[] = {"open", "no control source", "SD enabled but needs a toggle (off, then on)",
+                                          "SD disabled", "no valid enabled state within 1 s"};
+        LOG_MSG("Motor interlock CLOSED: %s\n", why[static_cast<uint8_t>(il.closeReason(now))]);
+      }
+    }
+  }
+
   void taskThread() override {
+    applyRcCommands();
     handleTelecommands();
+    superviseMotorInterlock();
 
     // GNSS configuration visibility (review 2026-11-20). Information only: no mode, Ready or Arm decision uses it.
     // VehicleStatus has no free flag bit, so a warning LOG_TEXT line repeats every 10 s while the configuration is
@@ -728,6 +1059,7 @@ public:
     if (zeroing_.update(Core::NowNs())) {
       LOG_MSG("Estimator zeroing complete, valid zero recorded\n");
     }
+    applyHoldEnd(zeroing_.takeHoldEnd()); // an SE hold that ended by staleness or its 60 s cap
 
     calibrationHousekeeping();
     updateTelemetryCache();
@@ -786,8 +1118,6 @@ public:
     // Belt and braces: no actuation while a zeroing window is active (Arm and MissionBegin are refused then,
     // and ZeroEstimators is only accepted on the ground, so this is normally already the case).
     vehicleShutdownControl(!vehicleReady || zeroing_.active());
-
-    vehicleArmingControl();
 
     applyEstimatorZeroing();
   }
@@ -896,6 +1226,10 @@ public:
       break;
     }
 
+    // D4-A: the end of a mission chain (RTH landed, or the pending chain was cancelled) needs a new SD off -> on.
+    if (chainWasPending && !missionChain_.pending())
+      vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::MissionEnd);
+
     // After every switch of this tick (telecommands, failure checks, chain): same table on every run.
     applyControlPhase();
   }
@@ -908,7 +1242,7 @@ public:
   bool calibrationCommandAllowed(const char *what) {
     Calibration::CommandContext c;
     c.initialised = allSystemsInitialised_;
-    c.armed = vehicleArmed_;
+    c.armed = vehicleComms.motorInterlock().open(Core::NowNs());
     c.motorsEnabled = starshipTVC.isMotorsEnabled();
     c.modeAllowed = vehicleMode_ == VehicleMode::VehicleMode_Startup || vehicleMode_ == VehicleMode::VehicleMode_Ready ||
                     vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
@@ -1157,175 +1491,12 @@ public:
       handleCalibSave(telecommand);
       break;
 
-    case TelecommandType::Telecommand_SystemReset:
-      if (telecommand.paramInt == 0xC5) { // Validate.
-
-        vehicleMode_ = VehicleMode::VehicleMode_Startup; // Reset the vehicle
-        // mode to startup
-        allSystemsInitialised_ = false; // Reset the system initialisation flag
-        starshipTVC.enableActuators(false); // Disable actuators
-        vehicleShutdownControl(true);       // Disable everything
-        // The whole mission chain is reset to the state after boot; it is never continued (user decision
-        // 2026-11-20). Simulation mode is NOT changed (user decision 2026-11-20).
-        resetMissionsToBootState();
-        clearFailures();
-        // State reset only (user decision 2026-11-20): the estimators are NOT zeroed or re-referenced;
-        // ZeroEstimators does that (a vehicle that was carried needs ZeroEstimators). Without an active zeroing
-        // window the valid-zero record is kept and the vehicle returns to Ready without a new zero. An ACTIVE window
-        // is aborted and the zero becomes invalid (the estimators hold a partial zero, review 2026-11-20); the
-        // automatic 10 s zero then runs again in Startup before Ready.
-        // Simulation mode only (review 2026-11-20, a documented sim/flight difference, overview.md "Simulation
-        // mode"): the simulated body is the world, not an estimator. It is put back to its start pose (upright, at
-        // the origin, at rest), so a run that ended tilted or away from the origin does not carry over into the
-        // next one and re-trigger the out-of-bounds failures. In real mode nothing physical can be reset.
-        if (simulationMode_) {
-          bodySimulator.resetToStartPose();
-          LOG_MSG("System reset: simulated body back to its start pose\n");
-        }
-        if (zeroing_.abort()) {
-          LOG_MSG("Estimator zeroing aborted by system reset: zero invalid, auto zero runs again\n");
-        }
-        calibrationService.cancelGyroRun(); // the run belonged to the aborted window or countdown
-        countdownGyroRun_ = false;
-        // Sim flap faults do not carry over into the next run (review 2026-11-21). The simulated
-        // wind and gusts DO persist across SystemReset on purpose (a run series in the same wind); they are cleared
-        // when simulation mode is switched.
-        if (starshipFlaps.simFaults().any())
-          LOG_MSG("Sim fault: all flap faults cleared (system reset)\n");
-        starshipFlaps.simFaults().clear();
-        applyEstimatorZeroing();
-
-        starshipTVC.enableMotors(false);      // Disable motors
-        starshipFlaps.enableActuators(false); // Disable actuators
-        vehicleArmed_ = false;                // Disarm the vehicle
-
-        LOG_MSG("System reset telecommand\n"); // Log the system reset
-      }
-      break;
-
-    case TelecommandType::Telecommand_Arm:
-      if (telecommand.paramInt == 0xA5) { // Validate.
-
-        if (!zeroing_.armAllowed()) {
-          if (zeroBlockedLog_.due(Core::NowNs()))
-            LOG_MSG("Arm refused: estimator zeroing active\n");
-          break;
-        }
-
-        // All three calibrations must be good to fly (in simulation too: the sensors and keys are real there).
-        {
-          const Calibration::Validity v = currentCalibrationValidity();
-          if (Calibration::decideArm(v) != Calibration::GateRefusal::None) {
-            if (calibArmLog_.due(Core::NowNs())) {
-              char why[128];
-              Calibration::describe(v, why, sizeof(why));
-              Core::printW("Arm refused: calibration invalid (%s)\n", why);
-            }
-            break;
-          }
-        }
-
-        vehicleArmed_ = true;
-
-        LOG_MSG("System arm telecommand\n"); // Log the system arm
-      } else {
-        vehicleArmed_ =
-            false; // Disarm the vehicle if the telecommand is not valid
-        LOG_MSG("System disarm telecommand\n"); // Log the system disarm
-      }
-      break;
-
-    case TelecommandType::Telecommand_MissionSelect:
-
-      if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
-        // missionSelection_ = telecommand.paramInt; // Get the mission
-        // selection from the telecommand
-
-        // mission_->resetMission(); // Reset the mission
-        // mission_ = *missionList_[missionSelection_]; // Set the mission to
-        // the selected mission mission_->resetMission(); // Reset the mission
-        // controlRocket.subscribeSetpoint(mission_->set); // Subscribe to the
-        // control topic of the mission
-
-        LOG_MSG("Mission select telecommand\n"); // Log the mission select
-      }
-      break;
-
-    case TelecommandType::Telecommand_MissionBegin:
-
-      if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !zeroing_.missionBeginAllowed()) {
-        if (zeroBlockedLog_.due(Core::NowNs()))
-          LOG_MSG("Mission begin refused: estimator zeroing active\n");
-      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !missionBeginCalibrationOk(telecommand.paramInt)) {
-        // refused: reason logged by missionBeginCalibrationOk
-      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready && !startCountdownGyroRun(telecommand.paramInt)) {
-        // refused: the countdown's gyro run could not start (reason logged)
-      } else if (vehicleMode_ == VehicleMode::VehicleMode_Ready) {
-        int64_t startTime =
-            int64_t(telecommand.paramInt) *
-            Core::SECONDS; // Get the start time from the telecommand
-
-        missionSelection_ = 1;
-        switchMissionTo(&missionWaypointTask,
-                        startTime); // Switch to the selected mission
-        missionChain_.begin();      // the configured chain may advance from now on
-
-        vehicleMode_ =
-            VehicleMode::VehicleMode_Running; // Vehicle is now running and
-        // will do the mission
-
-        LOG_MSG("Mission begin telecommand\n"); // Log the mission begin
-
-        // The countdown's gyro bias run was started by startCountdownGyroRun above (before the mission switch).
-
-        if (!simulationMode_) {
-          starshipTVC.enableMotors(true); // Enable actuators
-        } else {
-          starshipTVC.enableMotors(
-              false); // Disable actuators in simulation mode
-        }
-      }
-      break;
-
-    case TelecommandType::Telecommand_MissionAbort: {
-      // User decision 2026-11-20: an abort means "stop and return home" (a failsafe is a latched Failure and is
-      // not handled here). In flight: RTH hot start from any phase. On the ground = before liftoff, by mission mode
-      // only (countdown, nothing running, RTH landed; no altitude/speed check): reset and stop, nothing restarts.
-      // Decision: Safety::decideAbort (src/safety/mission_abort.hpp), docs/project/missions.md section 6.2.
-      const auto pos = posEstSubr.getItem().data;
-      Safety::AbortInput in;
-      in.vehicleRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
-      in.active = activeMissionKind();
-      in.mode = modeIn(mission_->getMissionState().missionMode);
-      const float altitude = pos(5); // logged only
-      const float speed = sqrtf(pos(0) * pos(0) + pos(1) * pos(1) + pos(2) * pos(2));
-      const Safety::AbortAction action = Safety::decideAbort(in);
-
-      switch (action) {
-      case Safety::AbortAction::StartRth:
-        // The chain stays pending until RTH ends (RTH-end shutdown and auto-disarm as after a normal RTH). The
-        // TVC set is enabled and reset by applyControlPhase() later in this tick.
-        missionSelection_ = 0;
-        switchMissionTo(&defaultMission_);
-        break;
-      case Safety::AbortAction::ResetAndStop:
-        resetAndStopOnGround(); // shared with the calibration abort of the countdown
-        break;
-      case Safety::AbortAction::KeepRth:
-      case Safety::AbortAction::Ignore:
-        break;
-      }
-
-      LOG_MSG("Mission abort telecommand: %s (alt %.2f m, speed %.2f m/s)\n", Safety::toString(action),
-              double(altitude), double(speed));
-    } break;
-
     case TelecommandType::Telecommand_ZeroEstimators: {
       // One-shot ground action (safety.md section 2 rule 5): accepted only while initialised, disarmed, motors
       // off and on the ground (mode Startup or Ready). The window ends on the vehicle's own timer.
       Safety::ZeroRequestContext ctx;
       ctx.initialised = allSystemsInitialised_;
-      ctx.armed = vehicleArmed_;
+      ctx.armed = vehicleComms.motorInterlock().open(Core::NowNs()); // armed = interlock open (T9b-4)
       ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
       // On the ground: no mode in which the vehicle can fly, and no mission active (since 2026-11-20 a SystemReset
       // always returns the missions to Idle; the mission check stays as defence in depth).
@@ -1347,64 +1518,19 @@ public:
       break;
     }
 
+    case TelecommandType::Telecommand_SystemReset:
+    case TelecommandType::Telecommand_Arm:
     case TelecommandType::Telecommand_SimulationMode:
-
-      if (telecommand.paramInt == 0xA9) { // Validate.
-
-        simulationMode_ = !simulationMode_; // Toggle simulation mode
-        if (starshipFlaps.simFaults().any())
-          LOG_MSG("Sim fault: all flap faults cleared (simulation mode switched)\n");
-        starshipFlaps.simFaults().clear(); // faults never survive a simulation mode switch
-
-        if (simulationMode_) {
-          starshipTVC.enableMotors(
-              false); // Disable actuators in simulation mode
-
-          positionTopicSwitch.subscribe(
-              bodySimulator
-                  .getStateEstTopic()); // Subscribe to the position topic of
-          // the body simulator
-          attitudeTopicSwitch.subscribe(
-              bodySimulator
-                  .getAttitudeEstTopic()); // Subscribe to the attitude topic
-          // of the body simulator
-          groundTopicSwitch.subscribe(
-              bodySimulator
-                  .getGroundTopic()); // Subscribe to the ground distance
-          // topic of the body simulator
-
-          bodySimulator.resetToStartPose(); // upright, at the origin, at rest
-          bodySimulator.clearWind(); // every simulation starts without wind and gusts (SimWind*/SimGust* set them)
-
-          bodySimulator.setPaused(
-              false); // Unpause the body simulator to start the simulation
-        } else {
-          positionTopicSwitch.subscribe(
-              posEstTask
-                  .getStateEstTopic()); // Subscribe to the position topic of
-          // the position estimator
-          attitudeTopicSwitch.subscribe(
-              imuTask.getAttitudeEstTopic()); // Subscribe to the attitude topic
-          // of the attitude estimator
-          groundTopicSwitch.subscribe(
-              posEstTask
-                  .getGroundDistanceEstTopic()); // Subscribe to the ground
-          // distance topic of the
-          // position estimator
-
-          bodySimulator.setPaused(true);
-          bodySimulator.clearWind();
-
-          // Reset the system to normal mode
-          vehicleMode_ =
-              VehicleMode::VehicleMode_Startup; // Reset the vehicle mode to
-          // startup
-          allSystemsInitialised_ =
-              false; // Reset the system initialisation flag
-          starshipTVC.enableActuators(false); // Disable actuators
-          vehicleShutdownControl(true);       // Disable everything
-        }
-      }
+    case TelecommandType::Telecommand_MissionBegin:
+    case TelecommandType::Telecommand_MissionSelect:
+    case TelecommandType::Telecommand_MissionAbort:
+      // T9b-4: the safety commands are RC state now (SA go/abort, SB profile, SC simulation/real, SD interlock, SE
+      // reset/zero). The telecommands are no longer handled; they are ignored and counted, the log line is rate
+      // limited. The port itself goes in T9b-5.
+      removedTelecommands_++;
+      if (removedTelecommandLog_.due(Core::NowNs()))
+        LOG_MSG("Telecommand %d ignored: removed in T9b-4, use the RC switches (%lu ignored since boot)\n",
+                int(telecommand.type), (unsigned long)removedTelecommands_);
       break;
 
     case TelecommandType::Telecommand_SimWindSpeed:
@@ -1486,6 +1612,10 @@ public:
     } break;
 
     default:
+      removedTelecommands_++;
+      if (removedTelecommandLog_.due(Core::NowNs()))
+        LOG_MSG("Unknown telecommand type %d ignored (%lu ignored since boot)\n", int(telecommand.type),
+                (unsigned long)removedTelecommands_);
       break;
     }
   }
@@ -1543,12 +1673,23 @@ public:
   }
 
   void checkForFailures() {
-    // Radio connection loss (user decision 2026-11-20): no radio packet (a DATA frame from node 0 or node 2 on
-    // the UART; heartbeats, node 3 and USB never count) for 2 s, or none at all within the 10 s boot grace
-    // (VehicleNetwork::isRadioLinkAlive). The ground station on USB does not influence it.
-    if (!vehicleComms.isRadioLinkAlive()) {
+    // Control failsafe (T9b-3, the ONE rule, safety.md 4.1): while committed (interlock open, mission pending or
+    // Running) the accepted RC_STATE of the latched control source is older than 2 s (or there is no source) =>
+    // failsafe, latched in mode Failure until SystemReset. Not committed (on the ground, disarmed, nothing pending)
+    // losing every source only sets ctrl_source NONE (D2-B). General link health, heartbeats, GS REQUESTs and
+    // telecommands never keep it alive and never trigger it; the ground station on USB is never a failure
+    // condition. No simulation dependence.
+    if (vehicleComms.controlSourceLost(isCommitted(Core::NowNs()))) {
+      if (!failureState_.controlSourceLost) LOG_MSG("Failsafe: control source lost (no accepted RC_STATE for 2 s)\n");
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
-      failureState_.radioConnectionLoss = true;
+      failureState_.controlSourceLost = true;
+    }
+
+    // Motor-interlock watchdog (T9b-2): the 100 Hz task that closes the motor outputs has not run for 100 ms.
+    // Failsafe (mode Failure latches until SystemReset); the motors are already cut by enableMotors(false) there.
+    if (Safety::interlockWatchdogStale(Core::NowNs(), motorInterlockWatchdog.lastRunNs())) {
+      vehicleMode_ = VehicleMode::VehicleMode_Failure;
+      failureState_.interlockWatchdog = true;
     }
 
     // Check sensor for data timeout which indicates a failure
@@ -1658,17 +1799,6 @@ public:
         }
       }
     }
-
-    // Auto disarm vehicle once landed.
-    if (vehicleArmed_ && missionMode == MissionMode::MissionMode_Finished &&
-        (mission_ == &defaultMission_ || mission_->nextMission() == nullptr)) {
-      vehicleArmed_ =
-          false; // Disarm the vehicle if the default mission is finished
-      LOG_MSG("Vehicle auto disarmed after RTH mission finished.\n"); // Log the
-      // vehicle
-      // auto
-      // disarm
-    }
   }
 
   bool vehicleIsReady() {
@@ -1719,53 +1849,11 @@ public:
     bodySimulator.enableFlaps(starshipFlaps.actuatorsEnabled());
   }
 
-  void vehicleArmingControl() {
-    if (vehicleMode_ == VehicleMode::VehicleMode_Failure) {
-      vehicleArmed_ =
-          false; // Disarm the vehicle if the vehicle is in failure mode
-      if (disarmLogDue(1))
-        LOG_MSG("Vehicle disarmed due to failure mode.\n");
-    } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorCalib) {
-      vehicleArmed_ = false; // Disarm the vehicle if the vehicle is in sensor
-      // calibration mode
-      if (disarmLogDue(2))
-        LOG_MSG("Vehicle disarmed due to sensor calibration.\n");
-    } else if (vehicleMode_ == VehicleMode::VehicleMode_Startup) {
-      vehicleArmed_ =
-          false; // Disarm the vehicle if the vehicle is in startup mode
-      if (disarmLogDue(3))
-        LOG_MSG("Vehicle disarmed due to startup mode.\n");
-    } else if (vehicleMode_ == VehicleMode::VehicleMode_SensorInit) {
-      vehicleArmed_ =
-          false; // Disarm the vehicle if the vehicle is in startup mode
-      if (disarmLogDue(4))
-        LOG_MSG("Vehicle disarmed due to sensor initialisation.\n");
-    } else {
-      lastDisarmReason_ = 0; // next auto-disarm is logged immediately
-    }
-
-    // Invariant "armed implies calibrations good" (also in simulation), enforced on the ground only: nothing can
-    // make a calibration invalid in flight (runs and sessions need a disarmed vehicle on the ground).
-    if (vehicleArmed_ && vehicleMode_ == VehicleMode::VehicleMode_Ready) {
-      const Calibration::Validity v = currentCalibrationValidity();
-      if (Calibration::mustDisarmInReady(vehicleArmed_, true, v)) {
-        vehicleArmed_ = false;
-        if (disarmLogDue(5)) {
-          char why[128];
-          Calibration::describe(v, why, sizeof(why));
-          Core::printW("Vehicle disarmed: calibration invalid (%s)\n", why);
-        }
-      }
-    }
-
-    // LOG_MSG("Vehicle armed: %d\n", vehicleArmed_); // Log the vehicle armed
-    // state
-
-    if (vehicleArmed_) {
-      starshipTVC.motorPowerLimit(1.0);
-    } else {
-      starshipTVC.motorPowerLimit(0.1);
-    }
+  /// Any latched failure flag (a failsafe: mode Failure, cleared only by clearFailures() through the SE reset).
+  bool anyFailureLatched() const {
+    return failureState_.sensorFailure || failureState_.attitudeFailure || failureState_.positionFailure ||
+           failureState_.positionOutOfBounds || failureState_.attitudeOutOfBounds || failureState_.controlSourceLost ||
+           failureState_.interlockWatchdog;
   }
 
   void clearFailures() {
@@ -1774,7 +1862,13 @@ public:
     failureState_.positionFailure = false;
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
-    failureState_.radioConnectionLoss = false;
+    failureState_.controlSourceLost = false;
+    failureState_.interlockWatchdog = false;
+    reinitialiseSensorStates();
+  }
+
+  /// Sensor states back to Init and the initialisation re-run (Startup, then Ready). Touches no failure flag.
+  void reinitialiseSensorStates() {
     sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
     sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
     sensoryState_.mag = TelemetrySensor::TelemetrySensor_Init;
@@ -1915,8 +2009,9 @@ public:
     s.failures = vt.getFailureState();
     s.armed = vt.isVehicleArmed();
     s.simulation = vt.simulationModeEnabled();
-    s.motorsEnabled =
-        starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled();
+    // MOTORS_ENABLED (T9b-2): the hard gate is open AND the vehicle logic enabled motors and actuators.
+    s.motorsEnabled = starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled() &&
+                      starshipTVC.interlockOpen(Core::NowNs());
 
     const MissionState &ms = vt.getCurrentMission()->getMissionState();
     s.missionMode = ms.missionMode;
@@ -2189,8 +2284,7 @@ public:
     }*/
 
     if (accSub.isDataNew() || true) {
-      // A radio packet really seen within 2 s (no boot grace): the failure predicate isRadioLinkAlive() is true
-      // during the 10 s boot grace and would count a connection that never existed.
+      // A radio packet really seen within 2 s: general link health, information only (display, counter).
       bool connected = vehicleComms.isRadioPacketRecent();
       if (!lastConnectionState && connected) {
         connectionCounter++;
@@ -2398,6 +2492,11 @@ void initialiseHardware() {
   // Core::getSystemScheduler().removeTask(gnss);
 
   // servoTest.setPosition(0);
+
+  // Hard motor interlock: the TVC gate reads it, the watchdog (priority above the controllers) enforces it.
+  starshipTVC.setMotorInterlock(&vehicleComms.motorInterlock());
+  // The legacy arm state and its 10 % power limit are gone (T9b-4): with the interlock open the motors run at full power.
+  starshipTVC.motorPowerLimit(1.0);
 
   starshipTVC.setTVCFinsOffset(5 * DEG_TO_RAD, -2 * DEG_TO_RAD, 0 * DEG_TO_RAD,
                                5 * DEG_TO_RAD);

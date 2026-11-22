@@ -105,6 +105,32 @@ static void test_gyro_auto_run_recovers_bias() {
   TEST_ASSERT_FALSE(svc.wantsGyro());
 }
 
+static void test_gyro_countdown_run_uses_a_3s_window_with_unchanged_limits() {
+  CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  // countdown run: 3 s window, deadline 4 s (the 5 s Initialisation phase minus the 1 s reserve): passes when still
+  Sim sim;
+  TEST_ASSERT_TRUE(svc.startGyroRun(sim.t, sim.t + 4 * S, VCTR::DSP::Calib::kGyroWindowCountdownNs));
+  TEST_ASSERT_EQUAL_INT64(3 * S, svc.gyroRunConfig().windowNs);
+  sim.run(svc, 4.2);
+  GyroRunDone done;
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(done.result.result));
+  // the same limits as the 5 s run: 3 deg/s handling rejects every block, so the countdown run fails too
+  Sim moving;
+  moving.rate = 0.05;
+  TEST_ASSERT_TRUE(svc.startGyroRun(moving.t, moving.t + 4 * S, VCTR::DSP::Calib::kGyroWindowCountdownNs));
+  moving.run(svc, 4.2);
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(done.result.result));
+  // the next startup run (no window argument) is back to the 5 s window: 4 s is not enough for it
+  Sim s3;
+  TEST_ASSERT_TRUE(svc.startGyroRun(s3.t, s3.t + 4 * S));
+  TEST_ASSERT_EQUAL_INT64(5 * S, svc.gyroRunConfig().windowNs);
+  s3.run(svc, 4.2);
+  TEST_ASSERT_TRUE(svc.takeGyroRunDone(done));
+  TEST_ASSERT_TRUE(done.result.result != CalResult::Pass);
+}
+
 static void test_gyro_auto_run_gives_up_with_motion_and_cancel() {
   CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
   Sim sim;
@@ -598,6 +624,7 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_gyro_auto_run_recovers_bias);
   RUN_TEST(test_gyro_auto_run_gives_up_with_motion_and_cancel);
+  RUN_TEST(test_gyro_countdown_run_uses_a_3s_window_with_unchanged_limits);
   RUN_TEST(test_accel_session_twelve_poses_fit_and_legacy_conversion);
   RUN_TEST(test_stale_gyro_bias_does_not_block_pose_capture);
   RUN_TEST(test_accel_too_few_poses_fails_and_discard);

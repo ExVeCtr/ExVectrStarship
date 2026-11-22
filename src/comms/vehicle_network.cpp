@@ -30,6 +30,7 @@ static_assert(kHz % Packets::AirActuators::kAirRateHz == 0, "air rate must divid
 static_assert(kHz % Packets::AirMission::kAirRateHz == 0, "air rate must divide the tick rate");
 static_assert((VehicleNetwork::kAirActuatorsPhase % VehicleNetwork::kActuatorSampleTicks) == 0,
               "AIR_ACTUATORS must be sent on a sampling tick");
+static_assert(kHz % Packets::RcApplied::kUsbRateHz == 0, "USB rate must divide the tick rate");
 static_assert(LegacyTelecommandPacket::kPort < 0x80, "the legacy telecommand must pass the radio-path filters");
 
 } // namespace
@@ -54,13 +55,18 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
                                TelecommandSinkI &telecommands)
     : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
-      telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false) {
-  usbNode_.addLink(usbLink_);
+      telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false),
+      usbRcTap_(Safety::RcLink::Usb, controlSources_, rcMapper_, motorInterlock_, kVehicleNode),
+      uartRcTap_(Safety::RcLink::Uart, controlSources_, rcMapper_, motorInterlock_, kVehicleNode) {
+  const int usbIndex = usbNode_.addLink(usbLink_);
   const int uartIndex = uartNode_.addLink(uartLink_, uartFilter());
-  // Interpose the radio tap: UART link -> radioTap_ -> UART node (same link index).
+  // Interpose the taps (same link indices): USB link -> usbRcTap_ -> USB node,
+  // UART link -> uartRcTap_ -> radioTap_ -> UART node.
+  usbRcTap_.next = &usbNode_;
+  usbLink_.setSink(usbRcTap_, static_cast<uint8_t>(usbIndex));
   radioTap_.next = &uartNode_;
-  uartLink_.setSink(radioTap_, static_cast<uint8_t>(uartIndex));
-  startNs_ = time_.nowNs();
+  uartRcTap_.next = &radioTap_;
+  uartLink_.setSink(uartRcTap_, static_cast<uint8_t>(uartIndex));
   // One transport for both links: a frame arriving on both is delivered once.
   usbNode_.setDataSink(mux_);
   uartNode_.setDataSink(mux_);
@@ -75,6 +81,41 @@ void VehicleNetwork::pollLinks() {
 void VehicleNetwork::pollNodes() {
   usbNode_.poll();
   uartNode_.poll();
+  // Control-source arbitration (T9b-1): a change resets the transition detectors.
+  const int64_t now = time_.nowNs();
+  controlSources_.update(now, committed_);
+  if (controlSources_.sourceChangedSinceLast()) {
+    rcMapper_.onActiveChanged(controlSources_.active());
+    sourceChangePending_ = true;
+  }
+  // The interlock follows the table's active source (a change clears its observed transition).
+  motorInterlock_.update(now, controlSources_.active());
+}
+
+bool VehicleNetwork::activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) cs = controlSources_.live();
+  id = cs.active;
+  return cs.active != Safety::ControlSourceId::None && cs.fresh(cs.active, nowNs, maxAgeNs);
+}
+
+bool VehicleNetwork::takeSourceChange(Safety::ControlSourceId &newActive) {
+  if (!sourceChangePending_) return false;
+  sourceChangePending_ = false;
+  newActive = controlSources_.active();
+  return true;
+}
+
+void VehicleNetwork::fillRcTelemetry(TelemetrySnapshot &s) {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) cs = controlSources_.live(); // comms task is the writer
+  Comms::fillRcTelemetry(s, cs, rcMapper_, time_.nowNs(), motorInterlock_.needToggle(time_.nowNs()));
+  // Degraded (information only, clears by itself, never a failure): the ship node (3) was not heard on the UART
+  // for 3 s while RADIO RC_STATE is arriving. Any valid frame from node 3 counts (heartbeat or LINK_STATS), so this
+  // is "UART_HEARTBEAT_LOST" in the broad sense. LINK_STATS_LOST (bit 1) and TOF_LOST (bit 0) are T9b-6.
+  s.degradedBits = 0;
+  if ((s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsRadioFresh) && !isUartPeerSeen())
+    s.degradedBits |= Packets::VehicleStatus::kDegradedBitsUartHeartbeatLost;
 }
 
 bool VehicleNetwork::due(uint32_t tick, uint16_t hz, uint32_t phase) {
@@ -101,6 +142,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::Gnss::kUsbRateHz, 3)) sendOn(usbNode_, gs, makeGnss(s));
   if (due(t, Packets::HandsetTelem::kUsbRateHz, 7)) sendOn(usbNode_, bc, makeHandsetTelem(s));
   if (calibrationDue(t)) sendOn(usbNode_, gs, makeCalibration(s)); // USB only (port 0x93), 0.5 Hz
+  if (due(t, Packets::RcApplied::kUsbRateHz, kRcAppliedPhase)) sendOn(usbNode_, gs, makeRcApplied(s)); // USB only (0x84)
 
   // Radio set on the UART (RX module -> air -> TX module -> ground station), air rates.
   if (t % kActuatorSampleTicks == 0) actuatorHistory_.push(makeActuatorSample(s));
@@ -133,9 +175,10 @@ bool VehicleNetwork::isRadioPacketRecent() const {
   return radioTap_.seen && time_.nowNs() - radioTap_.lastNs <= kRadioTimeoutNs;
 }
 
-bool VehicleNetwork::isRadioLinkAlive() const {
-  if (radioTap_.seen) return isRadioPacketRecent();
-  return time_.nowNs() - startNs_ <= kRadioStartupGraceNs;
+bool VehicleNetwork::controlSourceLost(bool committed) const {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) return false; // writer busy on all 8 retries (not expected: cooperative scheduler); the next 10 Hz check decides
+  return cs.failsafeDue(time_.nowNs(), committed, Safety::ControlSourceTable::kCtrlTimeoutNs);
 }
 
 bool VehicleNetwork::isUartPeerSeen() const {

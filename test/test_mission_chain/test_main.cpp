@@ -574,6 +574,71 @@ static void test_abort_running_goes_to_rth_and_ends() {
   TEST_ASSERT_FALSE(v.chain.pending());
 }
 
+
+// --- T9b-4: SA released = Safety::decideAbort EVERY tick while a chain is pending (idempotent) -------------------
+
+/// SA level abort as main.cpp applyRcCommands() feeds it: every 10 Hz tick while the chain is pending (the vehicle mode
+/// Running is modelled by the pending chain: after ResetAndStop the vehicle goes back to Startup/Ready). Returns the
+/// number of ticks that did something (StartRth or ResetAndStop).
+static int saReleasedFor(Vehicle &v, int64_t duration) {
+  int acted = 0;
+  const int64_t end = v.now + duration;
+  while (v.now < end) {
+    if (v.chain.pending()) {
+      const AbortAction a = v.missionAbort();
+      if (a == AbortAction::StartRth || a == AbortAction::ResetAndStop)
+        acted++;
+    }
+    v.runFor(100 * MS);
+  }
+  return acted;
+}
+
+static void test_sa_level_countdown_resets_once_and_nothing_follows() {
+  for (int phase = 0; phase < 2; phase++) {
+    Vehicle v;
+    v.runFor(2 * S);
+    v.missionBegin(-15 * S);
+    v.runFor(phase == 0 ? 2 * S : 8 * S);
+    TEST_ASSERT_EQUAL(1, saReleasedFor(v, 60 * S)); // a single reset, then the chain is no longer pending
+    TEST_ASSERT_FALSE(v.chain.pending());
+    TEST_ASSERT_TRUE(v.wp.mode == Mode::Idle);
+    TEST_ASSERT_EQUAL(0, v.bf.begins);
+    TEST_ASSERT_FALSE(v.anyActuator());
+  }
+}
+
+static void test_sa_level_in_flight_starts_rth_once_and_keeps_it() {
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(20 * S); // waypoint Running
+  TEST_ASSERT_TRUE(v.wp.mode == Mode::Running);
+  const int sw = v.switches;
+  TEST_ASSERT_EQUAL(1, saReleasedFor(v, 100 * S)); // RTH started once, KeepRth on every later tick
+  TEST_ASSERT_EQUAL(sw + 1, v.switches);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_FALSE(v.chain.pending());
+}
+
+static void test_sa_level_after_rth_landed_is_reset_and_stop_not_a_new_rth() {
+  Vehicle v;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(20 * S);
+  v.missionAbort();
+  v.runFor(100 * S);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  // landed: the chain ended (not pending); the vehicle is still Running until a reset. decideAbort on that state is
+  // ResetAndStop (landed), never a new RTH.
+  AbortInput in;
+  in.vehicleRunning = true;
+  in.active = ActiveMission::Rth;
+  in.mode = MissionModeIn::Finished;
+  TEST_ASSERT_EQUAL(AbortAction::ResetAndStop, decideAbort(in));
+}
+
 // --- controller phase table, bellyflop init order, abort decision ---------------------------------------------
 
 /// Runs (10 ms steps) until `m` is the active mission; fails after 300 s.
@@ -876,5 +941,8 @@ int main(int, char **) {
   RUN_TEST(test_ascent_timeout_low_goes_to_rth);
   RUN_TEST(test_ascent_end_at_apogee_goes_to_bellyflop);
   RUN_TEST(test_abort_low_unchanged_by_kick_gate);
+  RUN_TEST(test_sa_level_countdown_resets_once_and_nothing_follows);
+  RUN_TEST(test_sa_level_in_flight_starts_rth_once_and_keeps_it);
+  RUN_TEST(test_sa_level_after_rth_landed_is_reset_and_stop_not_a_new_rth);
   return UNITY_END();
 }

@@ -113,9 +113,9 @@ public:
 
   /// Ground station (node 0) heard on USB or UART within 2 s. Information only (gs_present).
   bool isGroundStationPresent() const { return net_.isGroundStationPresent(); }
-  /// Radio link alive (VehicleNetwork::isRadioLinkAlive): the radioConnectionLoss observable.
-  bool isRadioLinkAlive() const { return net_.isRadioLinkAlive(); }
-  /// A radio packet really arrived within 2 s, no boot grace (VehicleNetwork::isRadioPacketRecent): "connected".
+  /// The control failsafe condition (VehicleNetwork::controlSourceLost): the ONE rule, see there.
+  bool controlSourceLost(bool committed) const { return net_.controlSourceLost(committed); }
+  /// A radio packet really arrived within 2 s (VehicleNetwork::isRadioPacketRecent): "connected", information only.
   bool isRadioPacketRecent() const { return net_.isRadioPacketRecent(); }
 
   void taskInit() override;
@@ -125,6 +125,15 @@ public:
   void onTelecommand(const Telecommand &tc) override { telecommandTopic_.publish(tc); }
 
   const VehicleNetwork &network() const { return net_; }
+  /// The hard motor interlock (owned by the network, fed by the RC taps).
+  Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }
+  /// RC command mapper (T9b-4): edge events and decoded switches of the active source.
+  Safety::RcCommandMapper &rcMapper() { return net_.rcMapper(); }
+  bool activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const {
+    return net_.activeSourceFresh(nowNs, maxAgeNs, id);
+  }
+  /// Input of the control-source latch (interlock open, mission pending or Running), set by the safety task.
+  void setCommitted(bool committed) { net_.setCommitted(committed); }
   const LogTextQueue &logQueue() const { return log_; }
 
 private:
