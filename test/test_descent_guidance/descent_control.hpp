@@ -12,9 +12,11 @@
 //   DescentGuidance (target above the landing point, position + velocity estimate)
 //       -> heading setpoint (nose direction) + glide command (air speed along the nose) -> pitch split
 //   FlapDescentLaw (attitude estimate, heading setpoint, pitch split)
-//       -> heading-rate loop (u0), pitch split + pitch damping (u1), roll attitude hold (u2) -> four flap angles
-// The vehicle glides essentially only along its nose (forward up to ~8 m/s, backward at most ~1 m/s in the model),
-// so lateral control is "turn the nose toward the needed air velocity, then set the glide speed".
+//       -> heading-rate loop (bottom-pair differential), roll hold (top-pair differential), split schedule + pitch
+//          damping (common) -> four flap angles
+// The vehicle glides essentially only along its nose (model, neutral 30/78: forward up to 4.9 m/s, backward at most
+// 1.15 m/s; a 15 deg roll gives only 0.4 m/s sideways), so lateral control is "turn the nose toward the needed air
+// velocity, then set the glide speed". Yaw authority exists only while the bottom flaps stay above ~65-70 deg.
 #ifndef EXVECTR_STUDY_DESCENT_CONTROL_HPP
 #define EXVECTR_STUDY_DESCENT_CONTROL_HPP
 
