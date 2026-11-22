@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "ExVectrDSP/calibration/accel_ellipsoid_fit.hpp"
+#include "ExVectrDSP/calibration/gyro_bias_collector.hpp"
 #include "ExVectrDSP/calibration/mag_ellipsoid_fit.hpp"
 
 namespace VCTR {
@@ -52,18 +53,29 @@ constexpr double kDefaultEps = 1e-6;              ///< identity-default detectio
 
 // ---- Gyro automatic run planning ----
 constexpr int64_t kSecondNs = 1000000000LL;
-/// A zeroing window runs the gyro bias run only if it is at least this long: the 5 s still window plus the 1 s
-/// reserve before the window end (deadline = end - 1 s, so the new bias is applied while the EKF still zeroes) plus
-/// 1 s slack. (The first plan said 6 s; 7 s leaves the collector one second of slack against a late start.)
-constexpr int64_t kGyroRunMinWindowNs = 7 * kSecondNs;
+/// Which automatic gyro run: the still window (consecutive good 1 s blocks, DSP::Calib::kGyroWindow*Ns) differs, every
+/// judging limit is the same. Startup = boot zero and ZeroEstimators (5 s window); Countdown = the go countdown's
+/// Initialisation phase (3 s window, owner decision 2026-11-22: the countdown is a fixed 15 s, so Initialisation is 5 s).
+enum class GyroRunKind : uint8_t { Startup, Countdown };
+constexpr int64_t gyroRunWindowNs(GyroRunKind k) {
+  return k == GyroRunKind::Countdown ? DSP::Calib::kGyroWindowCountdownNs : DSP::Calib::kGyroWindowStartupNs;
+}
+/// The deadline is kGyroRunEndReserveNs before the zeroing window end, so the new bias is applied while the EKF still
+/// zeroes; kGyroRunSlackNs is the margin against a late start.
 constexpr int64_t kGyroRunEndReserveNs = 1 * kSecondNs;
+constexpr int64_t kGyroRunSlackNs = 1 * kSecondNs;
+/// A zeroing window runs the gyro bias run only if it is at least this long: still window + reserve + slack
+/// (Startup 5 + 1 + 1 = 7 s, Countdown 3 + 1 + 1 = 5 s).
+constexpr int64_t gyroRunMinWindowNs(GyroRunKind k) { return gyroRunWindowNs(k) + kGyroRunEndReserveNs + kGyroRunSlackNs; }
+constexpr int64_t kGyroRunMinWindowNs = gyroRunMinWindowNs(GyroRunKind::Startup); ///< kept for the Startup log text
 
-/// MissionBegin refuses a countdown whose waypoint Initialisation phase (lasting -paramInt - 10 s) cannot hold the
-/// gyro run: 5 s window + 3 s slack = 8 s, so paramInt <= -18.
-constexpr int16_t kMinCountdownParamInt = -18;
 constexpr int64_t kCountdownInitialisationEndS = 10; ///< Initialisation lasts until mission time -10 s
+/// The go countdown's gyro run needs the Initialisation phase (-paramInt - 10 s) to hold the countdown window:
+/// 5 s, so paramInt <= -15 (the fixed countdown of the go, Safety::kGoCountdownParamInt).
+constexpr int16_t kMinCountdownParamInt =
+    -static_cast<int16_t>(kCountdownInitialisationEndS + gyroRunMinWindowNs(GyroRunKind::Countdown) / kSecondNs);
 
-/// Window end of the waypoint mission's Initialisation phase, from MissionBegin at nowNs with paramInt seconds.
+/// Window end of the waypoint mission's Initialisation phase, from the go at nowNs with paramInt seconds.
 inline int64_t countdownWindowEndNs(int64_t nowNs, int16_t paramInt) {
   return nowNs + (-static_cast<int64_t>(paramInt) - kCountdownInitialisationEndS) * kSecondNs;
 }
@@ -77,10 +89,10 @@ struct GyroRunPlan {
 };
 
 /// Plans the automatic gyro run for a zeroing window [nowNs, windowEndNs): runs if the window is at least
-/// kGyroRunMinWindowNs, with the deadline kGyroRunEndReserveNs before the window end.
-inline GyroRunPlan planGyroRun(int64_t nowNs, int64_t windowEndNs) {
+/// gyroRunMinWindowNs(kind), with the deadline kGyroRunEndReserveNs before the window end.
+inline GyroRunPlan planGyroRun(int64_t nowNs, int64_t windowEndNs, GyroRunKind kind = GyroRunKind::Startup) {
   GyroRunPlan p;
-  if (windowEndNs - nowNs >= kGyroRunMinWindowNs) {
+  if (windowEndNs - nowNs >= gyroRunMinWindowNs(kind)) {
     p.run = true;
     p.deadlineNs = windowEndNs - kGyroRunEndReserveNs;
   }

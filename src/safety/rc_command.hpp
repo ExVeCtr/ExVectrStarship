@@ -48,13 +48,12 @@ enum class GoRefusal : uint8_t {
 constexpr uint8_t kImplementedProfile = 2;
 
 /**
- * Countdown of a go, a compiled-in constant (D8), as the telecommand "start time" parameter (seconds, negative =
- * before mission time zero). NOTE: the design says 15 s, but the sensor-calibration rule (calibration_validity.hpp,
- * kMinCountdownParamInt) needs an Initialisation phase of at least 8 s for the countdown gyro run: 8 s + the fixed
- * 10 s Startup = 18 s. 18 s is the shortest countdown the existing rules accept; 15 s would refuse every go. Reported
- * to the owner as an open decision.
+ * Countdown of a go, a compiled-in constant (D8, owner decision 2026-11-22: fixed 15 s), as the telecommand "start
+ * time" parameter (seconds, negative = before mission time zero). The Initialisation phase is then 5 s; the countdown
+ * gyro run uses the shorter 3 s still window (Calibration::GyroRunKind::Countdown) so it fits with slack
+ * (kMinCountdownParamInt = -15 is derived from it).
  */
-constexpr int16_t kGoCountdownParamInt = -18;
+constexpr int16_t kGoCountdownParamInt = -15;
 
 struct GoContext {
   bool modeReady = false;

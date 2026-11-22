@@ -246,11 +246,11 @@ void CalibrationService::markSaved() {
 
 // ---- automatic gyro run ----
 
-bool CalibrationService::startGyroRun(int64_t nowNs, int64_t deadlineNs) {
+bool CalibrationService::startGyroRun(int64_t nowNs, int64_t deadlineNs, int64_t windowNs) {
   if (gyroSession() || accelSession() || magSession() || state_[0] == State::Fitting)
     return false;
   gyroAuto_ = true; // a pending (untaken) result stays in autoRes_ with gyroDone_ set
-  gyro_.start(nowNs, deadlineNs);
+  gyro_.start(nowNs, deadlineNs, windowNs);
   return true;
 }
 

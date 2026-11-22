@@ -4,6 +4,7 @@
 
 #include <initializer_list>
 
+#include "calibration/calibration_validity.hpp"
 #include "safety/rc_command.hpp"
 #include "safety/rc_mapper.hpp"
 
@@ -407,6 +408,12 @@ static void test_go_accepted_with_all_preconditions() {
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(L.lastGoRefusal()));
 }
 
+static void test_go_countdown_is_15s_and_accepted_by_the_calibration_gate() {
+  TEST_ASSERT_EQUAL_INT(-15, kGoCountdownParamInt);
+  TEST_ASSERT_TRUE(VCTR::Calibration::countdownLongEnough(kGoCountdownParamInt));
+  TEST_ASSERT_EQUAL_INT(kGoCountdownParamInt, VCTR::Calibration::kMinCountdownParamInt);
+}
+
 static void test_go_interlock_is_not_a_precondition() {
   Rig r;
   RcCommandLogic L;
@@ -712,6 +719,7 @@ int main() {
   RUN_TEST(test_se_invalid_during_press_cancels);
   RUN_TEST(test_se_source_change_cancels_a_hold);
   RUN_TEST(test_go_accepted_with_all_preconditions);
+  RUN_TEST(test_go_countdown_is_15s_and_accepted_by_the_calibration_gate);
   RUN_TEST(test_go_interlock_is_not_a_precondition);
   RUN_TEST(test_go_refusal_reasons);
   RUN_TEST(test_go_needs_sa_still_at_go_when_evaluated);

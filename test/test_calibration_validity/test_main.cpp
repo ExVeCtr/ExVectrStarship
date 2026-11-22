@@ -181,21 +181,38 @@ static void test_gyro_run_planning() {
   TEST_ASSERT_FALSE(p.run);
   p = planGyroRun(100 * S, 101 * S);
   TEST_ASSERT_FALSE(p.run);
+  // run kinds: named windows, Startup 5 s (needs 7 s of zeroing window), Countdown 3 s (needs 5 s)
+  TEST_ASSERT_EQUAL_INT64(5 * S, gyroRunWindowNs(GyroRunKind::Startup));
+  TEST_ASSERT_EQUAL_INT64(3 * S, gyroRunWindowNs(GyroRunKind::Countdown));
+  TEST_ASSERT_EQUAL_INT64(7 * S, gyroRunMinWindowNs(GyroRunKind::Startup));
+  TEST_ASSERT_EQUAL_INT64(5 * S, gyroRunMinWindowNs(GyroRunKind::Countdown));
+  p = planGyroRun(100 * S, 105 * S, GyroRunKind::Countdown);
+  TEST_ASSERT_TRUE(p.run);
+  TEST_ASSERT_EQUAL_INT64(104 * S, p.deadlineNs);
+  TEST_ASSERT_FALSE(planGyroRun(100 * S, 105 * S - 1, GyroRunKind::Countdown).run);
+  TEST_ASSERT_FALSE(planGyroRun(100 * S, 105 * S).run); // a 5 s window is too short for the Startup run
+  // the startup / boot window and every judging limit are unchanged
+  const VCTR::DSP::Calib::GyroBiasConfig gc;
+  TEST_ASSERT_EQUAL_INT64(5 * S, gc.windowNs);
+  TEST_ASSERT_EQUAL_INT64(1 * S, gc.blockNs);
 }
 
 static void test_countdown_rule() {
-  // Initialisation lasts -paramInt - 10 s: -18 gives 8 s (5 s window + 3 s slack).
+  // Initialisation lasts -paramInt - 10 s: -15 gives 5 s (3 s countdown window + 1 s reserve + 1 s slack).
+  TEST_ASSERT_EQUAL_INT(-15, kMinCountdownParamInt);
+  TEST_ASSERT_TRUE(countdownLongEnough(-15));
   TEST_ASSERT_TRUE(countdownLongEnough(-18));
   TEST_ASSERT_TRUE(countdownLongEnough(-30));
-  TEST_ASSERT_FALSE(countdownLongEnough(-17));
+  TEST_ASSERT_FALSE(countdownLongEnough(-14));
   TEST_ASSERT_FALSE(countdownLongEnough(-10));
   TEST_ASSERT_FALSE(countdownLongEnough(0));
-  TEST_ASSERT_EQUAL_INT64(108 * S, countdownWindowEndNs(100 * S, -18));
-  // the gyro run planned for the shortest accepted countdown fits: 8 s window, deadline after 7 s >= 5 s window
+  TEST_ASSERT_EQUAL_INT64(105 * S, countdownWindowEndNs(100 * S, -15));
+  // the gyro run planned for the shortest accepted countdown fits: 5 s window, deadline after 4 s >= 3 s window + 1 s slack
   const int64_t now = 50 * S;
-  const GyroRunPlan p = planGyroRun(now, countdownWindowEndNs(now, kMinCountdownParamInt));
+  const GyroRunPlan p = planGyroRun(now, countdownWindowEndNs(now, kMinCountdownParamInt), GyroRunKind::Countdown);
   TEST_ASSERT_TRUE(p.run);
-  TEST_ASSERT_EQUAL_INT64(now + 7 * S, p.deadlineNs);
+  TEST_ASSERT_EQUAL_INT64(now + 4 * S, p.deadlineNs);
+  TEST_ASSERT_TRUE(p.deadlineNs - now >= gyroRunWindowNs(GyroRunKind::Countdown) + kGyroRunSlackNs);
 }
 
 static void test_command_preconditions() {
@@ -245,7 +262,7 @@ static Validity goodValidity() {
 }
 
 // Review test 1: the Arm / MissionBegin / armed-in-Ready decisions are pure and take NO simulation input (safety.md
-// rule 9), so real and simulation mode are identical by construction. Valid vs invalid, countdown under 18 s.
+// rule 9), so real and simulation mode are identical by construction. Valid vs invalid, countdown under 15 s.
 static void test_arm_gate() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideArm(goodValidity())));
   Validity bad = goodValidity();
@@ -282,11 +299,12 @@ static void test_ready_to_arm_telemetry() {
 
 static void test_mission_begin_gate() {
   const Validity good = goodValidity();
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -15)));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -18)));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::None), uint8_t(decideMissionBegin(good, -30)));
   // the GS default MissionBegin -10 is refused with valid calibrations: the gyro run does not fit (also in simulation)
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, -10)));
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, -17)));
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, -14)));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(GateRefusal::CountdownTooShort), uint8_t(decideMissionBegin(good, 0)));
   Validity bad = good;
   bad.accel = Reason::OutOfRange;

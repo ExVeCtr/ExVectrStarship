@@ -120,7 +120,10 @@ public:
   // ---- Automatic gyro run (zeroing window, countdown) ----
   /// Starts (or restarts) it with a deadline. Ignored (false) while a session collects. A finished run that was not
   /// taken yet stays pending (it is neither dropped nor overwritten by the start).
-  bool startGyroRun(int64_t nowNs, int64_t deadlineNs);
+  /// `windowNs` > 0: still-window length of this run (DSP::Calib::kGyroWindowCountdownNs for the go countdown).
+  bool startGyroRun(int64_t nowNs, int64_t deadlineNs, int64_t windowNs = 0);
+  /// Configuration of the current/last gyro run (window length of that run), for the failure log.
+  const DSP::Calib::GyroBiasConfig &gyroRunConfig() const { return gyro_.config(); }
   void cancelGyroRun();
   bool gyroRunActive() const { return gyroAuto_ && gyro_.collecting(); }
   /// True once per finished automatic run.

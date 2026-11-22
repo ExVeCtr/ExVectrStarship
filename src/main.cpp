@@ -575,21 +575,23 @@ public:
   }
 
   /// Starts the automatic gyro bias run for a zeroing window ending at windowEndNs (boot zero, ZeroEstimators,
-  /// countdown Initialisation): only if the window holds the 5 s still window plus the reserve (planGyroRun).
+  /// countdown Initialisation): only if the window holds the still window of the run kind plus the reserve and slack
+  /// (planGyroRun: Startup 5 s window, Countdown 3 s window).
   /// Returns true if the run started.
   bool startGyroRunForWindow(int64_t windowEndNs, bool countdown) {
     const int64_t now = Core::NowNs();
-    const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs);
+    const Calibration::GyroRunKind kind = countdown ? Calibration::GyroRunKind::Countdown : Calibration::GyroRunKind::Startup;
+    const Calibration::GyroRunPlan plan = Calibration::planGyroRun(now, windowEndNs, kind);
     if (!plan.run) {
       LOG_MSG("Gyro bias run skipped: the zeroing window is shorter than %.0f s\n",
-              double(Calibration::kGyroRunMinWindowNs) / Core::SECONDS);
+              double(Calibration::gyroRunMinWindowNs(kind)) / Core::SECONDS);
       return false;
     }
     // A finished run that was not taken yet is delivered first, with the flags of the run that produced it.
     Calibration::GyroRunDone pending;
     if (calibrationService.takeGyroRunDone(pending))
       onGyroRunDone(pending);
-    if (!calibrationService.startGyroRun(now, plan.deadlineNs)) {
+    if (!calibrationService.startGyroRun(now, plan.deadlineNs, Calibration::gyroRunWindowNs(kind))) {
       LOG_MSG("Gyro bias run NOT started: a calibration session is busy\n");
       return false;
     }
@@ -643,7 +645,7 @@ public:
     } else {
       gyroRunState = Calibration::GyroRunState::Failed;
       char why[160];
-      DSP::Calib::describeGyroRun(r, DSP::Calib::GyroBiasConfig(), why, sizeof why);
+      DSP::Calib::describeGyroRun(r, calibrationService.gyroRunConfig(), why, sizeof why);
       Core::printW("Calibration: gyro bias run FAILED (%s, %lu restarts, checks 0x%x; %s): gyro calibration invalid until a "
                    "run passes (ZeroEstimators, vehicle still)\n",
                    DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks, why);
