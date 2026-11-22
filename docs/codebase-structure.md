@@ -17,7 +17,7 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── starship_flaps.*      Flap actuator layer (4 flap servos) + ControlAttitudeFlaps settings types
 │   ├── comms/                ExVectrNetwork links (USB + UART to the RX module), telemetry task, packet mapping, radio link rule
 │   ├── calibration/          Sensor calibration: CalibrationService (session engine, pure, host-tested), validity and command rules (pure), CalibrationTask (feeds the raw sensor topics)
-│   ├── safety/               Pure safety decision logic (control-source table and RC command mapper decode part (T9b-1, observe only), hard motor interlock `MotorInterlock` with the motor-gate AND and the watchdog staleness rule (T9b-2), estimator zeroing window, "valid zero since boot" rule, mission chain switching, controller phase table, bellyflop kick constants and triggers, MissionAbort decision), host-tested
+│   ├── safety/               Pure safety decision logic (control-source table, RC command mapper with the edge events and SE classifier (`rc_mapper.*`) and the command-intent layer (`rc_command.*`: go preconditions, SC and SE decisions, D12 "on the ground") (T9b-1, T9b-4), hard motor interlock `MotorInterlock` with the motor-gate AND and the watchdog staleness rule (T9b-2), estimator zeroing window with the SE hold API (T9b-4), "valid zero since boot" rule, mission chain switching, controller phase table, bellyflop kick constants and triggers, MissionAbort decision), host-tested
 │   ├── ublox_gnss.*          u-blox NEO-M8Q GNSS driver → SNSR::GNSS topic
 │   ├── gnss_config_sequencer.*  Pure, host-tested non-blocking u-blox configuration sequence used by ublox_gnss
 │   ├── vl53l0x/              VL53L0X ToF rangefinder driver → SNSR::RangeFinder topic
@@ -117,8 +117,8 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x23 | `AIR_MISSION` | down | – | 5 Hz |
 | 0x24 | `AIR_GNSS` | down | – | 10 Hz |
 | 0x25 | `AIR_GNSS_INFO` | down | – | 1 Hz |
-| 0x10 | `RC_STATE` (decoded by the per-link `RcIngressTap`, not on the PortMux; accepted only from node 2 on the UART = RADIO and node 0 on USB = BENCH; accepted states also feed the motor interlock (SD channel, T9b-2); no command acts on it until T9b-4) | up | yes (bench) | yes (Pocket) |
-| 0x7F | legacy `Telecommand`, **TEMPORARY until T9b**, from node 0 only | up | yes | yes |
+| 0x10 | `RC_STATE` (decoded by the per-link `RcIngressTap`, not on the PortMux; accepted only from node 2 on the UART = RADIO and node 0 on USB = BENCH; accepted states also feed the motor interlock (SD channel, T9b-2) and, since T9b-4, the RC command mapper: SA go/abort, SB, SC, SE reset/hold; see hardware-and-drivers.md section 5 "RC command path") | up | yes (bench) | yes (Pocket) |
+| 0x7F | legacy `Telecommand`, **TEMPORARY until T9b-5**, from node 0 only; **T9b-4: the safety types (Arm, SimulationMode, MissionBegin, MissionSelect, MissionAbort, SystemReset) are ignored**, only calibration, `ZeroEstimators` and the simulation-only types still act | up | yes | yes |
 | 0x80 | `POSE` | down | 100 Hz | – |
 | 0x81 | `ACTUATORS` | down | 50 Hz | – |
 | 0x82 | `MISSION` | down | 20 Hz | – |

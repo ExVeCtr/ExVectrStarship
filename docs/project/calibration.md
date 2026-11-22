@@ -1,6 +1,6 @@
 # Sensor calibration (gyro, accelerometer, magnetometer)
 
-> Operator procedure, vehicle behaviour and the rules that gate Arm and MissionBegin. Implements step **C2** of the workspace plan `docs/calibration-design.md` (section 6.1 "Owner decisions" overrides the design where they differ). Code: `src/calibration/` (pure, host-tested engine and rules, plus the platform task), the fit maths in `lib/ExVectrDSP/src/calibration/` ([libs/ExVectrDSP.md](../libs/ExVectrDSP.md#calibration-module-2026-11-21)), the wiring in `VehicleSafetyAndControlTask` (`main.cpp`).
+> Operator procedure, vehicle behaviour and the rules that gate the go (T9b-4: the Arm telecommand is removed, the SA go edge replaces MissionBegin; every mention below of `Arm` or `MissionBegin` is the go gate: all three calibrations valid, countdown >= 18 s). Implements step **C2** of the workspace plan `docs/calibration-design.md` (section 6.1 "Owner decisions" overrides the design where they differ). Code: `src/calibration/` (pure, host-tested engine and rules, plus the platform task), the fit maths in `lib/ExVectrDSP/src/calibration/` ([libs/ExVectrDSP.md](../libs/ExVectrDSP.md#calibration-module-2026-11-21)), the wiring in `VehicleSafetyAndControlTask` (`main.cpp`).
 
 ## Rules (owner decisions 2026-11-21)
 
