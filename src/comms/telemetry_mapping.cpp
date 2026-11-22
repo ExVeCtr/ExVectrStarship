@@ -139,6 +139,12 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.home_epoch = s.homeEpoch;
   p.calib_state = packCalibState(s.calibGyroValid, s.calibAccelValid, s.calibMagValid, s.calibSessionActive,
                                  s.readyToArm);
+  // T9b-0: command-path fields do not exist on the vehicle yet, so they carry their "none" values
+  p.ctrl_flags = 0;
+  p.go_refusal = 0;     // 0 = none
+  p.degraded_bits = 0;
+  p.mission_profile = 255; // 255 = no profile latched
+  p.rc_rejected = 0;
   return p;
 }
 
