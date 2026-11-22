@@ -107,7 +107,7 @@ Zeroing and the system reset are separate. Zeroing runs the existing `enableZero
 
 ### Intended RC mapping for reset and zeroing (T9b requirement, not implemented)
 
-**Status (T9b-1, observe only):** the vehicle already decodes `RC_STATE` per link, keeps the control-source table (RADIO = node 2 on the UART, BENCH = node 0 on USB) and the SA..SE decode with the safe-seen bits, and reports `ctrl_source`, `rc_age`, `rc_rejected` and the USB-only `RC_APPLIED`. **No switch acts on anything yet** and the failure rule (table below) is unchanged. Details and the bench check: [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms).
+**Status (T9b-1, observe only):** the vehicle already decodes `RC_STATE` per link, keeps the control-source table (RADIO = node 2 on the UART, BENCH = node 0 on USB) and the SA..SE decode with the safe-seen bits, and reports `ctrl_source`, `rc_age`, `rc_rejected` and the USB-only `RC_APPLIED`. **No switch acts on anything yet** (T9b-4); since T9b-3 the control failsafe (table below) uses the control-source table. Details and the bench check: [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms).
 
 Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch **SE**:
 - **Short press** (released within 1 s): `SystemReset` behaviour (state reset, no zeroing).
@@ -119,7 +119,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 
 | Check | Threshold | Effect |
 |---|---|---|
-| Radio link lost: no radio packet = DATA frame from node 0 or node 2 arriving on the UART (normally the Pocket's `RC_STATE`); heartbeats, node 3 frames and USB never count | 2 s (`VehicleNetwork::isRadioLinkAlive`); before the first radio packet since boot, 10 s after power-on | Failure, `radioConnectionLoss`. The ground station on USB does not influence it (since 2026-11-20). Details and the boot grace: [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms) |
+| **Control source lost** (T9b-3, the one control failsafe rule): while committed (motor interlock open, mission chain pending or mode Running), the accepted `RC_STATE` of the latched control source (RADIO = Pocket, or BENCH = GS virtual radio) is older than 2 s, or there is no source | 2 s (`VehicleNetwork::controlSourceLost`, 10 Hz check, so 2.0-2.1 s) | Failure (latched until SystemReset), failure bit 5 `CONTROL_SOURCE_LOST`. Heartbeats, GS `REQUEST`s, telecommands, link statistics and the ground station never keep it alive or trigger it. Not committed (ground, disarmed, nothing pending): only `ctrl_source` NONE, no failure (D2-B). Details: [hardware-and-drivers.md](hardware-and-drivers.md#5-exvectrnetwork-links-srccomms) |
 | GNSS, gyro, baro, attitude-EKF or position-KF data age | > 0.5 s | Failure, `sensorFailure` |
 | Magnetometer data age | > 2.5 s | Mag marked failed; if in a running mission, **switch to RTH** (only graceful degradation) |
 | Horizontal distance from origin, on ground (Init/Startup) | > 2 m | Failure, `positionOutOfBounds` |
@@ -132,7 +132,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 
 ### Actuator gating
 
-- `vehicleIsReady()` false → `vehicleShutdownControl(true)`: TVC, flaps and simulated actuators are disabled. **In flight this means the vehicle falls.** This is the current policy for every latched failure, including radio loss.
+- `vehicleIsReady()` false → `vehicleShutdownControl(true)`: TVC, flaps and simulated actuators are disabled. **In flight this means the vehicle falls.** This is the current policy for every latched failure, including control-source loss.
 - Otherwise actuators follow `mission->getActuatorsEnabled()`. Flaps are always on in freefall.
 - **Arming** (`Arm`, 0xA5) only sets the motor power limit: 100 % when armed, 10 % when disarmed. It is *not* required for `MissionBegin`. `Arm` and `MissionBegin` are **refused while a calibration is invalid** (real mode, [calibration.md](calibration.md)); `MissionBegin` also needs a countdown of at least 18 s (`paramInt <= −18`) so the gyro bias run fits the Initialisation phase. Disarm is forced in Failure, SensorCalib, Startup and SensorInit, and automatically after RTH finishes. The forced-disarm log line ("Vehicle disarmed due to ...") is logged once when the reason changes and then every 5 s while it holds (`disarmLogDue`, main.cpp:335); the disarm itself still runs every 100 ms tick.
 - Motors are switched on only by `MissionBegin`, and never in simulation mode (the legacy `enableMotors(false)` in simulation, unchanged by T9b-2, see the Known safety gaps).
@@ -142,7 +142,7 @@ Agreed 2026-11-20 for task T9b (the RC-state to command mapping), Pocket switch 
 
 ### Known safety gaps (decide before the next flight)
 
-- Radio loss or a single 0.5 s sensor dropout in flight cuts all actuators instead of attempting RTH or a controlled descent.
+- Control-source loss (RC_STATE older than 2 s while committed) or a single 0.5 s sensor dropout in flight cuts all actuators instead of attempting RTH or a controlled descent.
 - (Fixed 2026-11-20: a SystemReset during a mission no longer lets the chain continue, and the vehicle no longer latches Failure at every boot.)
 - (Fixed 2026-11-20: the first bellyflop after boot no longer differs from later ones; RTH after an abort or mag timeout from freefall now has its controllers.)
 - The bellyflop kick (2026-11-21) is tuned in the simulator only, whose aerodynamics are known to be wrong (bench: tilt 2° → 75° in 0.95 s at 11 N, then belly-down and near horizontal). Review the kick in the first flight data ([missions.md](missions.md) Known issues).
