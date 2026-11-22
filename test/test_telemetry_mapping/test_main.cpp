@@ -395,7 +395,7 @@ void test_pack_calib_state() {
 void test_vehicle_status_home_and_calib() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeVehicleStatus(s));
-  TEST_ASSERT_EQUAL_UINT(30, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(36, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT8(0, p.home_epoch); // no position reference yet
   TEST_ASSERT_EQUAL_HEX8(0, p.calib_state);
   s.homeEpoch = 7;
@@ -410,6 +410,18 @@ void test_vehicle_status_home_and_calib() {
   s.readyToArm = true;
   p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_HEX8(0x17, p.calib_state);
+}
+
+void test_vehicle_status_t9b_none_values() {
+  auto p = roundTrip(makeVehicleStatus(sample()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Packets::ControlSource::kNone), static_cast<uint8_t>(p.ctrl_source));
+  TEST_ASSERT_TRUE(isnan(p.rc_age));
+  TEST_ASSERT_EQUAL_HEX16(0, p.ctrl_flags);
+  TEST_ASSERT_EQUAL_UINT8(0, p.go_refusal);
+  TEST_ASSERT_EQUAL_HEX8(0, p.degraded_bits);
+  TEST_ASSERT_EQUAL_UINT8(255, p.mission_profile);
+  TEST_ASSERT_EQUAL_UINT8(0, p.rc_rejected);
+  TEST_ASSERT_EQUAL_UINT8(12, static_cast<uint8_t>(Packets::RequestAction::kZeroEstimators));
 }
 
 void test_home_epoch_counter() {
@@ -791,7 +803,7 @@ void test_mission_setpoint_q_encoding() {
 
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
-  TEST_ASSERT_EQUAL_UINT(30, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(36, Packets::VehicleStatus::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
@@ -805,7 +817,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x414DE27Au, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x65E4E6E3u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -825,6 +837,7 @@ int main() {
   RUN_TEST(test_air_gnss_info);
   RUN_TEST(test_pack_calib_state);
   RUN_TEST(test_vehicle_status_home_and_calib);
+  RUN_TEST(test_vehicle_status_t9b_none_values);
   RUN_TEST(test_home_epoch_counter);
   RUN_TEST(test_actuators_roll_torque_and_mission_fields);
   RUN_TEST(test_handset_telem);
