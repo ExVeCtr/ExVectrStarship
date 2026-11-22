@@ -493,6 +493,23 @@ void test_vehicle_status_t9b_none_values() {
   TEST_ASSERT_EQUAL_UINT8(12, static_cast<uint8_t>(Packets::RequestAction::kZeroEstimators));
 }
 
+void test_vehicle_status_t9b4_command_path_fields() {
+  TelemetrySnapshot s = sample();
+  s.ctrlFlags = Packets::VehicleStatus::kCtrlFlagsRadioFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle;
+  s.cmdFlags = Packets::VehicleStatus::kCtrlFlagsScMismatch | Packets::VehicleStatus::kCtrlFlagsSeRefused |
+               Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing | Packets::VehicleStatus::kCtrlFlagsFailsafeLatched;
+  s.goRefusal = 4;
+  s.missionProfile = 2;
+  auto p = roundTrip(makeVehicleStatus(s));
+  // the comms task's bits and the vehicle's bits are both carried
+  const uint16_t want = Packets::VehicleStatus::kCtrlFlagsRadioFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle |
+                        Packets::VehicleStatus::kCtrlFlagsScMismatch | Packets::VehicleStatus::kCtrlFlagsSeRefused |
+                        Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing | Packets::VehicleStatus::kCtrlFlagsFailsafeLatched;
+  TEST_ASSERT_EQUAL_HEX16(want, p.ctrl_flags);
+  TEST_ASSERT_EQUAL_UINT8(4, p.go_refusal);
+  TEST_ASSERT_EQUAL_UINT8(2, p.mission_profile);
+}
+
 void test_home_epoch_counter() {
   HomeEpoch h;
   TEST_ASSERT_EQUAL_UINT8(0, h.value());
@@ -908,6 +925,7 @@ int main() {
   RUN_TEST(test_pack_calib_state);
   RUN_TEST(test_vehicle_status_home_and_calib);
   RUN_TEST(test_vehicle_status_t9b_none_values);
+  RUN_TEST(test_vehicle_status_t9b4_command_path_fields);
   RUN_TEST(test_home_epoch_counter);
   RUN_TEST(test_actuators_roll_torque_and_mission_fields);
   RUN_TEST(test_handset_telem);

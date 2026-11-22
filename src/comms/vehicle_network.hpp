@@ -126,6 +126,10 @@ public:
   /// rc_ingress_tap.hpp and safety/control_source.hpp. pollNodes() runs the arbitration each tick.
   const Safety::ControlSourceTable &controlSources() const { return controlSources_; }
   const Safety::RcCommandMapper &rcMapper() const { return rcMapper_; }
+  /// T9b-4: the safety task consumes the mapper's edge events (takeEvents) and reads the decoded switches.
+  Safety::RcCommandMapper &rcMapper() { return rcMapper_; }
+  /// The active source (None allowed) and whether its last accepted state is at most `maxAgeNs` old (seqlock snapshot).
+  bool activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const;
   /// The hard motor interlock (T9b-2). Fed by the RC taps and pollNodes(); read by the TVC and its watchdog.
   Safety::MotorInterlock &motorInterlock() { return motorInterlock_; }
   const Safety::MotorInterlock &motorInterlock() const { return motorInterlock_; }

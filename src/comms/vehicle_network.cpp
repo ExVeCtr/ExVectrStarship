@@ -85,11 +85,18 @@ void VehicleNetwork::pollNodes() {
   const int64_t now = time_.nowNs();
   controlSources_.update(now, committed_);
   if (controlSources_.sourceChangedSinceLast()) {
-    rcMapper_.onActiveChanged();
+    rcMapper_.onActiveChanged(controlSources_.active());
     sourceChangePending_ = true;
   }
   // The interlock follows the table's active source (a change clears its observed transition).
   motorInterlock_.update(now, controlSources_.active());
+}
+
+bool VehicleNetwork::activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const {
+  Safety::ControlSourceSnapshot cs;
+  if (!controlSources_.snapshot(cs)) cs = controlSources_.live();
+  id = cs.active;
+  return cs.active != Safety::ControlSourceId::None && cs.fresh(cs.active, nowNs, maxAgeNs);
 }
 
 bool VehicleNetwork::takeSourceChange(Safety::ControlSourceId &newActive) {

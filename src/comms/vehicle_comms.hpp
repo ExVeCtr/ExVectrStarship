@@ -127,6 +127,11 @@ public:
   const VehicleNetwork &network() const { return net_; }
   /// The hard motor interlock (owned by the network, fed by the RC taps).
   Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }
+  /// RC command mapper (T9b-4): edge events and decoded switches of the active source.
+  Safety::RcCommandMapper &rcMapper() { return net_.rcMapper(); }
+  bool activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const {
+    return net_.activeSourceFresh(nowNs, maxAgeNs, id);
+  }
   /// Input of the control-source latch (interlock open, mission pending or Running), set by the safety task.
   void setCommitted(bool committed) { net_.setCommitted(committed); }
   const LogTextQueue &logQueue() const { return log_; }

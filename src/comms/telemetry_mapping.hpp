@@ -110,6 +110,11 @@ struct TelemetrySnapshot {
   uint8_t ctrlSource = 0;                ///< VehicleStatus.ctrl_source: 0 NONE, 1 RADIO, 2 USB (bench)
   float rcAgeS = __builtin_nanf("");     ///< age of the last accepted RC_STATE of the active source, s, NaN = none
   uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (INTERLOCK_NEED_TOGGLE, RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
+  // Command-path state of the vehicle (T9b-4, filled by the safety task through fillSnapshot): ctrl_flags bits that
+  // only the vehicle logic knows (SC_MISMATCH, SE_HOLD_ZEROING, SE_REFUSED, FAILSAFE_LATCHED), OR-ed with ctrlFlags.
+  uint16_t cmdFlags = 0;
+  uint8_t goRefusal = 0;                 ///< VehicleStatus.go_refusal (0 none)
+  uint8_t missionProfile = 255;          ///< VehicleStatus.mission_profile: SB latched at the last go, 255 = none
   uint8_t rcRejected = 0;                ///< wrapping count of rejected RC_STATE frames
   uint8_t degradedBits = 0;              ///< VehicleStatus.degraded_bits (T9b-3: UART_HEARTBEAT_LOST only; information, never latched)
   /// RC_APPLIED content (USB only)

@@ -142,11 +142,11 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.home_epoch = s.homeEpoch;
   p.calib_state = packCalibState(s.calibGyroValid, s.calibAccelValid, s.calibMagValid, s.calibSessionActive,
                                  s.readyToArm);
-  // T9b-1/T9b-2: ctrl_flags carries the control-source bits and INTERLOCK_NEED_TOGGLE so far; the other command-path fields are "none"
-  p.ctrl_flags = s.ctrlFlags;
-  p.go_refusal = 0;     // 0 = none
+  // T9b-4: ctrl_flags = control-source bits + INTERLOCK_NEED_TOGGLE (comms task) | the vehicle's command-path bits (cmdFlags)
+  p.ctrl_flags = static_cast<uint16_t>(s.ctrlFlags | s.cmdFlags);
+  p.go_refusal = s.goRefusal;
   p.degraded_bits = s.degradedBits;
-  p.mission_profile = 255; // 255 = no profile latched
+  p.mission_profile = s.missionProfile;
   p.rc_rejected = s.rcRejected;
   return p;
 }
