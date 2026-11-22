@@ -23,7 +23,8 @@
 #include <vector>
 
 #include "ExVectrDSP/body_sim_model.hpp"
-#include "descent_control.hpp"
+#include "ExVectrControl/starship/descent_guidance.hpp"
+#include "ExVectrControl/starship/flap_descent_law.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Math;
