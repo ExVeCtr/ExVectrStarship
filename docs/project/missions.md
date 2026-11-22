@@ -199,7 +199,7 @@ Trigger (a) detects ground contact, when the vehicle stops following the setpoin
 
 10 Hz. Each tick (`taskThread`, `:570-615`):
 
-1. `handleTelecommands()`.
+1. `handleTelecommands()`, then `superviseMotorInterlock()` (T9b-2: control-source latch input, D4-A re-arm while in Failure, gate log line; before anything can return early).
 2. If `!systemsInitialised()`: disable everything and return. Phase mapping and mission control are skipped.
 3. Map the active mission to a `MissionPhase` (§6.1).
 4. `checkForFailures()`.
@@ -329,7 +329,7 @@ Other ways a mission gets switched:
 - `shutdown` (not ready, a failure latched, or RTH ended): TVC actuators off, flaps off, simulator TVC off.
 - Otherwise: flaps on if the mission is Freefall, else `mission_->getActuatorsEnabled()`. TVC actuators and simulator TVC follow `getActuatorsEnabled()`. Simulator flaps follow the flap state.
 - So the per-mode flap enables in §6.2 are overridden every tick, and the effective rule is "Freefall: on, else mission actuators".
-- Motors additionally need `enableMotors_`, which is set at MissionBegin and cleared at RTH end, reset and simulation toggle. Within `StarshipTVC` they also need `enableActuators_` and an idle actuator test. **Arming only changes the power limit (1.0 vs 0.1)**, see [hardware-and-drivers.md](hardware-and-drivers.md#3-starshiptvc).
+- Motors additionally need `enableMotors_`, which is set at MissionBegin and cleared at RTH end, reset and simulation toggle. Within `StarshipTVC` they also need `enableActuators_` and an idle actuator test. **Arming only changes the power limit (1.0 vs 0.1)**, see [hardware-and-drivers.md](hardware-and-drivers.md#3-starshiptvc). **Since T9b-2 (2026-11-22) every mission also needs the hard motor interlock open** (observed Pocket SD off -> on, ENABLED state at most 1 s old, 100 Hz watchdog; no mission, RTH or failure handler can bypass it; it never reads the simulation flag). A mission chain that ends (RTH landed or cancelled) re-arms the interlock: the next flight needs a new SD toggle. If SD goes down or the RC stops for over 1 s in flight the motors stop and the vehicle falls (a 1 to 2 s gap reopens by itself).
 
 Kinematic safety (only for missions with `disableKinematicSafety_ == false`, which in practice means Waypoint) applies when mode ≠ Idle:
 
