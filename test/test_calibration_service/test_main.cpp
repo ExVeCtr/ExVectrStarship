@@ -162,8 +162,10 @@ static void test_accel_session_twelve_poses_fit_and_legacy_conversion() {
   captureTwelvePoses(svc, sim, 12);
   TEST_ASSERT_EQUAL_size_t(12, svc.poseCount());
   TEST_ASSERT_TRUE(log.has("pose 12 captured"));
-  TEST_ASSERT_TRUE(log.has("directions covered"));
-  TEST_ASSERT_TRUE(log.has("coverage complete with"));
+  TEST_ASSERT_TRUE(log.has("well determined: yes"));
+  TEST_ASSERT_TRUE(log.has("well determined with"));
+  TEST_ASSERT_TRUE(log.has("you can stop and fit now"));
+  TEST_ASSERT_FALSE(log.has("well determined: no; poses do not"));
 
   TEST_ASSERT_TRUE(svc.stop(Sensor::Accel, sim.t));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Fitting), uint8_t(svc.state(Sensor::Accel)));
@@ -239,11 +241,42 @@ static void test_accel_too_few_poses_fails_and_discard() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Failed), uint8_t(svc.state(Sensor::Accel)));
   TEST_ASSERT_FALSE(svc.applicable(Sensor::Accel));
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(svc.result(Sensor::Accel)));
-  TEST_ASSERT_TRUE(log.has("missing: "));
-  TEST_ASSERT_FALSE(log.has("coverage complete"));
+  TEST_ASSERT_TRUE(log.has("not well determined: only 4 poses"));
+  TEST_ASSERT_FALSE(log.has("you can stop and fit now"));
   svc.discard(Sensor::Accel);
   TEST_ASSERT_EQUAL_UINT8(uint8_t(State::Idle), uint8_t(svc.state(Sensor::Accel)));
   TEST_ASSERT_FALSE(svc.stop(Sensor::Accel, sim.t)); // not collecting
+}
+
+static void test_accel_clustered_poses_hint_and_fail_text() {
+  CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity);
+  Log log;
+  svc.setLogSink(Log::sink, &log);
+  Sim sim;
+  sim.gyroBias[0] = sim.gyroBias[1] = sim.gyroBias[2] = 0;
+  const double I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const double zero[3] = {0, 0, 0};
+  svc.setActive(Sensor::Gyro, zero, I);
+  svc.start(Sensor::Accel, false, sim.t);
+  // nose up/down and four horizontal poses at 45 deg between the sensor axes plus three oblique ones: 9 poses, but
+  // some scale terms are still not determined to 0.005 (the hint says so, the fit fails with the parameter list).
+  double u[12][3];
+  const double tab[9][2] = {{0, 0}, {180, 0}, {90, 45}, {90, 135}, {90, 225}, {90, 315}, {30, 90}, {150, 270}, {120, 0}};
+  for (int i = 0; i < 9; i++)
+    poseDirection(tab[i][0], tab[i][1], u[i]);
+  for (int i = 0; i < 9; i++)
+    movePose(svc, sim, u[i], 4.0);
+  TEST_ASSERT_EQUAL_size_t(9, svc.poseCount());
+  TEST_ASSERT_TRUE(log.has("pose 9 captured (well determined: no;"));
+  TEST_ASSERT_TRUE(log.has("weakest: "));
+  TEST_ASSERT_FALSE(log.has("you can stop and fit now"));
+  svc.stop(Sensor::Accel, sim.t);
+  svc.tick(sim.t);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(svc.result(Sensor::Accel)));
+  TEST_ASSERT_TRUE(log.has("Accel fit FAIL_COVERAGE"));
+  TEST_ASSERT_TRUE(log.has("Accel not well determined: "));
+  TEST_ASSERT_TRUE(log.has(" sigma "));
+  TEST_ASSERT_FALSE(svc.applicable(Sensor::Accel));
 }
 
 static void test_duplicate_pose_not_stored() {
@@ -502,6 +535,7 @@ int main(int, char **) {
   RUN_TEST(test_accel_session_twelve_poses_fit_and_legacy_conversion);
   RUN_TEST(test_stale_gyro_bias_does_not_block_pose_capture);
   RUN_TEST(test_accel_too_few_poses_fails_and_discard);
+  RUN_TEST(test_accel_clustered_poses_hint_and_fail_text);
   RUN_TEST(test_duplicate_pose_not_stored);
   RUN_TEST(test_mag_session_recovers_centre);
   RUN_TEST(test_mag_poor_coverage_fails);

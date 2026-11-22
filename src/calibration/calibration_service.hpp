@@ -153,7 +153,8 @@ private:
   void runMagFit(int64_t nowNs);
   void finishGyroRun(int64_t nowNs);
   void drainPoseEvents();
-  void logCaptured(uint8_t count, uint8_t coverage, bool complete);
+  void logCaptured(uint8_t count);
+  void logWeakParams(const DSP::Calib::AccelFitResult &r, const DSP::Calib::AccelFitConfig &fc);
 
   ServiceConfig cfg_;
   LogSink sink_ = nullptr;
@@ -188,15 +189,13 @@ private:
   double magVerifySum_ = 0, magVerifySum2_ = 0;
   DSP::Calib::SphereCoverage magVerifyCoverage_;
   bool stillNow_ = false;
-  bool coverageHintGiven_ = false; ///< the 'coverage complete' line was logged in this session
+  bool coverageHintGiven_ = false; ///< the 'well determined, you can stop' line was logged in this session
 
   // pose events recorded in the sample path, logged in tick()
   struct PoseNote {
     DSP::Calib::PoseEvent ev;
     uint8_t count;
     float angleDeg;
-    uint8_t coverage; ///< accelCoverageMask of the stored poses at the time of the event
-    bool complete;    ///< >= 9 poses and all six directions covered, first time in this session
   };
   static constexpr uint8_t kNoteCap = 8;
   PoseNote notes_[kNoteCap];

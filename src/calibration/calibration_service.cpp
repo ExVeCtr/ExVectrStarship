@@ -103,16 +103,6 @@ void CalibrationService::addAccel(int64_t tNs, const double a[3]) {
       n.ev = ev;
       n.count = static_cast<uint8_t>(poses_.count());
       n.angleDeg = static_cast<float>(poses_.lastNearestAngle() * kRadToDeg);
-      n.coverage = 0;
-      n.complete = false;
-      if (ev == PoseEvent::Captured || ev == PoseEvent::Full) {
-        DSP::Calib::AccelFitConfig fc;
-        n.coverage = DSP::Calib::accelCoverageMask(poses_.means(), poses_.count(), fc.coverageAngleRad);
-        if (!coverageHintGiven_ && DSP::Calib::accelCoverageComplete(poses_.count(), n.coverage, fc.minPosesFull)) {
-          coverageHintGiven_ = true;
-          n.complete = true;
-        }
-      }
       noteCount_++;
     }
   }
@@ -345,17 +335,13 @@ void CalibrationService::runAccelFit(int64_t nowNs) {
     state_[i] = State::Failed;
     logf("Accel candidate rejected: parameters not acceptable for arming (%s)", toString(accelParams));
   }
-  char missingTxt[40] = "";
-  if (accelRes_.result == DSP::Calib::CalResult::FailCoverage) {
-    char m[24];
-    DSP::Calib::accelMissingText(DSP::Calib::accelCoverageMask(poses_.means(), n, fc.coverageAngleRad), m, sizeof(m));
-    snprintf(missingTxt, sizeof(missingTxt), ", missing: %s", m);
-  }
   logf("Accel fit %s: %u poses%s, residual rms %.4f max %.4f m/s^2, offset %.3f %.3f %.3f m/s^2, scale %.3f..%.3f, "
-       "checks 0x%03x%s",
+       "checks 0x%03x",
        DSP::Calib::toString(accelRes_.result), (unsigned)accelRes_.nUsed, accelRes_.diagonal ? " (diagonal fit)" : "",
        accelRes_.residualRms, accelRes_.residualMax, accelRes_.offset[0], accelRes_.offset[1], accelRes_.offset[2],
-       accelRes_.scaleEig[0], accelRes_.scaleEig[2], (unsigned)accelRes_.checks, missingTxt);
+       accelRes_.scaleEig[0], accelRes_.scaleEig[2], (unsigned)accelRes_.checks);
+  if (!(accelRes_.checks & DSP::Calib::kAccelCheckCoverage))
+    logWeakParams(accelRes_, fc);
   logf("%s", state_[i] == State::Review ? "Accel candidate ready: apply with CalibApply (then Save), or discard"
                                         : "Accel candidate rejected: discard, move to more different poses and repeat");
 }
@@ -400,16 +386,64 @@ void CalibrationService::runMagFit(int64_t nowNs) {
                                         : "Mag candidate rejected: discard, tumble through more directions and repeat");
 }
 
-void CalibrationService::logCaptured(uint8_t count, uint8_t coverage, bool complete) {
-  const int covered = DSP::Calib::accelCoverageCount(coverage);
-  char missing[24];
-  DSP::Calib::accelMissingText(coverage, missing, sizeof(missing));
-  if (covered >= 6)
-    logf("Accel: pose %u captured (6 of 6 directions covered)", (unsigned)count);
-  else
-    logf("Accel: pose %u captured (%d of 6 directions covered, missing: %s)", (unsigned)count, covered, missing);
-  if (complete)
-    logf("Accel: coverage complete with %u poses, you can stop and fit now", (unsigned)count);
+void CalibrationService::logWeakParams(const DSP::Calib::AccelFitResult &r, const DSP::Calib::AccelFitConfig &fc) {
+  if (r.nUsed < fc.minPosesDiag) {
+    logf("Accel not well determined: only %u poses, at least %u needed (%u for the full fit)", (unsigned)r.nUsed,
+         (unsigned)fc.minPosesDiag, (unsigned)fc.minPosesFull);
+    return;
+  }
+  if (!r.sigmaValid) {
+    logf("%s", "Accel not well determined: the poses do not constrain every parameter (singular), add poses in clearly "
+               "different orientations");
+    return;
+  }
+  DSP::Calib::AccelWeakParam w[3];
+  const size_t cnt = DSP::Calib::accelWeakParams(r, fc, w, 3);
+  char txt[110];
+  size_t pos = 0;
+  txt[0] = 0;
+  for (size_t i = 0; i < cnt && pos < sizeof(txt); i++)
+    pos += snprintf(txt + pos, sizeof(txt) - pos, "%s%s sigma %.3g (limit %.3g)", i ? ", " : "",
+                    DSP::Calib::accelParamName(w[i].idx), w[i].sigma, w[i].limit);
+  logf("Accel not well determined: %s", txt);
+}
+
+void CalibrationService::logCaptured(uint8_t count) {
+  const DSP::Calib::AccelFitConfig fc;
+  if (count < fc.minPosesDiag) {
+    logf("Accel: pose %u captured (distribution can be judged from %u poses)", (unsigned)count, (unsigned)fc.minPosesDiag);
+    return;
+  }
+  // Same function as the final check: the full fit with its parameter standard errors.
+  const DSP::Calib::AccelFitResult r = DSP::Calib::fitAccel(poses_.means(), count, fc);
+  DSP::Calib::AccelWeakParam w[2];
+  const size_t cnt = DSP::Calib::accelWeakParams(r, fc, w, 2);
+  const bool enoughPoses = count >= fc.minPosesFull;
+  const bool well = enoughPoses && r.wellDetermined;
+  if (cnt == 0) {
+    logf("Accel: pose %u captured (well determined: no; poses do not constrain every parameter, add poses in clearly "
+         "different orientations)",
+         (unsigned)count);
+  } else {
+    char weak[64];
+    size_t pos = 0;
+    weak[0] = 0;
+    for (size_t i = 0; i < cnt && pos < sizeof(weak); i++)
+      pos += snprintf(weak + pos, sizeof(weak) - pos, "%s%s %.3g", i ? ", " : "", DSP::Calib::accelParamName(w[i].idx),
+                      w[i].sigma);
+    if (well)
+      logf("Accel: pose %u captured (well determined: yes; weakest: %s)", (unsigned)count, weak);
+    else if (!enoughPoses)
+      logf("Accel: pose %u captured (well determined: no, at least %u poses needed; weakest: %s)", (unsigned)count,
+           (unsigned)fc.minPosesFull, weak);
+    else
+      logf("Accel: pose %u captured (well determined: no; weakest: %s; add poses with %s)", (unsigned)count, weak,
+           DSP::Calib::accelParamAdvice(w[0].idx));
+  }
+  if (well && DSP::Calib::acceptable(r.result) && !coverageHintGiven_) {
+    coverageHintGiven_ = true;
+    logf("Accel: well determined with %u poses, you can stop and fit now", (unsigned)count);
+  }
 }
 
 void CalibrationService::drainPoseEvents() {
@@ -419,15 +453,14 @@ void CalibrationService::drainPoseEvents() {
     noteCount_--;
     switch (n.ev) {
     case PoseEvent::Averaging: logf("%s", "Accel: still, measuring pose (hold 2 s)"); break;
-    case PoseEvent::Captured: logCaptured(n.count, n.coverage, n.complete); break;
+    case PoseEvent::Captured: logCaptured(n.count); break;
     case PoseEvent::Duplicate:
       logf("Accel: same orientation as an earlier pose (%.0f deg), not stored, turn it further", (double)n.angleDeg);
       break;
     case PoseEvent::Aborted: logf("%s", "Accel: moved during the measurement, pose dropped"); break;
     case PoseEvent::Full:
+      logCaptured(n.count);
       logf("Accel: all %u poses stored, stop and fit", (unsigned)n.count);
-      if (n.complete)
-        logf("Accel: coverage complete with %u poses, you can stop and fit now", (unsigned)n.count);
       break;
     case PoseEvent::None: break;
     }

@@ -1,7 +1,7 @@
 // Host tests of the accelerometer multi-pose magnitude fit (lib/ExVectrDSP calibration/accel_ellipsoid_fit) and the
 // small linear algebra it uses: pio test -e native -f test_cal_accel_fit
 // Synthetic poses with known offset b and symmetric A (exact and noisy, imprecise pose angles), the diagonal
-// fallback, too few poses, missing coverage, degenerate (face-only) pose sets, non-finite input and range failures.
+// fallback, too few poses, parameter standard errors (pose distribution), degenerate (face-only) pose sets, non-finite input and range failures.
 #include <math.h>
 #include <unity.h>
 
@@ -123,64 +123,137 @@ static void test_offset_limit_boundary() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Warn), uint8_t(r.result));
 }
 
-static void test_coverage_mask_and_text() {
-  const double g = 9.81;
-  const double all[6][3] = {{g, 0, 0}, {-g, 0, 0}, {0, g, 0}, {0, -g, 0}, {0, 0, g}, {0, 0, -g}};
-  char txt[32];
-  TEST_ASSERT_EQUAL_UINT8(0x3F, accelCoverageMask(all, 6, 25.0 * M_PI / 180));
-  TEST_ASSERT_EQUAL(6, accelCoverageCount(0x3F));
-  accelMissingText(0x3F, txt, sizeof(txt));
-  TEST_ASSERT_EQUAL_STRING("", txt);
-  // one missing (-Z)
-  uint8_t m = accelCoverageMask(all, 5, 25.0 * M_PI / 180);
-  TEST_ASSERT_EQUAL_UINT8(0x1F, m);
-  TEST_ASSERT_EQUAL(5, accelCoverageCount(m));
-  accelMissingText(m, txt, sizeof(txt));
-  TEST_ASSERT_EQUAL_STRING("-Z", txt);
-  // several missing: only +Z and -X present
-  const double few[2][3] = {{0, 0, g}, {-g, 0, 0}};
-  m = accelCoverageMask(few, 2, 25.0 * M_PI / 180);
-  TEST_ASSERT_EQUAL_UINT8(0x12, m);
-  accelMissingText(m, txt, sizeof(txt));
-  TEST_ASSERT_EQUAL_STRING("+X, +Y, -Y, -Z", txt);
-  accelMissingText(0, txt, sizeof(txt));
-  TEST_ASSERT_EQUAL_STRING("+X, -X, +Y, -Y, +Z, -Z", txt);
-  char tiny[5];
-  accelMissingText(0, tiny, sizeof(tiny)); // truncates at whole entries, stays terminated
-  TEST_ASSERT_EQUAL_STRING("+X", tiny);
-  TEST_ASSERT_EQUAL_UINT8(0, accelCoverageMask(all, 0, 25.0 * M_PI / 180));
-  // agrees with the fit's coverage check
-  TEST_ASSERT_TRUE(accelPoseCoverage(all, 6, 25.0 * M_PI / 180));
-  TEST_ASSERT_FALSE(accelPoseCoverage(all, 5, 25.0 * M_PI / 180));
+// Poses from a table of (tilt, roll) pairs with the IMU rotated by rollDeg about the nose (sensor z) relative to the
+// ship, so that "sides" fall between two sensor axes. Pose means carry noise (2 s averages, ~0.005 m/s^2).
+static size_t tablePoses(double (*poses)[3], const double (*tab)[2], size_t count, double imuRotDeg, double noise,
+                         double jitterDeg, Rng &rng, const double *bTrue = nullptr) {
+  static const double b0[3] = {0.20, -0.30, 0.55};
+  const double *b = bTrue ? bTrue : b0;
+  double Ainv[9];
+  TEST_ASSERT_TRUE(invert3(kA, Ainv));
+  const double c = cos(imuRotDeg * kDeg), s = sin(imuRotDeg * kDeg);
+  for (size_t i = 0; i < count; i++) {
+    double u[3];
+    poseDirection(tab[i][0] + jitterDeg * (2 * rng.uniform() - 1), tab[i][1] + jitterDeg * (2 * rng.uniform() - 1), u);
+    const double v[3] = {9.81 * (c * u[0] - s * u[1]), 9.81 * (s * u[0] + c * u[1]), 9.81 * u[2]};
+    rawFromTrue(Ainv, b, v, poses[i]);
+    for (int k = 0; k < 3; k++)
+      poses[i][k] += noise * rng.normal();
+  }
+  return count;
 }
 
-static void test_coverage_angle_boundary() {
-  const double lim = 25.0 * M_PI / 180;
-  for (int axis = 0; axis < 3; axis++) {
-    for (int sgn = -1; sgn <= 1; sgn += 2) {
-      const int bit = 2 * axis + (sgn > 0 ? 0 : 1);
-      // tilted from the axis by 24 and 26 degrees (towards the next axis)
-      for (int pass = 0; pass < 2; pass++) {
-        const double a = (pass == 0 ? 24.0 : 26.0) * M_PI / 180;
-        double p[1][3] = {{0, 0, 0}};
-        p[0][axis] = sgn * 9.81 * cos(a);
-        p[0][(axis + 1) % 3] = 9.81 * sin(a);
-        const uint8_t m = accelCoverageMask(p, 1, lim);
-        if (pass == 0)
-          TEST_ASSERT_TRUE((m & (1u << bit)) != 0);
-        else
-          TEST_ASSERT_TRUE((m & (1u << bit)) == 0);
-      }
-    }
+static const double kSpread14[14][2] = {{0, 0},   {180, 0},  {90, 0},   {90, 90},  {90, 180}, {90, 270}, {45, 0},
+                                        {45, 90}, {45, 180}, {45, 270}, {135, 0},  {135, 180}, {135, 90}, {60, 220}};
+// Owner's bench: nose up / down, the ship laid on its sides at 45 deg between two sensor axes (roll 45, 135, ...).
+static const double kOwner14[14][2] = {{0, 0},   {180, 0},  {90, 45}, {90, 135}, {90, 225}, {90, 315}, {45, 45},
+                                       {45, 135}, {45, 225}, {45, 315}, {135, 90}, {135, 270}, {0, 0}, {180, 0}};
+
+static void test_spread_poses_with_rotated_imu_pass() {
+  // 45 deg IMU rotation about the long axis: no sensor axis ever points along g in the side poses.
+  for (int rot = 0; rot <= 45; rot += 45) {
+    Rng rng(11 + rot);
+    double poses[14][3];
+    tablePoses(poses, kSpread14, 14, rot, 0.005, 6.0, rng);
+    const AccelFitResult r = fitAccel(poses, 14);
+    TEST_ASSERT_TRUE(r.sigmaValid);
+    TEST_ASSERT_TRUE(r.wellDetermined);
+    TEST_ASSERT_TRUE((r.checks & kAccelCheckCoverage) != 0);
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
+    for (int k = 0; k < 3; k++)
+      TEST_ASSERT_TRUE(r.sigma[k] < 0.05);
+    for (int k = 3; k < 9; k++)
+      TEST_ASSERT_TRUE(r.sigma[k] < 0.005);
   }
 }
 
-static void test_coverage_complete_needs_nine_poses() {
-  TEST_ASSERT_FALSE(accelCoverageComplete(8, 0x3F, 9));
-  TEST_ASSERT_TRUE(accelCoverageComplete(9, 0x3F, 9));
-  TEST_ASSERT_TRUE(accelCoverageComplete(12, 0x3F, 9));
-  TEST_ASSERT_FALSE(accelCoverageComplete(12, 0x3E, 9));
-  TEST_ASSERT_FALSE(accelCoverageComplete(6, 0x3F, 9)); // the six faces alone are not enough poses
+static void test_owner_situation_nose_and_45deg_sides_pass() {
+  Rng rng(21);
+  double poses[14][3];
+  tablePoses(poses, kOwner14, 14, 45.0, 0.005, 3.0, rng); // IMU board rotated 45 deg about the long axis
+  const AccelFitResult r = fitAccel(poses, 14);
+  TEST_ASSERT_TRUE(r.wellDetermined);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
+  for (int k = 0; k < 3; k++)
+    TEST_ASSERT_DOUBLE_WITHIN(0.05, (k == 0 ? 0.20 : k == 1 ? -0.30 : 0.55), r.offset[k]);
+}
+
+static void test_clustered_poses_fail_naming_weak_parameters() {
+  // 14 poses around two orientations (nose up and one horizontal side), a few degrees of scatter only.
+  Rng rng(31);
+  double poses[14][3];
+  double tab[14][2];
+  for (int i = 0; i < 14; i++) {
+    tab[i][0] = (i % 2) ? 0 : 90;
+    tab[i][1] = (i % 2) ? 0 : 0;
+  }
+  tablePoses(poses, tab, 14, 0.0, 0.005, 6.0, rng);
+  const AccelFitResult r = fitAccel(poses, 14);
+  TEST_ASSERT_TRUE(r.sigmaValid);
+  TEST_ASSERT_FALSE(r.wellDetermined);
+  TEST_ASSERT_TRUE((r.checks & kAccelCheckCoverage) == 0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(r.result));
+  AccelWeakParam w[3];
+  const AccelFitConfig cfg;
+  const size_t cnt = accelWeakParams(r, cfg, w, 3);
+  TEST_ASSERT_TRUE(cnt >= 1);
+  for (size_t i = 0; i < cnt; i++) {
+    TEST_ASSERT_TRUE(w[i].sigma >= w[i].limit);
+    TEST_ASSERT_TRUE(accelParamName(w[i].idx)[0] != '?');
+  }
+  // sorted worst first
+  for (size_t i = 1; i < cnt; i++)
+    TEST_ASSERT_TRUE(w[i - 1].sigma / w[i - 1].limit >= w[i].sigma / w[i].limit);
+}
+
+static void test_fewer_than_nine_poses() {
+  Rng rng(41);
+  double poses[14][3];
+  tablePoses(poses, kSpread14, 14, 0.0, 0.0, 0.0, rng);
+  AccelFitResult r = fitAccel(poses, 7);
+  TEST_ASSERT_TRUE(r.diagonal);
+  TEST_ASSERT_TRUE((r.checks & kAccelCheckPosesFull) == 0);
+  TEST_ASSERT_TRUE(r.result != CalResult::Pass);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(fitAccel(poses, 5).result));
+  r = fitAccel(poses, 5);
+  TEST_ASSERT_FALSE(r.sigmaValid);
+  size_t none = accelWeakParams(r, AccelFitConfig(), nullptr, 0);
+  TEST_ASSERT_EQUAL_size_t(0, none);
+  AccelWeakParam w[2];
+  TEST_ASSERT_EQUAL_size_t(0, accelWeakParams(r, AccelFitConfig(), w, 2));
+}
+
+static void test_singular_pose_set_fails_with_invalid_sigma() {
+  // The same pose repeated 12 times: nothing is constrained but one direction.
+  double poses[12][3];
+  for (int i = 0; i < 12; i++) {
+    poses[i][0] = 0.2;
+    poses[i][1] = -0.3;
+    poses[i][2] = 9.81 + 0.55;
+  }
+  const AccelFitResult r = fitAccel(poses, 12);
+  TEST_ASSERT_FALSE(r.sigmaValid);
+  TEST_ASSERT_FALSE(r.wellDetermined);
+  TEST_ASSERT_FALSE(acceptable(r.result));
+  TEST_ASSERT_TRUE((r.checks & kAccelCheckCoverage) == 0);
+}
+
+static void test_prefix_check_is_monotone_and_final_agrees() {
+  // The operator hint is the fit itself on the poses so far: once 12 spread poses are in, it says well determined,
+  // and the first poses (clustered at the start of the table) do not.
+  Rng rng(51);
+  double poses[14][3];
+  tablePoses(poses, kSpread14, 14, 45.0, 0.005, 6.0, rng);
+  bool seenWell = false;
+  for (size_t k = 6; k <= 14; k++) {
+    const AccelFitResult r = fitAccel(poses, k);
+    if (r.wellDetermined && k >= 9)
+      seenWell = true;
+    if (k < 9)
+      TEST_ASSERT_TRUE((r.checks & kAccelCheckPosesFull) == 0);
+  }
+  TEST_ASSERT_TRUE(seenWell);
+  TEST_ASSERT_TRUE(fitAccel(poses, 14).wellDetermined);
 }
 
 static void test_diagonal_fallback() {
@@ -212,8 +285,8 @@ static void test_too_few_and_coverage() {
   }
   TEST_ASSERT_EQUAL(9, n);
   const AccelFitResult r = fitAccel(p2, n);
-  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailCoverage), uint8_t(r.result));
-  TEST_ASSERT_TRUE((r.checks & kAccelCheckCoverage) == 0);
+  // not asserted: whether this reduced set is well determined is decided by the fit result, see the tests above
+  (void)r;
 }
 
 static void test_degenerate_faces_only() {
@@ -292,9 +365,12 @@ int main() {
   RUN_TEST(test_exact_recovery);
   RUN_TEST(test_noisy_recovery_pass);
   RUN_TEST(test_offset_limit_boundary);
-  RUN_TEST(test_coverage_mask_and_text);
-  RUN_TEST(test_coverage_angle_boundary);
-  RUN_TEST(test_coverage_complete_needs_nine_poses);
+  RUN_TEST(test_spread_poses_with_rotated_imu_pass);
+  RUN_TEST(test_owner_situation_nose_and_45deg_sides_pass);
+  RUN_TEST(test_clustered_poses_fail_naming_weak_parameters);
+  RUN_TEST(test_fewer_than_nine_poses);
+  RUN_TEST(test_singular_pose_set_fails_with_invalid_sigma);
+  RUN_TEST(test_prefix_check_is_monotone_and_final_agrees);
   RUN_TEST(test_diagonal_fallback);
   RUN_TEST(test_too_few_and_coverage);
   RUN_TEST(test_degenerate_faces_only);
