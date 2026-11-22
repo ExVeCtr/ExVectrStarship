@@ -607,6 +607,77 @@ void test_rc_source_lost_after_2s() {
   TEST_ASSERT_TRUE(s.rcApplied.radioAgeS > 2.0f); // the per-source ages keep counting
 }
 
+// ---------------------------------------------------------------- T9b-2: interlock fed through the real taps
+
+/// One RC frame from `p` followed by a comms tick, then 40 ms.
+static void rcTick(Peer &p, int16_t sd, uint8_t flags = 1) {
+  sendRc(p, 0, -1000, sd, flags);
+  settle();
+  rig->clk.advanceMs(40);
+}
+
+void test_interlock_radio_toggle_opens_and_boot_enabled_never_opens() {
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  auto &il = rig->net.motorInterlock();
+  for (int i = 0; i < 10; i++) rcTick(tx, 1000); // I1: ENABLED from the first frame
+  TEST_ASSERT_FALSE(il.open(rig->clk.nowNs()));
+  TelemetrySnapshot s;
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_TRUE(s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle);
+  rcTick(tx, -1000);
+  TEST_ASSERT_FALSE(il.open(rig->clk.nowNs()));
+  rcTick(tx, 1000); // I2: observed off -> on
+  TEST_ASSERT_TRUE(il.open(rig->clk.nowNs()));
+  s = TelemetrySnapshot();
+  rig->net.fillRcTelemetry(s);
+  TEST_ASSERT_FALSE(s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle);
+}
+
+void test_interlock_source_ok_clear_frames_are_no_data() { // I7
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  auto &il = rig->net.motorInterlock();
+  rcTick(tx, -1000); // the first frame only makes the source active (the interlock sees states from the next one)
+  rcTick(tx, -1000);
+  rcTick(tx, 1000);
+  TEST_ASSERT_TRUE(il.open(rig->clk.nowNs()));
+  const int64_t lastGood = rig->clk.nowNs() - 40 * 1000000LL;
+  for (int i = 0; i < 30; i++) rcTick(tx, 1000, 0); // SOURCE_OK = 0: rejected, not data
+  TEST_ASSERT_TRUE(rig->clk.nowNs() - lastGood > 1000000000LL);
+  TEST_ASSERT_FALSE(il.open(rig->clk.nowNs()));
+}
+
+void test_interlock_gs_rc_on_uart_is_ignored() { // I8: (0, UART) never reaches the interlock
+  auto &il = rig->net.motorInterlock();
+  for (int i = 0; i < 10; i++) {
+    sendRc(rig->gsUart, 2, -1000, i < 3 ? -1000 : 1000);
+    settle();
+    rig->clk.advanceMs(40);
+  }
+  TEST_ASSERT_FALSE(il.open(rig->clk.nowNs()));
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::None, (int)il.activeSource());
+  TEST_ASSERT_TRUE(rig->net.controlSources().rejectCounts()[1] > 0);
+}
+
+void test_interlock_follows_source_change_to_bench() { // I6
+  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
+  auto &il = rig->net.motorInterlock();
+  rcTick(tx, -1000);
+  rcTick(tx, -1000);
+  rcTick(tx, 1000);
+  TEST_ASSERT_TRUE(il.open(rig->clk.nowNs()));
+  // radio goes silent beyond T_ctrl, the bench (GS on USB) takes over with SD already ENABLED
+  rig->clk.advanceMs(2100);
+  settle();
+  for (int i = 0; i < 10; i++) {
+    sendRc(rig->gsUsb, 1, -1000, 1000);
+    settle();
+    rig->clk.advanceMs(40);
+  }
+  TEST_ASSERT_EQUAL((int)Safety::ControlSourceId::Bench, (int)il.activeSource());
+  TEST_ASSERT_FALSE(il.open(rig->clk.nowNs()));
+  TEST_ASSERT_TRUE(il.needToggle(rig->clk.nowNs()));
+}
+
 void test_nothing_draining_links_drops_frames_without_blocking() {
   rig->usbIo.blockWrites = true;  // USB not connected / host not reading
   rig->uartIo.blockWrites = true; // RX module absent
@@ -719,6 +790,10 @@ int main() {
   RUN_TEST(test_rc_frames_do_not_use_the_shared_mux_sequence_state);
   RUN_TEST(test_rc_heartbeats_and_other_ports_are_not_rc);
   RUN_TEST(test_rc_source_lost_after_2s);
+  RUN_TEST(test_interlock_radio_toggle_opens_and_boot_enabled_never_opens);
+  RUN_TEST(test_interlock_source_ok_clear_frames_are_no_data);
+  RUN_TEST(test_interlock_gs_rc_on_uart_is_ignored);
+  RUN_TEST(test_interlock_follows_source_change_to_bench);
   RUN_TEST(test_nothing_draining_links_drops_frames_without_blocking);
   RUN_TEST(test_incompatible_peer_flag);
   RUN_TEST(test_no_heap_after_construction);

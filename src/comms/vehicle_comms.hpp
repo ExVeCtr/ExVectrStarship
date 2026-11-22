@@ -125,6 +125,10 @@ public:
   void onTelecommand(const Telecommand &tc) override { telecommandTopic_.publish(tc); }
 
   const VehicleNetwork &network() const { return net_; }
+  /// The hard motor interlock (owned by the network, fed by the RC taps).
+  Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }
+  /// Input of the control-source latch (interlock open, mission pending or Running), set by the safety task.
+  void setCommitted(bool committed) { net_.setCommitted(committed); }
   const LogTextQueue &logQueue() const { return log_; }
 
 private:

@@ -12,6 +12,8 @@
 #include "ExVectrActuator/pwm_output.hpp"
 #include "ExVectrHAL/pin_pwm.hpp"
 
+#include "safety/motor_interlock.hpp"
+
 namespace VCTR {
 namespace CTRL {
 
@@ -48,6 +50,12 @@ private:
   bool enableMotors_ = false;
 
   bool firstMotorEnable_ = true;
+
+  /// Hard motor interlock (T9b-2). Not owned. A null pointer means CLOSED (fail safe).
+  const Safety::MotorInterlock *interlock_ = nullptr;
+  /// Sticky "closed" flag of the watchdog (forceMotorsOff), cleared by releaseMotorsForce() once the gate is open.
+  bool motorsForcedOff_ = false;
+  bool gateOpenLast_ = false; ///< last gate evaluation (telemetry, motorGateOpen())
 
   float motorPowerLimit_ = 0.05;
 
@@ -135,6 +143,29 @@ public:
   }
 
   void enableMotors(bool enable) { enableMotors_ = enable; }
+
+  /// Attaches the hard motor interlock. Without one the gate stays closed.
+  void setMotorInterlock(const Safety::MotorInterlock *interlock) { interlock_ = interlock; }
+
+  /**
+   * Gate at the lowest output level (design 3.4.2): motor PWM is enabled and written only while the interlock is
+   * open, the watchdog's forced-off flag is clear, the vehicle logic enabled motors and actuators and no actuator
+   * test runs. Evaluated on every TVC run and by the 100 Hz watchdog. Never reads the simulation flag.
+   */
+  bool interlockOpen(int64_t nowNs) const { return interlock_ != nullptr && interlock_->open(nowNs); }
+
+  /**
+   * Watchdog action while the gate is closed: motor duty 0 on both outputs, the sticky closed flag set (taskThread
+   * honours it), and the modelled actual thrust set to zero and published once (the TVC task is event driven: it
+   * does not run if the controller stops publishing, design 2.4). Safe to call every 10 ms.
+   */
+  void forceMotorsOff();
+
+  /// Watchdog: the gate is open, drop the sticky flag (taskThread still evaluates the gate itself).
+  void releaseMotorsForce() { motorsForcedOff_ = false; }
+
+  /// Telemetry: the motor gate was open at the last TVC run (interlock open and not forced off).
+  bool isMotorGateOpen() const { return gateOpenLast_ && !motorsForcedOff_; }
 
   /// Motor enable as set by the vehicle logic (telemetry only; motors also need enabled actuators).
   bool isMotorsEnabled() const { return enableMotors_; }

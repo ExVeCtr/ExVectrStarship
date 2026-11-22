@@ -74,6 +74,24 @@ void test_failure_bits() {
   f.positionOutOfBounds = true;
   f.attitudeOutOfBounds = true;
   TEST_ASSERT_EQUAL_HEX32(0x38, packFailureBits(f));
+  f = {};
+  f.interlockWatchdog = true; // T9b-2: bit 13 (motor-interlock watchdog)
+  TEST_ASSERT_EQUAL_HEX32(0x2000, packFailureBits(f));
+}
+
+void test_interlock_need_toggle_flag() {
+  VCTR::Safety::ControlSourceTable t;
+  VCTR::Safety::RcCommandMapper m;
+  VCTR::Safety::ControlSourceSnapshot cs;
+  t.snapshot(cs);
+  TelemetrySnapshot s = sample();
+  fillRcTelemetry(s, cs, m, 5000000000LL, true);
+  auto p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_HEX16(Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle, p.ctrl_flags);
+  s = sample();
+  fillRcTelemetry(s, cs, m, 5000000000LL, false);
+  p = roundTrip(makeVehicleStatus(s));
+  TEST_ASSERT_EQUAL_HEX16(0, p.ctrl_flags);
 }
 
 void test_sensor_state() {
@@ -876,6 +894,7 @@ void test_packet_sizes_fit_budget() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_failure_bits);
+  RUN_TEST(test_interlock_need_toggle_flag);
   RUN_TEST(test_sensor_state);
   RUN_TEST(test_time_us_wraps);
   RUN_TEST(test_vehicle_status);

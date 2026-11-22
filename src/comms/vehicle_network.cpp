@@ -56,8 +56,8 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
     : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
       telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false),
-      usbRcTap_(Safety::RcLink::Usb, controlSources_, rcMapper_, kVehicleNode),
-      uartRcTap_(Safety::RcLink::Uart, controlSources_, rcMapper_, kVehicleNode) {
+      usbRcTap_(Safety::RcLink::Usb, controlSources_, rcMapper_, motorInterlock_, kVehicleNode),
+      uartRcTap_(Safety::RcLink::Uart, controlSources_, rcMapper_, motorInterlock_, kVehicleNode) {
   const int usbIndex = usbNode_.addLink(usbLink_);
   const int uartIndex = uartNode_.addLink(uartLink_, uartFilter());
   // Interpose the taps (same link indices): USB link -> usbRcTap_ -> USB node,
@@ -83,11 +83,14 @@ void VehicleNetwork::pollNodes() {
   usbNode_.poll();
   uartNode_.poll();
   // Control-source arbitration (T9b-1, observe only): a change resets the transition detectors.
-  controlSources_.update(time_.nowNs(), committed_);
+  const int64_t now = time_.nowNs();
+  controlSources_.update(now, committed_);
   if (controlSources_.sourceChangedSinceLast()) {
     rcMapper_.onActiveChanged();
     sourceChangePending_ = true;
   }
+  // The interlock follows the table's active source (a change clears its observed transition).
+  motorInterlock_.update(now, controlSources_.active());
 }
 
 bool VehicleNetwork::takeSourceChange(Safety::ControlSourceId &newActive) {
@@ -100,7 +103,7 @@ bool VehicleNetwork::takeSourceChange(Safety::ControlSourceId &newActive) {
 void VehicleNetwork::fillRcTelemetry(TelemetrySnapshot &s) {
   Safety::ControlSourceSnapshot cs;
   if (!controlSources_.snapshot(cs)) cs = controlSources_.live(); // comms task is the writer
-  Comms::fillRcTelemetry(s, cs, rcMapper_, time_.nowNs());
+  Comms::fillRcTelemetry(s, cs, rcMapper_, time_.nowNs(), motorInterlock_.needToggle(time_.nowNs()));
 }
 
 bool VehicleNetwork::due(uint32_t tick, uint16_t hz, uint32_t phase) {

@@ -34,6 +34,7 @@
 
 #include "rc_ingress_tap.hpp"
 #include "safety/control_source.hpp"
+#include "safety/motor_interlock.hpp"
 #include "safety/rc_mapper.hpp"
 #include "telemetry_mapping.hpp"
 
@@ -126,7 +127,10 @@ public:
   /// rc_ingress_tap.hpp and safety/control_source.hpp. pollNodes() runs the arbitration each tick.
   const Safety::ControlSourceTable &controlSources() const { return controlSources_; }
   const Safety::RcCommandMapper &rcMapper() const { return rcMapper_; }
-  /// Input of the source latch: interlock open, mission pending or Running. Nothing sets it before T9b-2.
+  /// The hard motor interlock (T9b-2). Fed by the RC taps and pollNodes(); read by the TVC and its watchdog.
+  Safety::MotorInterlock &motorInterlock() { return motorInterlock_; }
+  const Safety::MotorInterlock &motorInterlock() const { return motorInterlock_; }
+  /// Input of the source latch: interlock open, mission pending or Running. Set by the safety task every run (T9b-2).
   void setCommitted(bool committed) { committed_ = committed; }
   /// True once after each change of the active source; `newActive` receives the new source (for the log line).
   bool takeSourceChange(Safety::ControlSourceId &newActive);
@@ -177,6 +181,7 @@ private:
   RadioTap radioTap_;
   Safety::ControlSourceTable controlSources_;
   Safety::RcCommandMapper rcMapper_;
+  Safety::MotorInterlock motorInterlock_;
   RcIngressTap usbRcTap_, uartRcTap_; ///< per-link RC_STATE decoding (T9b-1)
   bool committed_ = false;
   bool sourceChangePending_ = false;

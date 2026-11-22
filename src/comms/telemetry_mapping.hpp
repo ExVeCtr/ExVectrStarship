@@ -109,7 +109,7 @@ struct TelemetrySnapshot {
   // Control sources (T9b-1, observe only; filled by fillRcTelemetry from the comms task)
   uint8_t ctrlSource = 0;                ///< VehicleStatus.ctrl_source: 0 NONE, 1 RADIO, 2 USB (bench)
   float rcAgeS = __builtin_nanf("");     ///< age of the last accepted RC_STATE of the active source, s, NaN = none
-  uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
+  uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (INTERLOCK_NEED_TOGGLE, RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
   uint8_t rcRejected = 0;                ///< wrapping count of rejected RC_STATE frames
   /// RC_APPLIED content (USB only)
   struct RcAppliedView {
@@ -195,9 +195,10 @@ Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
 /// RC_APPLIED (0x84, USB only, 10 Hz) from snapshot.rcApplied.
 Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s);
 /// Fills snapshot.ctrlSource, rcAgeS, ctrlFlags, rcRejected and rcApplied from the control-source state and the
-/// mapper's decode (T9b-1). Ages come from `nowNs` and the records' receive times.
+/// mapper's decode (T9b-1). Ages come from `nowNs` and the records' receive times. `interlockNeedToggle` sets
+/// ctrl_flags INTERLOCK_NEED_TOGGLE (T9b-2: MotorInterlock::needToggle).
 void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
-                     int64_t nowNs);
+                     int64_t nowNs, bool interlockNeedToggle = false);
 
 // ---- AIR_ACTUATORS: two samples per packet ----
 

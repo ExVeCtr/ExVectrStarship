@@ -28,6 +28,7 @@ uint32_t packFailureBits(const FailureState &f) {
   if (f.positionOutOfBounds) b |= 1u << 3;
   if (f.attitudeOutOfBounds) b |= 1u << 4;
   if (f.radioConnectionLoss) b |= 1u << 5;
+  if (f.interlockWatchdog) b |= 1u << 13;
   return b;
 }
 
@@ -141,7 +142,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.home_epoch = s.homeEpoch;
   p.calib_state = packCalibState(s.calibGyroValid, s.calibAccelValid, s.calibMagValid, s.calibSessionActive,
                                  s.readyToArm);
-  // T9b-1: ctrl_flags carries only the control-source bits so far; the other command-path fields are "none"
+  // T9b-1/T9b-2: ctrl_flags carries the control-source bits and INTERLOCK_NEED_TOGGLE so far; the other command-path fields are "none"
   p.ctrl_flags = s.ctrlFlags;
   p.go_refusal = 0;     // 0 = none
   p.degraded_bits = 0;
@@ -166,7 +167,7 @@ Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s) {
 }
 
 void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
-                     int64_t nowNs) {
+                     int64_t nowNs, bool interlockNeedToggle) {
   using Safety::ControlSourceId;
   using Safety::ControlSourceTable;
   const auto ageS = [&](ControlSourceId id) {
@@ -181,6 +182,7 @@ void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &
   if (cs.fresh(ControlSourceId::Bench, nowNs, ControlSourceTable::kCtrlTimeoutNs))
     f |= Packets::VehicleStatus::kCtrlFlagsBenchFresh;
   if (cs.latched) f |= Packets::VehicleStatus::kCtrlFlagsSourceLatched;
+  if (interlockNeedToggle) f |= Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle;
   s.ctrlFlags = f;
   s.rcRejected = cs.rejectedTotal;
 

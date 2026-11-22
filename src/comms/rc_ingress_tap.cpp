@@ -25,7 +25,11 @@ void RcIngressTap::onFrame(const network::FrameView &f, uint8_t linkIndex) {
       frame.flags = rc.flags;
       memcpy(frame.ch, rc.ch, sizeof frame.ch);
       Safety::ControlSourceId id = Safety::ControlSourceId::None;
-      if (table_.onRcFrame(h.src, link_, seq, frame, f.rxTimeNs, &id)) mapper_.onAccepted(id, frame, f.rxTimeNs);
+      if (table_.onRcFrame(h.src, link_, seq, frame, f.rxTimeNs, &id)) {
+        mapper_.onAccepted(id, frame, f.rxTimeNs);
+        const bool sdEnabled = Safety::RcCommandMapper::decodeTwoPos(frame.ch[Safety::RcCommandMapper::kChSd]) == 1;
+        interlock_.onRcState(id, sdEnabled, f.rxTimeNs);
+      }
     }
   }
   if (next) next->onFrame(f, linkIndex);

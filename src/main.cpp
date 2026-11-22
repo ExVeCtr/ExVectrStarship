@@ -39,6 +39,7 @@
 #include "safety/estimator_zeroing.hpp"
 #include "safety/control_phase.hpp"
 #include "safety/mission_abort.hpp"
+#include "safety/motor_interlock.hpp"
 #include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
@@ -286,6 +287,42 @@ MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(),
                                   controlAttitudeTvc, controlMappingAccToAtt);
 
 /**
+ * Hard motor interlock watchdog (T9b-2, docs/t9b-design.md 3.4.2). 100 Hz, priority above every controller (the
+ * controllers run at 100..110), independent of the controller publications: the TVC task is event driven and does
+ * not run if the controller stops, so this task closes the motor outputs on its own. While the gate is closed it
+ * calls StarshipTVC::forceMotorsOff() every run (duty 0, sticky closed flag, modelled thrust 0); while open it
+ * releases the flag. The safety task latches a failsafe if this task has not run for 100 ms
+ * (Safety::interlockWatchdogStale). Reads no simulation flag.
+ */
+class MotorInterlockWatchdog : public Core::Task_Periodic {
+public:
+  static constexpr uint16_t kPriority = 120;
+  static constexpr int64_t kPeriodNs = 10 * Core::MILLISECONDS;
+
+  MotorInterlockWatchdog() : Task_Periodic("Motor interlock watchdog", kPeriodNs) {
+    Core::getSystemScheduler().addTask(*this);
+    setPriority(kPriority);
+  }
+
+  void taskThread() override {
+    const int64_t now = Core::NowNs();
+    lastRunNs_ = now;
+    if (starshipTVC.interlockOpen(now)) {
+      starshipTVC.releaseMotorsForce();
+    } else {
+      starshipTVC.forceMotorsOff();
+    }
+  }
+
+  /// Time of the last run, 0 if it never ran.
+  int64_t lastRunNs() const { return lastRunNs_; }
+
+private:
+  int64_t lastRunNs_ = 0;
+};
+MotorInterlockWatchdog motorInterlockWatchdog;
+
+/**
  * This class takes care of enabling, disabling and setting the actuators for
  * the rocket. It also prepares the system for mission start and signals when
  * something is wrong.
@@ -317,6 +354,7 @@ private:
   MissionMode lastMissionMode_ = MissionMode::MissionMode_Idle;
 
   bool vehicleArmed_ = false;
+  bool interlockOpenLogged_ = false; ///< last logged gate state (superviseMotorInterlock)
   bool allSystemsInitialised_ = false;
   bool simulationMode_ = false;
   SNSR::GnssConfigWarning gnssConfigWarning_; ///< GNSS configuration warning line (information only)
@@ -401,6 +439,7 @@ public:
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
     failureState_.radioConnectionLoss = false;
+    failureState_.interlockWatchdog = false;
 
     mission_ = &defaultMission_; // Set the mission to the default mission
 
@@ -526,6 +565,7 @@ public:
     mission_->resetMission();
     clearFailures();
     cancelCountdownGyroRun();
+    vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::Abort); // D4-A
   }
 
   void cancelCountdownGyroRun() {
@@ -712,8 +752,31 @@ public:
     // missionWaypointTask.setNextMission(&defaultMission_);
   }
 
+  /// Motor interlock supervision (T9b-2), every run, before anything can return early: the latch input of the
+  /// control source (interlock open, mission chain pending or Running), the D4-A re-arm while in Failure, and a log
+  /// line on every gate change. The gate itself is evaluated at the motor outputs and by the watchdog, not here.
+  void superviseMotorInterlock() {
+    const int64_t now = Core::NowNs();
+    auto &il = vehicleComms.motorInterlock();
+    const bool open = il.open(now);
+    vehicleComms.setCommitted(open || missionChain_.pending() || vehicleMode_ == VehicleMode::VehicleMode_Running);
+    if (vehicleMode_ == VehicleMode::VehicleMode_Failure)
+      il.requireRearm(Safety::MotorInterlock::RearmReason::Failure); // D4-A: a failsafe needs a new toggle
+    if (open != interlockOpenLogged_) {
+      interlockOpenLogged_ = open;
+      if (open) {
+        LOG_MSG("Motor interlock OPEN (SD enabled, transition observed)\n");
+      } else {
+        static const char *const why[] = {"open", "no control source", "SD enabled but needs a toggle (off, then on)",
+                                          "SD disabled", "no valid enabled state within 1 s"};
+        LOG_MSG("Motor interlock CLOSED: %s\n", why[static_cast<uint8_t>(il.closeReason(now))]);
+      }
+    }
+  }
+
   void taskThread() override {
     handleTelecommands();
+    superviseMotorInterlock();
 
     // GNSS configuration visibility (review 2026-11-20). Information only: no mode, Ready or Arm decision uses it.
     // VehicleStatus has no free flag bit, so a warning LOG_TEXT line repeats every 10 s while the configuration is
@@ -895,6 +958,10 @@ public:
       }
       break;
     }
+
+    // D4-A: the end of a mission chain (RTH landed, or the pending chain was cancelled) needs a new SD off -> on.
+    if (chainWasPending && !missionChain_.pending())
+      vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::MissionEnd);
 
     // After every switch of this tick (telecommands, failure checks, chain): same table on every run.
     applyControlPhase();
@@ -1198,6 +1265,7 @@ public:
         starshipTVC.enableMotors(false);      // Disable motors
         starshipFlaps.enableActuators(false); // Disable actuators
         vehicleArmed_ = false;                // Disarm the vehicle
+        vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::SystemReset); // D4-A
 
         LOG_MSG("System reset telecommand\n"); // Log the system reset
       }
@@ -1352,6 +1420,7 @@ public:
       if (telecommand.paramInt == 0xA9) { // Validate.
 
         simulationMode_ = !simulationMode_; // Toggle simulation mode
+        vehicleComms.motorInterlock().requireRearm(Safety::MotorInterlock::RearmReason::ModeChange); // D4-A
         if (starshipFlaps.simFaults().any())
           LOG_MSG("Sim fault: all flap faults cleared (simulation mode switched)\n");
         starshipFlaps.simFaults().clear(); // faults never survive a simulation mode switch
@@ -1549,6 +1618,13 @@ public:
     if (!vehicleComms.isRadioLinkAlive()) {
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.radioConnectionLoss = true;
+    }
+
+    // Motor-interlock watchdog (T9b-2): the 100 Hz task that closes the motor outputs has not run for 100 ms.
+    // Failsafe (mode Failure latches until SystemReset); the motors are already cut by enableMotors(false) there.
+    if (Safety::interlockWatchdogStale(Core::NowNs(), motorInterlockWatchdog.lastRunNs())) {
+      vehicleMode_ = VehicleMode::VehicleMode_Failure;
+      failureState_.interlockWatchdog = true;
     }
 
     // Check sensor for data timeout which indicates a failure
@@ -1775,6 +1851,7 @@ public:
     failureState_.positionOutOfBounds = false;
     failureState_.attitudeOutOfBounds = false;
     failureState_.radioConnectionLoss = false;
+    failureState_.interlockWatchdog = false;
     sensoryState_.baro = TelemetrySensor::TelemetrySensor_Init;
     sensoryState_.imu = TelemetrySensor::TelemetrySensor_Init;
     sensoryState_.mag = TelemetrySensor::TelemetrySensor_Init;
@@ -1915,8 +1992,9 @@ public:
     s.failures = vt.getFailureState();
     s.armed = vt.isVehicleArmed();
     s.simulation = vt.simulationModeEnabled();
-    s.motorsEnabled =
-        starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled();
+    // MOTORS_ENABLED (T9b-2): the hard gate is open AND the vehicle logic enabled motors and actuators.
+    s.motorsEnabled = starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled() &&
+                      starshipTVC.interlockOpen(Core::NowNs());
 
     const MissionState &ms = vt.getCurrentMission()->getMissionState();
     s.missionMode = ms.missionMode;
@@ -2398,6 +2476,9 @@ void initialiseHardware() {
   // Core::getSystemScheduler().removeTask(gnss);
 
   // servoTest.setPosition(0);
+
+  // Hard motor interlock: the TVC gate reads it, the watchdog (priority above the controllers) enforces it.
+  starshipTVC.setMotorInterlock(&vehicleComms.motorInterlock());
 
   starshipTVC.setTVCFinsOffset(5 * DEG_TO_RAD, -2 * DEG_TO_RAD, 0 * DEG_TO_RAD,
                                5 * DEG_TO_RAD);
