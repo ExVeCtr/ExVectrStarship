@@ -58,8 +58,23 @@ bool StarshipTVC::testingActuators() {
   return actuatorTestState_ != ActuatorTestingState::Idle;
 }
 
+void StarshipTVC::forceMotorsOff() {
+  motorsForcedOff_ = true;
+  motorCW_.enableOutput(false); // duty 0 (the PWM_Output only writes 0 here; setValue below is never called while closed)
+  motorCCW_.enableOutput(false);
+}
+
 void StarshipTVC::taskThread() {
   auto threadStartTime = Core::NowNs();
+  // The hard motor gate (T9b-2): one evaluation per run, used for the thrust model and the motor outputs below.
+  Safety::MotorGateInput gateIn;
+  gateIn.interlockOpen = interlockOpen(threadStartTime);
+  gateIn.forcedOff = motorsForcedOff_;
+  gateIn.enableMotors = enableMotors_;
+  gateIn.enableActuators = enableActuators_;
+  gateIn.testIdle = (actuatorTestState_ == ActuatorTestingState::Idle);
+  const Safety::MotorGateResult gate = Safety::evaluateMotorGate(gateIn);
+  gateOpenLast_ = gateIn.interlockOpen;
   double dTime = (threadStartTime - lastThreadTime_) / double(Core::SECONDS);
   auto tvcSetting = ctrlSubr_.getItem();
   auto tvcTwistForce = tvcSetting(3); // Torque in Z axis (roll torque)
@@ -208,7 +223,7 @@ void StarshipTVC::taskThread() {
   // Lets update the actual thrust vector with what we expect to get from the
   // motors and servos. This is used for telemetry and simulation purposes.
   Math::Vector<float, 4> actualThrustVector = 0;
-  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) {
+  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) { // thrust model: independent of the gate (D16 rejected)
     auto thrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut) / 2 *
                         tvcThrustLimit_N_;
 
@@ -256,10 +271,8 @@ void StarshipTVC::taskThread() {
   servoYP_.enableOutput(enableActuators);
   servoYN_.enableOutput(enableActuators);
 
-  motorCW_.enableOutput(enableMotors_ && enableActuators_ &&
-                        actuatorTestState_ == ActuatorTestingState::Idle);
-  motorCCW_.enableOutput(enableMotors_ && enableActuators_ &&
-                         actuatorTestState_ == ActuatorTestingState::Idle);
+  motorCW_.enableOutput(gate.outputsEnabled);
+  motorCCW_.enableOutput(gate.outputsEnabled);
 
   // LOG_MSG("Motor CW: %.2f, Motor CCW: %.2f\n", motorCWOut, motorCCWOut);
 
@@ -270,8 +283,7 @@ void StarshipTVC::taskThread() {
     servoYN_.setValue(servoYNOut * 0.5 + 0.5);
   }
 
-  if (enableMotors_ && enableActuators_ &&
-      actuatorTestState_ == ActuatorTestingState::Idle) {
+  if (gate.outputsEnabled) { // a closed gate never calls setValue() (PWM_Output would drive the pin again)
     // LOG_MSG("Motor CW: %.2f, Motor CCW: %.2f\n", motorCWOut, motorCCWOut);
 
     // LOG_MSG("TVC: %.2f, %.2f, %.2f, %.2f\n", tvcSetting(0), tvcSetting(1),

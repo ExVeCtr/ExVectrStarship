@@ -66,7 +66,7 @@ usbNode.send(0, Packets::Pose::kPort, buf, n, network::wire::Qos::Telemetry, tru
 - **Links:** `StreamFrameLink<2048>` on USB `Serial`, `StreamFrameLink<1024>` on `RX_MODULE_SERIALPORT` (Serial4, 460800 8N1) to the ExVectrLink RX module.
 - **Two Nodes, both address 1** (one per link), so the USB link carries the USB telemetry set and the UART carries the radio set at the air rates. One shared `PortMux<2>`, so a frame that arrives on both links is delivered once. The UART node's egress filter drops ports >= 0x80.
 - **Heartbeats:** each node sends the vehicle heartbeat at 1 Hz on its link.
-- **Ground-station presence:** `presenceTimeoutNs = 2 s` on both nodes; `isPresent(0)` on either node is the observable of the existing `radioConnectionLoss` failure (same as the old `NetworkNode::isNodeReachable(0)` with its 2 s timeout). This is a deliberate, temporary exception to "heartbeats never keep the vehicle alive", kept until T9b replaces it with the `RC_STATE` control-source timeout.
+- **Ground-station presence:** `presenceTimeoutNs = 2 s` on both nodes; `isPresent(0)` on either node is `GS_PRESENT`, **information only since T9b-3** (the control failsafe is the `RC_STATE` control-source timeout; the ground station is never a failure condition).
 - **Ports:** the generated telemetry packets, plus the TEMPORARY legacy telecommand port 0x7F (`PacketPort<LegacyTelecommandPacket>`).
 - Everything runs in the `VehicleComms` task (100 Hz, priority 50). The whole comms object (links, nodes, buffers, about 10 KB) is in DMAMEM.
 - Host tests: `test/test_vehicle_network` builds the stack natively (`pio test -e native`).

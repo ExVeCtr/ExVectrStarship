@@ -39,12 +39,12 @@ Virtuals: `beginMission(int64_t startTime)`, `resetMission()`, `missionEnd()`, `
 ### Configured chain (main.cpp:556-558)
 
 ```
-MissionBegin TC ─► Waypoint ──end──► Bellyflop ──end──► Freefall ──end──► RTH (default) ──end──► shutdown
+SA go ─► Waypoint ──end──► Bellyflop ──end──► Freefall ──end──► RTH (default) ──end──► shutdown
                        │                 │                  │
-                       └──── MissionAbort in flight (any phase) / mag timeout (mission mode Running) ────► RTH
+                       └──── SA released in flight (any phase) / mag timeout (mission mode Running) ────► RTH
 ```
 
-MissionAbort on the ground (before liftoff, by mission mode only: countdown, Idle mission, RTH landed) resets and stops instead (§6.2).
+SA released on the ground (before liftoff, by mission mode only: countdown, Idle mission, RTH landed) resets and stops instead (§6.2).
 
 **RTH instead of the bellyflop (owner decisions 2026-11-21, X6 of the flight executive design applied to the current chain, `feature/sim-fixes-3`):** the Waypoint → Bellyflop step goes to RTH (default mission, hot start) instead when (a) the waypoint mission ended because the waypoint with the cancel flag (the 1 m hover check) was not reached in its time limit (`MissionWaypoint::endReason() == Cancelled`), or (b) the altitude (position estimate z, NWU, above the position reference) is below `Safety::kMinKickAltitudeM` = **90 m** or not finite, for any reason the waypoint mission ended (for example the ascent waypoint's 25.5 s time limit at 50 m). The normal flight reaches the 120 m apogee and is unchanged. Decision in `Safety::MissionChain::step()` (§6.2); log `Mission ended: RTH instead of the next mission (<reason>, altitude <z> m, minimum 90 m)`.
 
@@ -199,13 +199,13 @@ Trigger (a) detects ground contact, when the vehicle stops following the setpoin
 
 10 Hz. Each tick (`taskThread`, `:570-615`):
 
-1. `handleTelecommands()`.
+1. `applyRcCommands()` (T9b-4: SA abort level, go, SC, SE reset and hold from the RC state), `handleTelecommands()` (the non-safety commands only), then `superviseMotorInterlock()` (T9b-2: control-source latch input, D4-A re-arm while in Failure, gate log line; before anything can return early).
 2. If `!systemsInitialised()`: disable everything and return. Phase mapping and mission control are skipped.
 3. Map the active mission to a `MissionPhase` (§6.1).
 4. `checkForFailures()`.
 5. `handleVehicleMissionControl()` (§6.2).
 6. `vehicleShutdownControl(!vehicleIsReady())` (§6.3).
-7. `vehicleArmingControl()`: motor power limit 1.0 if armed, otherwise **0.1** (`:1233-1237`).
+7. *(removed in T9b-4: `vehicleArmingControl()` and the 10 % power limit; the limit is 1.0 and the SD interlock is the gate.)*
 
 ### 6.1 `MissionPhase` mapping (`:579-600`)
 
@@ -294,7 +294,7 @@ Before 2026-11-20 the enable was evaluated on mission-mode edges with a shared `
 
 #### MissionAbort (user decision 2026-11-20)
 
-Two kinds of stop: a **failsafe** (a latched `Failure`, for example an IMU failure) cuts everything and the vehicle falls, unchanged. An **abort** (`MissionAbort`, and later the abort outcomes of the failure policy) means "stop and return home". The decision is `Safety::decideAbort` (`src/safety/mission_abort.*`, pure, host-tested), accepted only while the vehicle mode is `Running`:
+Two kinds of stop: a **failsafe** (a latched `Failure`, for example an IMU failure) cuts everything and the vehicle falls, unchanged. An **abort** (SA released, T9b-4; was the `MissionAbort` telecommand, and later the abort outcomes of the failure policy) means "stop and return home". The decision is `Safety::decideAbort` (`src/safety/mission_abort.*`, pure, host-tested), accepted only while the vehicle mode is `Running`. Since T9b-4 it is evaluated **every 10 Hz tick while SA is released** and a chain is pending or the mode is Running (idempotent: RTH is started once and then kept; reset and stop runs once, then the vehicle is no longer Running):
 
 | Active mission / mode | Action |
 |---|---|
@@ -308,28 +308,29 @@ Two kinds of stop: a **failsafe** (a latched `Failure`, for example an IMU failu
 
 - **On the ground** means **before liftoff** and is decided by the mission mode alone (user decision 2026-11-20, review fix): the countdown phases above, any `Idle` mission, RTH landed. In the countdown the TVC controllers are off and the motors at most at idle, so the vehicle cannot fly there. There is **no altitude/speed ground check** any more: it was removed because an abort just after liftoff (waypoint `Running`, 0.3 m, 0.2 m/s) would have reset the mission and cut the motors, dropping the vehicle, instead of starting RTH. Consequence: an abort right at T0 with the vehicle still on the pad starts RTH too; it climbs to the home point (0, 0, 3 m), descends and shuts down. Bench (simulation, 2026-11-20, feature/review-fixes): abort in Init and in Startup → `on the ground: reset and stop`, Ready, mission Idle within 0.2 s; abort in hover at 0.84 m, 0.89 m/s → `in flight: start RTH`, RTH ran (phase Deceleration → Landing), landed 16 s later, auto-disarm and RTH-end shutdown. A `Finished` waypoint, bellyflop or freefall mission lasts at most one safety tick before the chain switches on, so it is in the air and starts RTH.
 - **Calibration abort of the countdown (2026-11-21):** the gyro run that closes the waypoint countdown (Initialisation window, deadline end − 1 s) re-checks all three sensor calibrations; if one is bad (or the run failed) the mission is aborted before liftoff with the same **reset and stop** (shared method `resetAndStopOnGround`, `Safety::decideAbort` is not consulted: the countdown is on the ground by construction) and the log says `MISSION ABORTED before liftoff: calibration invalid (<reason>)`, for example `gyro: last run failed, accel: ok, mag: ok`. Simulation mode is exempt. Details: [calibration.md](calibration.md). A manual `MissionAbort` in the countdown cancels the gyro run.
-- **Reset and stop:** TVC actuators and motors off, shutdown, chain reset, `resetMission()` of the active mission (it stays active, Idle; the phase still reads Hover for the waypoint mission), `clearFailures()` (so the vehicle goes Startup → Ready, arm state unchanged). Nothing follows.
+- **Reset and stop:** TVC actuators and motors off, shutdown, chain reset, `resetMission()` of the active mission (it stays active, Idle; the phase still reads Hover for the waypoint mission), the sensor states are re-initialised (so the vehicle goes Startup → Ready) **without clearing any failure flag or latch** (T9b-4: only the SE short press clears latches; the vehicle is Running here, so no failure flag is set anyway). Nothing follows, and the interlock needs a new SD toggle.
 - **Start RTH:** `switchMissionTo(&defaultMission_)`; the chain stays pending until RTH ends (RTH-end shutdown and auto-disarm as after a normal RTH); the TVC set is enabled and reset in the same tick.
-- Log: `Mission abort telecommand: <action> (alt <m> m, speed <m/s> m/s)` (altitude and speed are logged for information only; they do not enter the decision).
+- Log: `SA released: <action> (alt <m> m, speed <m/s> m/s)` (only when something is done, not for the idempotent repeats)
+- *(previously `Mission abort telecommand: ...`)*  (altitude and speed are logged for information only; they do not enter the decision).
 
 Other ways a mission gets switched:
 
 | Source | Condition | Action |
 |---|---|---|
-| `Telecommand_MissionBegin` (`:871`) | vehicle mode `Ready` (armed **not** required), all three calibrations valid and `paramInt <= −18` (real mode only, [calibration.md](calibration.md)) | `switchMissionTo(&missionWaypointTask, paramInt × 1 s)`, vehicle mode → `Running`, `enableMotors(!simulationMode_)`. The mission starts at `missionTime = paramInt` s, so a countdown needs a **negative** paramInt: Init lasts until −10 s, Startup until 0 s. |
-| `Telecommand_MissionAbort` | vehicle mode `Running` | In flight: RTH hot start from any phase; on the ground: reset and stop (table above). |
-| `Telecommand_SystemReset` | 0xC5 | `resetMissionsToBootState()` plus the system state reset (overview.md). |
+| SA go edge (T9b-4, `applyRcCommands` -> `beginMissionFromGo`; was `Telecommand_MissionBegin`) | observed NOT_GO -> GO of the active source, vehicle mode `Ready`, no latched failsafe, no zeroing window and a valid zero, SC valid and equal to the applied mode, SB = 2 (the only implemented profile), no calibration session or gyro run, then all three calibrations valid (real and simulation alike, [calibration.md](calibration.md)); the interlock is **not** a precondition | `switchMissionTo(&missionWaypointTask, -15 s)` (fixed countdown, `Safety::kGoCountdownParamInt`), vehicle mode → `Running`, `enableMotors(true)` **in simulation and real mode alike**. Init lasts until −10 s, Startup until 0 s. |
+| SA released (T9b-4; was `Telecommand_MissionAbort`) | chain pending or vehicle mode `Running` | In flight: RTH hot start from any phase; on the ground: reset and stop (table above); every tick, idempotent. |
+| SE short press (T9b-4; was `Telecommand_SystemReset`) | on the ground, interlock closed (D12) | `resetMissionsToBootState()` plus the system state reset (overview.md), latches cleared. |
 | Mag data older than 2.5 s | vehicle mode `Running` and mission mode `Running` | switch to RTH (the phase table enables and resets the TVC set; unchanged trigger, not yet the abort decision) |
-| `Telecommand_MissionSelect` (`:855`) | — | no-op (only logs) |
+| SB (T9b-4; was `Telecommand_MissionSelect`, a no-op) | read at the go edge | profile 2 starts the configured chain; SB 0 and 1 refuse the go until T9b-8. |
 
-`missionSelection_` is written into a **local copy** of `MissionState` at `:619` that is then discarded, so the telemetry `missionIndex` never carries it.
+`missionSelection_` is written into a **local copy** of `MissionState` at `:619` that is then discarded, so the telemetry `missionIndex` never carries it. The latched SB profile is reported in `VEHICLE_STATUS.mission_profile` (T9b-4).
 
 ### 6.3 Actuator gating (`vehicleShutdownControl`, `:1187-1203`), every tick
 
 - `shutdown` (not ready, a failure latched, or RTH ended): TVC actuators off, flaps off, simulator TVC off.
 - Otherwise: flaps on if the mission is Freefall, else `mission_->getActuatorsEnabled()`. TVC actuators and simulator TVC follow `getActuatorsEnabled()`. Simulator flaps follow the flap state.
 - So the per-mode flap enables in §6.2 are overridden every tick, and the effective rule is "Freefall: on, else mission actuators".
-- Motors additionally need `enableMotors_`, which is set at MissionBegin and cleared at RTH end, reset and simulation toggle. Within `StarshipTVC` they also need `enableActuators_` and an idle actuator test. **Arming only changes the power limit (1.0 vs 0.1)**, see [hardware-and-drivers.md](hardware-and-drivers.md#3-starshiptvc).
+- Motors additionally need `enableMotors_`, which is set at the go and cleared at RTH end and at the reset. Within `StarshipTVC` they also need `enableActuators_` and an idle actuator test. **There is no arm state or power limit any more (T9b-4: the motors run at full power when the interlock is open)**, see [hardware-and-drivers.md](hardware-and-drivers.md#3-starshiptvc). **Since T9b-2 (2026-11-22) every mission also needs the hard motor interlock open** (observed Pocket SD off -> on, ENABLED state at most 1 s old, 100 Hz watchdog; no mission, RTH or failure handler can bypass it; it never reads the simulation flag). A mission chain that ends (RTH landed or cancelled) re-arms the interlock: the next flight needs a new SD toggle. If SD goes down or the RC stops for over 1 s in flight the motors stop and the vehicle falls (a 1 to 2 s gap reopens by itself).
 
 Kinematic safety (only for missions with `disableKinematicSafety_ == false`, which in practice means Waypoint) applies when mode ≠ Idle:
 
@@ -397,8 +398,9 @@ In `Acsent` mode the flap controller commands 90° (retracted) unless extend is 
 |---|---|---|---|
 | High | `mission_rth.hpp:400-415` | The landing detector fires when the vehicle stays > 0.2 m above the Z setpoint for 2 s, at any altitude. | A poor vertical-tracking period during descent (gust, low thrust margin, estimator jump) is declared a landing, the actuators are cut and the vehicle falls. |
 | High | `main.cpp:933`, `:955`, `:1971-1972` | `groundTopicSwitch` is not subscribed at boot, only in the simulation toggle. | The RTH rangefinder landing trigger (`mission_rth.hpp:417`) never fires in real flight. Only the tracking-error trigger works. |
-| High | `main.cpp:873-893`, `:1233-1237` | MissionBegin does not require `vehicleArmed_`. Arming only scales the motor power limit (0.1 disarmed). | A disarmed vehicle can start a mission with motors running at 10 % authority. |
-| High | main.cpp `checkForFailures`, `vehicleIsReady` | Radio loss (no radio packet from node 0/2 on the UART for 2 s, overview.md) or any sensor older than 0.5 s (GNSS, gyro, baro, posKF, attKF) latches `Failure`, and `vehicleShutdownControl(true)` cuts all actuators. | The response to link loss or a sensor hiccup in flight is flight termination, not RTH. Failure is latched until SystemReset. |
+| Info | main.cpp `applyRcCommands`, `Safety::kGoCountdownParamInt` | The go countdown is the fixed **15 s** (D8, owner decision 2026-11-22); the countdown gyro run uses a 3 s still window so it fits the 5 s Initialisation phase (calibration.md). | None. |
+| Fixed T9b-4 | main.cpp | (was High, the arm state is removed) MissionBegin did not require `vehicleArmed_`. Original text: MissionBegin does not require `vehicleArmed_`. Arming only scales the motor power limit (0.1 disarmed). | A disarmed vehicle can start a mission with motors running at 10 % authority. |
+| High | main.cpp `checkForFailures`, `vehicleIsReady` | Control-source loss (T9b-3: accepted RC_STATE of the latched source older than 2 s while committed, overview.md) or any sensor older than 0.5 s (GNSS, gyro, baro, posKF, attKF) latches `Failure`, and `vehicleShutdownControl(true)` cuts all actuators. | The response to link loss or a sensor hiccup in flight is flight termination, not RTH. Failure is latched until SystemReset. |
 | High | `mission_freefall.hpp:155-159`, main.cpp:445 | Stop altitude = `0.5·Vz²/(T/m − g) + 20`. It assumes full 14 N immediately, ignores flip-up time and drag changes, and is sign-blind. It goes negative or infinite if `T/m ≤ g`. | Margin is only the fixed 20 m. A thrust-to-weight change (mass, battery sag) silently breaks it. |
 | Medium | `main.cpp:1119`, `:1134` | Out-of-bounds uses `magnitude(3,5)`, which covers elements 3 and 4 only. | No altitude limit; the vehicle may climb without bound. The horizontal-only limit is 100 m. |
 | Medium | `mission_rth.hpp:292-294` | `travelDistance / travelDistanceMag` with no zero guard. | If the setpoint converges exactly onto home before the vehicle is within 0.5 m (or starts there), the velocity setpoint becomes NaN. |

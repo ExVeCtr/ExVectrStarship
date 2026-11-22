@@ -17,7 +17,7 @@
  * - The vehicle may become Ready only with a valid zero and no window active (readyAllowed()).
  * - After boot, once all inputs have published, the vehicle starts the automatic boot zero (default duration)
  *   if no valid zero exists yet (shouldStartAutoZero()).
- * - Arm (0xA5) and MissionBegin are refused while a window is active.
+ * - Arm (0xA5, removed in T9b-4) and MissionBegin (SA go) are refused while a window is active.
  * - SystemReset and the start of a mag calibration abort an active window (abort()). An active window has always
  *   begun applying zeroing (the estimators enter zeroing mode on the tick it starts), so the estimators hold a
  *   partial zero: the valid-zero record is CLEARED (review 2026-11-20), and Ready (hence a mission) needs a new
@@ -47,6 +47,7 @@ enum class ZeroRequestResult : uint8_t {
   Armed,           ///< vehicle armed
   MotorsEnabled,   ///< motor outputs enabled
   NotOnGround,     ///< vehicle mode does not guarantee the vehicle is on the ground
+  HoldActive,      ///< an SE hold window is already running (holdStart only)
 };
 
 /// True for Started and Restarted.
@@ -85,6 +86,41 @@ public:
   /// Advances the window. Returns true exactly once, on the tick the window completes (valid zero recorded).
   bool update(int64_t nowNs);
 
+  // ---- SE hold zeroing (T9b-4, docs/t9b-design.md D11, appendix 6.4) ----
+  // The Pocket's SE held for 1 s zeroes the estimators WHILE HELD. One extra "hold" window shares this object with the
+  // fixed window above: active() is true while either runs, the end is the later of the two, and ending the hold
+  // never ends a fixed window. The hold starts with holdStart() (same acceptance rules as request()), is kept alive
+  // by holdRefresh() with the time of each fresh "held" sample (it ends kHoldGraceNs after the last one), and ends
+  // on release (holdRelease), on staleness (update), at kHoldCapNs after its start, or aborted (holdAbort: the
+  // interlock opened). It records a valid zero if the zeroing ran for at least kHoldMinNs, otherwise the estimators
+  // hold a partial zero and the record is cleared like abort() does (the caller returns the vehicle to Startup).
+  static constexpr int64_t kHoldGraceNs = 300000000LL;  ///< window kept after the last fresh "held" sample
+  static constexpr int64_t kHoldCapNs = 60000000000LL;  ///< a stuck SE stops zeroing this long after the hold start
+  static constexpr int64_t kHoldMinNs = 1000000000LL;   ///< zeroing shorter than this is not a valid zero
+
+  /// Result of a hold ending (update, holdRelease, holdAbort).
+  enum class HoldEnd : uint8_t { None = 0, Valid, Short, Aborted };
+
+  /// Starts the hold window at `nowNs` under the request() rules (initialised, disarmed, motors off, on the
+  /// ground; the paramInt check does not apply). Fails (and counts a refusal) if a hold is already active.
+  ZeroRequestResult holdStart(const ZeroRequestContext &ctx, int64_t nowNs);
+  /// A fresh "held" sample at `sampleNs` (no effect without an active hold).
+  void holdRefresh(int64_t sampleNs);
+  /// SE released at `nowNs`.
+  HoldEnd holdRelease(int64_t nowNs);
+  /// The hold is cancelled (interlock opened): clears the valid-zero record, like abort().
+  HoldEnd holdAbort();
+  bool holdActive() const { return holdActive_; }
+  int64_t holdStartNs() const { return holdStartNs_; }
+  /// Zeroing duration of the last hold that ended (ns), for the log.
+  int64_t lastHoldRanNs() const { return lastHoldRanNs_; }
+  /// HoldEnd that update() produced on its last call (None if no hold ended there); read once after update().
+  HoldEnd takeHoldEnd() {
+    const HoldEnd e = pendingHoldEnd_;
+    pendingHoldEnd_ = HoldEnd::None;
+    return e;
+  }
+
   /// SystemReset / mag calibration start: aborts an active window without recording a zero and clears the
   /// valid-zero record (the estimators hold a partial zero). No window active: nothing changes.
   /// Returns true if a window was aborted.
@@ -100,16 +136,16 @@ public:
     return was;
   }
 
-  bool active() const { return active_; }
+  bool active() const { return active_ || holdActive_; }
   bool zeroedSinceBoot() const { return zeroed_; }
   int64_t endNs() const { return endNs_; }
 
   /// Arm (0xA5, the unsafe direction) is allowed only outside a window. Disarm is always allowed.
-  bool armAllowed() const { return !active_; }
+  bool armAllowed() const { return !active(); }
   /// MissionBegin is allowed only outside a window.
-  bool missionBeginAllowed() const { return !active_; }
+  bool missionBeginAllowed() const { return !active(); }
   /// Startup -> Ready requires a valid zero since boot and no active window.
-  bool readyAllowed() const { return zeroed_ && !active_; }
+  bool readyAllowed() const { return zeroed_ && !active(); }
 
   /// Number of refused ZeroEstimators requests since boot (any reason).
   uint32_t refusedCount() const { return refused_; }
@@ -120,10 +156,15 @@ private:
     endNs_ = nowNs + lengthNs;
   }
 
+  HoldEnd finishHold(int64_t ranNs, bool aborted);
+
   bool active_ = false;
   bool zeroed_ = false;
   int64_t endNs_ = 0;
   uint32_t refused_ = 0;
+  bool holdActive_ = false;
+  int64_t holdStartNs_ = 0, holdLastNs_ = 0, lastHoldRanNs_ = 0;
+  HoldEnd pendingHoldEnd_ = HoldEnd::None;
 };
 
 /**
