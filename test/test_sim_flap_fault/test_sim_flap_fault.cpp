@@ -290,6 +290,107 @@ static void test_forced_angle_reaches_every_consumer() {
   TEST_ASSERT_FLOAT_WITHIN(1e-4f, 50 * kDeg, model.flapAngle(0));
 }
 
+
+// ---- Servo PWM command stage (owner decision 2026-11-22) ----
+static constexpr float kMin = 15 * kDeg, kMax = 90 * kDeg;
+static constexpr int64_t kTick = 20000000LL;
+
+static float pwmOf(ServoOutputStage &st, SimFlapFaults &f, uint8_t i, float cmd, bool sim) {
+  return st.servoCommandRad(f, i, cmd, sim, kTick, kRate, kMin, kMax);
+}
+
+static void test_pwm_real_mode_bit_identical() {
+  ServoOutputStage a, b;
+  SimFlapFaults none, faulty;
+  // an (impossible) fault state outside simulation: set() refuses, so force it through a simulation window and
+  // leave the flag false at the call
+  faulty.set(decideSimFault(16, 1, 0x57, 0.7f, true), true);
+  faulty.set(decideSimFault(17, 2, 0x57, 0.1f, true), true);
+  for (int k = 0; k < 200; k++) {
+    const float c = kMin + (kMax - kMin) * (0.5f + 0.5f * sinf(0.13f * k));
+    for (uint8_t i = 0; i < 4; i++) {
+      float x = pwmOf(a, none, i, c, false), y = pwmOf(b, faulty, i, c, false);
+      TEST_ASSERT_EQUAL_MEMORY(&c, &x, sizeof c);
+      TEST_ASSERT_EQUAL_MEMORY(&x, &y, sizeof x);
+    }
+  }
+}
+
+static void test_pwm_stuck_equals_forced_and_clamped() {
+  ServoOutputStage st;
+  SimFlapFaults f;
+  f.set(decideSimFault(16, 0, 0x57, 0.7f, true), true);
+  for (float c : {kMin, 0.5f, kMax, 1.2f})
+    TEST_ASSERT_EQUAL_FLOAT(0.7f, pwmOf(st, f, 0, c, true));
+  // other flaps unaffected
+  TEST_ASSERT_EQUAL_FLOAT(0.9f, pwmOf(st, f, 1, 0.9f, true));
+  // forced angle outside the servo range (0.1 rad < 15 deg) is clamped
+  SimFlapFaults g;
+  g.set(decideSimFault(16, 2, 0x57, 0.1f, true), true);
+  TEST_ASSERT_EQUAL_FLOAT(kMin, pwmOf(st, g, 2, 1.0f, true));
+  SimFlapFaults h;
+  h.set(decideSimFault(16, 3, 0x57, 5.0f, true), true);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, kMax, pwmOf(st, h, 3, 0.4f, true));
+}
+
+static void test_pwm_slow_limits_rate_release_slews_back() {
+  ServoOutputStage st;
+  SimFlapFaults f;
+  float prev = pwmOf(st, f, 0, 0.4f, true);
+  TEST_ASSERT_EQUAL_FLOAT(0.4f, prev);
+  f.set(decideSimFault(17, 0, 0x57, 0.25f, true), true);
+  const float maxStep = kRate * 0.25f * 0.02f;
+  for (int k = 0; k < 10; k++) {
+    float o = pwmOf(st, f, 0, 1.4f, true);
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, maxStep, o - prev);
+    prev = o;
+  }
+  // release: no jump, slews back at the NORMAL rate, then exactly the command
+  f.clear();
+  const float normStep = kRate * 0.02f;
+  float o = pwmOf(st, f, 0, 1.4f, true);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, normStep, o - prev);
+  for (int k = 0; k < 20; k++)
+    o = pwmOf(st, f, 0, 1.4f, true);
+  TEST_ASSERT_EQUAL_FLOAT(1.4f, o);
+}
+
+static void test_pwm_stuck_release_no_jump() {
+  ServoOutputStage st;
+  SimFlapFaults f;
+  f.set(decideSimFault(16, 0, 0x57, 0.5f, true), true);
+  TEST_ASSERT_EQUAL_FLOAT(0.5f, pwmOf(st, f, 0, 1.4f, true));
+  f.clear();
+  const float o = pwmOf(st, f, 0, 1.4f, true);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.5f + kRate * 0.02f, o);
+  float p = o;
+  for (int k = 0; k < 30; k++)
+    p = pwmOf(st, f, 0, 1.4f, true);
+  TEST_ASSERT_EQUAL_FLOAT(1.4f, p);
+}
+
+static void test_pwm_sim_off_returns_to_command() {
+  ServoOutputStage st;
+  SimFlapFaults f;
+  f.set(decideSimFault(16, 0, 0x57, 0.5f, true), true);
+  TEST_ASSERT_EQUAL_FLOAT(0.5f, pwmOf(st, f, 0, 1.2f, true));
+  TEST_ASSERT_EQUAL_FLOAT(1.2f, pwmOf(st, f, 0, 1.2f, false)); // flag read live, fault state still present
+  TEST_ASSERT_EQUAL_FLOAT(0.5f, pwmOf(st, f, 0, 1.2f, true));  // flag back on, state still there: forced again
+}
+
+static void test_pwm_hold_current_angle() {
+  ServoOutputStage st;
+  Servo s;
+  SimFlapFaults f;
+  s.place(0.6f);
+  f.set(decideSimFault(16, 0, 0x57, -1.0f, true), true);
+  TEST_ASSERT_TRUE(f.capturePending(0));
+  s.step(f, 0, true, kTick); // resolves the capture at the true angle 0.6
+  TEST_ASSERT_FALSE(f.capturePending(0));
+  TEST_ASSERT_EQUAL_FLOAT(0.6f, pwmOf(st, f, 0, 1.3f, true));
+  TEST_ASSERT_EQUAL_FLOAT(0.6f, pwmOf(st, f, 0, 0.9f, true));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_decision_refusals);
@@ -302,5 +403,11 @@ int main(int, char **) {
   RUN_TEST(test_non_simulation_is_inert_and_bit_identical);
   RUN_TEST(test_immediate_effect_powered_and_unpowered);
   RUN_TEST(test_forced_angle_reaches_every_consumer);
+  RUN_TEST(test_pwm_real_mode_bit_identical);
+  RUN_TEST(test_pwm_stuck_equals_forced_and_clamped);
+  RUN_TEST(test_pwm_slow_limits_rate_release_slews_back);
+  RUN_TEST(test_pwm_stuck_release_no_jump);
+  RUN_TEST(test_pwm_sim_off_returns_to_command);
+  RUN_TEST(test_pwm_hold_current_angle);
   return UNITY_END();
 }

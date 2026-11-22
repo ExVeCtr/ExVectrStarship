@@ -120,11 +120,6 @@ void StarshipFlaps::taskThread() {
   servoBRPin_.enableOutput(enable);
 
   if (enable) {
-    float offset = 0;
-    float offsetTL = 0;
-    float offsetTR = 0 * DEGREES;
-    float offsetBL = 0;
-    float offsetBR = 0 * DEGREES;
     limitAngle(flapSettings.flapTLAngle_Rad);
     limitAngle(flapSettings.flapTRAngle_Rad);
     limitAngle(flapSettings.flapBLAngle_Rad);
@@ -132,15 +127,6 @@ void StarshipFlaps::taskThread() {
     // LOG_MSG("Flap angles: TL: %f, TR: %f, BL: %f, BR: %f\n",
     // flapSettings.tlAngle, flapSettings.trAngle, flapSettings.blAngle,
     // flapSettings.brAngle); // Log the flap angles
-    servoTLPin_.setValue(
-        1 - (flapSettings.flapTLAngle_Rad + offset + offsetTL) / 3.1415 * 2);
-    servoTRPin_.setValue((flapSettings.flapTRAngle_Rad + offset + offsetTR) /
-                         3.1415 * 2);
-    servoBLPin_.setValue((flapSettings.flapBLAngle_Rad + offset + offsetBL) /
-                         3.1415 * 2);
-    servoBRPin_.setValue(
-        1 - (flapSettings.flapBRAngle_Rad + offset + offsetBR) / 3.1415 * 2);
-
     const float targets[4] = {flapSettings.flapTLAngle_Rad, flapSettings.flapTRAngle_Rad,
                               flapSettings.flapBLAngle_Rad, flapSettings.flapBRAngle_Rad};
     trueFlaps_.setTargets(targets);
@@ -161,6 +147,28 @@ void StarshipFlaps::taskThread() {
 
   float trueAngle[4];
   trueFlaps_.publishAngles(simFaults_, simActive, trueAngle);
+
+  // Servo PWM: the single place where flap angles become PWM. Outside simulation the stage returns the clamped
+  // command bit-identical; in simulation it applies the stuck / slow fault to the physical servo (owner 2026-11-22).
+  if (enable) {
+    const int64_t pwmDt = pwmLastTime_ == 0 ? 0 : newUpdateTime - pwmLastTime_;
+    pwmLastTime_ = newUpdateTime;
+    const float offset = 0, offsetTL = 0, offsetTR = 0 * DEGREES, offsetBL = 0, offsetBR = 0 * DEGREES;
+    const float cmd[4] = {flapSettings.flapTLAngle_Rad, flapSettings.flapTRAngle_Rad, flapSettings.flapBLAngle_Rad,
+                          flapSettings.flapBRAngle_Rad};
+    float pwmAngle[4];
+    for (uint8_t i = 0; i < 4; i++)
+      pwmAngle[i] = servoOut_.servoCommandRad(simFaults_, i, cmd[i], simulationActive(), pwmDt, FLAP_SERVO_RATE_RADPS,
+                                              FLAP_MIN_ANGLE, FLAP_MAX_ANGLE);
+    servoTLPin_.setValue(1 - (pwmAngle[0] + offset + offsetTL) / 3.1415 * 2);
+    servoTRPin_.setValue((pwmAngle[1] + offset + offsetTR) / 3.1415 * 2);
+    servoBLPin_.setValue((pwmAngle[2] + offset + offsetBL) / 3.1415 * 2);
+    servoBRPin_.setValue(1 - (pwmAngle[3] + offset + offsetBR) / 3.1415 * 2);
+  } else {
+    servoOut_.reset();
+    pwmLastTime_ = 0;
+  }
+
   trueFlapPub_.publish(CTRL::ControlAttitudeFlapSetting{.flapTLAngle_Rad = trueAngle[0],
                                                         .flapTRAngle_Rad = trueAngle[1],
                                                         .flapBLAngle_Rad = trueAngle[2],

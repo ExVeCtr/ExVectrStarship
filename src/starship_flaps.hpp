@@ -43,9 +43,11 @@ private:
 
   bool enableActuators_ = true;
 
-  // Simulation-only servo faults (owner-approved 2026-11-21). Only the modelled true angle is affected, never the PWM.
+  // Simulation-only servo faults (owner-approved 2026-11-21). The modelled true angle and, in simulation only, the servo PWM (servoOut_) are affected.
   // Applied immediately, at TrueFlapModel::publishAngles().
   Safety::SimFlapFaults simFaults_;
+  Safety::ServoOutputStage servoOut_; // PWM command stage: sim-only stuck/slow fault on the physical servo (2026-11-22)
+  int64_t pwmLastTime_ = 0;
   const bool *simulationFlag_ = nullptr; // read at apply time; nullptr = never simulation
 
   enum class ActuatorTestingState { WaitBegin, Testing, Idle };

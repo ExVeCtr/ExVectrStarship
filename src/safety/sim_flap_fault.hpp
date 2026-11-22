@@ -22,11 +22,13 @@
  * that topic and nothing else: the body simulator's flap input (BodySimulator::setFlapSettingInputTopic) and the
  * telemetry flaps (TelemetryProvider -> TelemetrySnapshot.flaps -> ACTUATORS.flaps and AIR_ACTUATORS.flaps; the
  * ground station's FlapState is decoded from those). No controller or observer reads a flap angle (the flap
- * controller outputs commands only). The servo PWM outputs follow the COMMANDED angle and are never touched.
+ * controller outputs commands only). The servo PWM outputs follow the COMMANDED angle outside simulation; in simulation the ServoOutputStage (below,
+ * owner decision 2026-11-22) lets a stuck or slowed flap show on the physical servo as well.
  *
  * Guards (the fault can never touch real flight): (1) decideSimFault refuses unless simulationMode; (2) the model
  * methods take the CURRENT simulation flag and return the unmodified model value / factor 1.0 when it is false, so a
- * fault state that somehow exists is inert outside simulation; (3) SimFlapFaults::clear() is called on every
+ * fault state that somehow exists is inert outside simulation; (3) ServoOutputStage reads the live flag on every call and returns the command bit-identical outside simulation;
+ * (4) SimFlapFaults::clear() is called on every
  * simulation mode switch, by SystemReset and by the clear command.
  */
 
@@ -86,6 +88,11 @@ public:
   float rateFactor(uint8_t flap, bool simActive) const;
 
   bool stuck(uint8_t flap) const { return flap < 4 && f_[flap].stuck; }
+
+  /// Held angle of a stuck flap in rad (valid after effectiveAngle resolved a capture fault; 0 when not stuck).
+  float stuckAngle(uint8_t flap) const { return (flap < 4 && f_[flap].stuck) ? f_[flap].angle : 0.0f; }
+  /// True while a stuck flap still waits for its capture to be resolved by the next effectiveAngle().
+  bool capturePending(uint8_t flap) const { return flap < 4 && f_[flap].stuck && f_[flap].capture; }
   bool any() const;
 
 private:
@@ -133,6 +140,37 @@ private:
   float rate_;
   float angle_[4] = {0, 0, 0, 0};
   float target_[4] = {0, 0, 0, 0};
+};
+
+/**
+ * Servo PWM command stage (owner decision 2026-11-22): the ONE place where the commanded flap angle (rad) becomes the
+ * angle that is converted to PWM. Outside simulation mode, or when no fault is active on the flap, it returns the
+ * commanded angle bit-identical. In simulation mode only:
+ *  - stuck flap: the held (forced) angle, clamped to [minRad, maxRad], for any commanded angle;
+ *  - slow flap: the output slews toward the commanded angle at normalRate x factor (the same rate the TrueFlapModel
+ *    uses), starting from the previous output;
+ *  - release: the output slews back to the commanded angle at the NORMAL rate (no jump), then returns to the exact
+ *    commanded value.
+ * The live simulation flag is an argument read by the caller on EVERY call; nothing about it is cached. Turning
+ * simulation off returns the commanded angle at the next call. Motors are not part of this class.
+ */
+class ServoOutputStage {
+public:
+  /// Pure per-call function. Call after TrueFlapModel::publishAngles() in the same tick (a capture fault is resolved
+  /// there). dtNs = time since the previous call.
+  float servoCommandRad(SimFlapFaults &faults, uint8_t flap, float commandedRad, bool simulationNow, int64_t dtNs,
+                        float normalRateRadps, float minRad, float maxRad);
+
+  /// Forget the output history (flap unpowered): the next call starts from the commanded angle.
+  void reset() {
+    for (uint8_t i = 0; i < 4; i++)
+      valid_[i] = engaged_[i] = false;
+  }
+
+private:
+  float last_[4] = {0, 0, 0, 0};
+  bool valid_[4] = {false, false, false, false};   ///< last_ holds the previous output
+  bool engaged_[4] = {false, false, false, false}; ///< output differs from the command (stuck, slowed or slewing back)
 };
 
 } // namespace Safety

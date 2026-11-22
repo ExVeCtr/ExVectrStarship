@@ -142,5 +142,42 @@ void TrueFlapModel::publishAngles(SimFlapFaults &faults, bool simActive, float o
   }
 }
 
+float ServoOutputStage::servoCommandRad(SimFlapFaults &faults, uint8_t flap, float commandedRad, bool simulationNow,
+                                        int64_t dtNs, float normalRateRadps, float minRad, float maxRad) {
+  if (!simulationNow || flap > 3) {
+    if (flap <= 3) {
+      last_[flap] = commandedRad;
+      valid_[flap] = true;
+      engaged_[flap] = false;
+    }
+    return commandedRad; // bit-identical, no fault state is even read
+  }
+  float out = commandedRad;
+  if (faults.stuck(flap)) {
+    float a = faults.stuckAngle(flap);
+    out = a < minRad ? minRad : (a > maxRad ? maxRad : a);
+    engaged_[flap] = true;
+  } else {
+    const float factor = faults.rateFactor(flap, true);
+    if ((factor != 1.0f || engaged_[flap]) && valid_[flap]) {
+      const float rate = normalRateRadps * factor; // slowed, or the normal rate when slewing back after a release
+      const float maxStep = float(double(rate) * double(dtNs) * 1e-9);
+      const float diff = commandedRad - last_[flap];
+      if (diff <= maxStep && diff >= -maxStep) {
+        out = commandedRad;
+        engaged_[flap] = (factor != 1.0f) ? engaged_[flap] : false;
+      } else {
+        out = last_[flap] + (diff > 0 ? maxStep : -maxStep);
+        engaged_[flap] = true;
+      }
+    } else {
+      engaged_[flap] = false;
+    }
+  }
+  last_[flap] = out;
+  valid_[flap] = true;
+  return out;
+}
+
 } // namespace Safety
 } // namespace VCTR
