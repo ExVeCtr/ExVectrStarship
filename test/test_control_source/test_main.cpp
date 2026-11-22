@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "safety/control_source.hpp"
+#include "safety/rc_command.hpp"
 
 using namespace VCTR::Safety;
 
@@ -294,6 +295,39 @@ void test_not_committed_all_sources_gone_is_none_not_failsafe() {
 }
 
 // Committed with the other (ignored) source fresh: only the latched source's silence counts.
+// The committed definition (Safety::committed) feeds both the latch (update) and the failsafe (failsafeDue):
+// a landed vehicle in mode Running (RTH finished, nothing pending, interlock closed) survives a 5 s radio gap
+// with ctrl_source NONE; a flying one (mission active, chain pending, interlock open) fails at 2 s.
+void test_landed_running_radio_gap_is_none_flying_is_failsafe() {
+  GroundContext landed;
+  landed.modeRunning = true;
+  landed.missionIdleOrFinished = true;
+  GroundContext flying = landed;
+  flying.missionIdleOrFinished = false;
+  GroundContext countdown;
+  countdown.modeGround = true;
+  countdown.missionIdleOrFinished = true;
+  countdown.chainPending = true;
+  GroundContext interlock = landed; // mission Finished but the interlock is open
+  interlock.interlockOpen = true;
+  const GroundContext cases[] = {landed, flying, countdown, interlock};
+  const bool expectFailsafe[] = {false, true, true, true};
+  for (int i = 0; i < 4; i++) {
+    delete t;
+    t = new ControlSourceTable();
+    seqR = 0;
+    radio(1 * S);
+    const bool c = committed(cases[i]);
+    t->update(1 * S, false); // the source was selected on the ground, then the vehicle commits
+    t->update(1 * S + 100 * MS, c);
+    TEST_ASSERT_EQUAL((int)ControlSourceId::Radio, (int)t->active());
+    t->update(6 * S, c); // 5 s radio gap
+    TEST_ASSERT_EQUAL(expectFailsafe[i], t->failsafeDue(6 * S, c));
+    if (!expectFailsafe[i]) TEST_ASSERT_EQUAL((int)ControlSourceId::None, (int)t->active());
+    else TEST_ASSERT_TRUE(t->failsafeDue(3 * S + 1, c)); // due right after 2 s
+  }
+}
+
 void test_failsafe_ignores_fresh_other_source() {
   radio(1 * S);
   t->update(1 * S, false);
@@ -367,6 +401,7 @@ int main() {
   RUN_TEST(test_failsafe_timing_on_10hz_tick);
   RUN_TEST(test_failsafe_not_kept_alive_by_rejected_frames);
   RUN_TEST(test_not_committed_all_sources_gone_is_none_not_failsafe);
+  RUN_TEST(test_landed_running_radio_gap_is_none_flying_is_failsafe);
   RUN_TEST(test_failsafe_ignores_fresh_other_source);
   RUN_TEST(test_snapshot_matches_live_and_age_helpers);
   RUN_TEST(test_snapshot_never_torn_under_concurrent_writes);

@@ -44,6 +44,10 @@ bool onGround(const GroundContext &g) {
   return g.modeRunning && !g.chainPending;
 }
 
+bool committed(const GroundContext &g) {
+  return g.interlockOpen || g.chainPending || (g.modeRunning && !onGround(g));
+}
+
 RcIntents RcCommandLogic::evaluate(RcCommandMapper &mapper, const RcPollInput &in) {
   RcIntents out;
   const RcEvents ev = mapper.takeEvents();

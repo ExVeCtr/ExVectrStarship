@@ -96,6 +96,15 @@ struct GroundContext {
 };
 bool onGround(const GroundContext &g);
 
+/**
+ * "Committed" (design 3.1.3, one definition for the control-source latch and the control failsafe): the interlock is
+ * open, or a mission chain is pending, or the mode is Running and the vehicle is NOT on the ground (onGround above).
+ * A landed vehicle (mode Running after an RTH, no chain pending, mission Idle or Finished, interlock closed, motors
+ * not enabled) is not committed, so a radio gap on the ground only sets ctrl_source NONE (D2-B). Running with the
+ * mission active, motors enabled or the interlock open stays committed.
+ */
+bool committed(const GroundContext &g);
+
 enum class SeAction : uint8_t { None = 0, Reset, Refused };
 enum class HoldAction : uint8_t { None = 0, Start, Refresh, Release, Abort };
 

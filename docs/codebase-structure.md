@@ -131,7 +131,7 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 
 Packet layouts: ExVectrPackets schema (hash 0x414DE27A), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
-Control failsafe (T9b-3, replaces `radioConnectionLoss`): while committed (interlock open, mission chain pending or mode Running), the accepted `RC_STATE` of the latched control source older than 2 s -> failure bit 5 `CONTROL_SOURCE_LOST`, mode Failure. General link health (any valid frame, `VehicleNetwork::isRadioPacketRecent`) and ground-station presence are information only; there is no boot grace ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
+Control failsafe (T9b-3, replaces `radioConnectionLoss`): while committed (`Safety::committed`: interlock open, mission chain pending, or mode Running and not landed), the accepted `RC_STATE` of the latched control source older than 2 s -> failure bit 5 `CONTROL_SOURCE_LOST`, mode Failure. General link health (any valid frame, `VehicleNetwork::isRadioPacketRecent`) and ground-station presence are information only; there is no boot grace ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
 
 ## Build
 

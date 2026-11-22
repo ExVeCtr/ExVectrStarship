@@ -570,6 +570,52 @@ static void test_on_ground_rule_d12() {
   TEST_ASSERT_TRUE(onGround(run));
 }
 
+static GroundContext landedRunning() { // mode Running after an RTH landed, nothing pending, interlock closed
+  GroundContext g;
+  g.modeRunning = true;
+  g.missionIdleOrFinished = true;
+  return g;
+}
+
+static void test_committed_landed_running_is_not_committed() {
+  GroundContext g = landedRunning();
+  TEST_ASSERT_FALSE(committed(g));
+  g.missionIdleOrFinished = true; // Finished or Idle are both the same here
+  TEST_ASSERT_FALSE(committed(g));
+  GroundContext boot; // Startup/Ready on the ground
+  boot.modeGround = true;
+  boot.missionIdleOrFinished = true;
+  TEST_ASSERT_FALSE(committed(boot));
+  GroundContext fail; // Failure latched, actuators cut
+  fail.modeFailure = true;
+  TEST_ASSERT_FALSE(committed(fail));
+}
+
+static void test_committed_in_flight_countdown_and_interlock() {
+  GroundContext g = landedRunning();
+  g.missionIdleOrFinished = false; // mid-flight: mission active
+  TEST_ASSERT_TRUE(committed(g));
+  g = landedRunning();
+  g.chainPending = true; // chain pending, mission momentarily Finished
+  TEST_ASSERT_TRUE(committed(g));
+  g = landedRunning();
+  g.motorsEnabled = true; // motors on: not landed
+  TEST_ASSERT_TRUE(committed(g));
+  g = landedRunning();
+  g.interlockOpen = true; // interlock open: always, even with the mission Finished
+  TEST_ASSERT_TRUE(committed(g));
+  GroundContext cd; // countdown: chain pending in Ready/Startup, mission Idle
+  cd.modeGround = true;
+  cd.missionIdleOrFinished = true;
+  cd.chainPending = true;
+  TEST_ASSERT_TRUE(committed(cd));
+  GroundContext il; // interlock open on the ground, mission Finished
+  il.modeGround = true;
+  il.missionIdleOrFinished = true;
+  il.interlockOpen = true;
+  TEST_ASSERT_TRUE(committed(il));
+}
+
 static void test_se_reset_only_on_the_ground_with_interlock_closed() {
   for (int variant = 0; variant < 3; variant++) {
     Rig r;
@@ -730,6 +776,8 @@ int main() {
   RUN_TEST(test_on_ground_rule_d12);
   RUN_TEST(test_se_reset_only_on_the_ground_with_interlock_closed);
   RUN_TEST(test_hold_intents_start_refresh_release);
+  RUN_TEST(test_committed_landed_running_is_not_committed);
+  RUN_TEST(test_committed_in_flight_countdown_and_interlock);
   RUN_TEST(test_hold_refused_is_not_retried_and_shows_se_refused);
   RUN_TEST(test_hold_aborts_when_the_interlock_opens);
   RUN_TEST(test_hold_that_ended_by_staleness_is_forgotten);

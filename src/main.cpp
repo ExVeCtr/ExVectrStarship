@@ -726,7 +726,7 @@ public:
   // ---- RC command path (T9b-4, docs/t9b-design.md 3.2, 3.3; the decisions are the pure Safety::RcCommandLogic) ----
 
   /// D12 "on the ground" (SE reset, SC change): see Safety::onGround.
-  bool onGroundNow(int64_t now) {
+  Safety::GroundContext groundContext(int64_t now) {
     Safety::GroundContext g;
     g.interlockOpen = vehicleComms.motorInterlock().open(now);
     g.motorsEnabled = starshipTVC.isMotorsEnabled() && starshipTVC.isActuatorsEnabled();
@@ -737,8 +737,9 @@ public:
     g.chainPending = missionChain_.pending();
     const MissionMode mm = mission_->getMissionState().missionMode;
     g.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
-    return Safety::onGround(g);
+    return g;
   }
+  bool onGroundNow(int64_t now) { return Safety::onGround(groundContext(now)); }
 
   /// SA released while a chain is pending or Running: the abort decision, every tick (idempotent). On the ground it
   /// is reset and stop, in flight RTH (user decision 2026-11-20, docs/project/missions.md 6.2). Never clears a latch.
@@ -1012,11 +1013,11 @@ public:
     // missionWaypointTask.setNextMission(&defaultMission_);
   }
 
-  /// "Committed" (design 3.1.3): the motor interlock is open, or a mission chain is pending, or the mode is Running.
+  /// "Committed" (design 3.1.3): Safety::committed: the motor interlock is open, or a mission chain is pending, or the
+  /// mode is Running and the vehicle is not on the ground (a landed vehicle in mode Running is not committed).
   /// Latches the control source (VehicleNetwork::setCommitted) and enables the control failsafe (checkForFailures).
   bool isCommitted(int64_t now) {
-    return vehicleComms.motorInterlock().open(now) || missionChain_.pending() ||
-           vehicleMode_ == VehicleMode::VehicleMode_Running;
+    return Safety::committed(groundContext(now));
   }
 
   /// Motor interlock supervision (T9b-2), every run, before anything can return early: the latch input of the
@@ -1674,7 +1675,7 @@ public:
 
   void checkForFailures() {
     // Control failsafe (T9b-3, the ONE rule, safety.md 4.1): while committed (interlock open, mission pending or
-    // Running) the accepted RC_STATE of the latched control source is older than 2 s (or there is no source) =>
+    // Running and not landed) the accepted RC_STATE of the latched control source is older than 2 s (or there is no source) =>
     // failsafe, latched in mode Failure until SystemReset. Not committed (on the ground, disarmed, nothing pending)
     // losing every source only sets ctrl_source NONE (D2-B). General link health, heartbeats, GS REQUESTs and
     // telecommands never keep it alive and never trigger it; the ground station on USB is never a failure
