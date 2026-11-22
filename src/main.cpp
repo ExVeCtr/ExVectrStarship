@@ -588,15 +588,24 @@ public:
                    r.noiseStd[1] * RAD_TO_DEG, r.noiseStd[2] * RAD_TO_DEG, r.tempMean);
     } else {
       gyroRunState = Calibration::GyroRunState::Failed;
-      Core::printW("Calibration: gyro bias run FAILED (%s, %lu restarts, checks 0x%x): gyro calibration invalid until a run "
-                   "passes (ZeroEstimators, vehicle still)\n",
-                   DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks);
+      char why[160];
+      DSP::Calib::describeGyroRun(r, DSP::Calib::GyroBiasConfig(), why, sizeof why);
+      Core::printW("Calibration: gyro bias run FAILED (%s, %lu restarts, checks 0x%x; %s): gyro calibration invalid until a "
+                   "run passes (ZeroEstimators, vehicle still)\n",
+                   DSP::Calib::toString(r.result), (unsigned long)r.restarts, (unsigned)r.checks, why);
+      if (r.checks & DSP::Calib::kGyroCheckComplete) // window complete but bias/noise/temperature check failed
+        Core::printW("Calibration: gyro bias run window values: bias %.3f %.3f %.3f deg/s (limit 5), noise %.3f %.3f %.3f "
+                     "deg/s, IMU temp change %.2f K\n",
+                     r.bias[0] * RAD_TO_DEG, r.bias[1] * RAD_TO_DEG, r.bias[2] * RAD_TO_DEG, r.noiseStd[0] * RAD_TO_DEG,
+                     r.noiseStd[1] * RAD_TO_DEG, r.noiseStd[2] * RAD_TO_DEG, r.tempDelta);
     }
     // Margins against the motion limits (for tuning them after the first bench sessions).
+    const DSP::Calib::GyroBiasConfig limits;
     Core::printM("Calibration: worst 1 s block: gyro std %.3f deg/s p2p %.3f deg/s (limits %.2f, %.2f), accel axis std %.3f "
-                 "|a| std %.3f m/s^2 (limit 0.05), %lu short blocks\n",
-                 r.worst.gyroStd * RAD_TO_DEG, r.worst.gyroP2P * RAD_TO_DEG, 0.25, 1.0, r.worst.accelAxisStd,
-                 r.worst.accelNormStd, (unsigned long)r.worst.shortBlocks);
+                 "|a| std %.3f m/s^2 (limits %.2f, %.2f), %lu short blocks\n",
+                 r.worst.gyroStd * RAD_TO_DEG, r.worst.gyroP2P * RAD_TO_DEG, limits.maxBlockStd * RAD_TO_DEG,
+                 limits.maxBlockP2P * RAD_TO_DEG, r.worst.accelAxisStd, r.worst.accelNormStd, limits.maxAccelAxisStd,
+                 limits.maxAccelNormStd, (unsigned long)r.worst.shortBlocks);
     Core::printM("Calibration: quietest of %lu blocks: gyro std %.3f deg/s p2p %.3f deg/s, accel axis std %.3f |a| std %.3f "
                  "m/s^2\n",
                  (unsigned long)r.worst.blocks, r.worst.minGyroStd * RAD_TO_DEG, r.worst.minGyroP2P * RAD_TO_DEG,

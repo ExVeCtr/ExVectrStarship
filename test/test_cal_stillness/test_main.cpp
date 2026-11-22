@@ -2,6 +2,7 @@
 // (lib/ExVectrDSP calibration/stillness_detector, pose_collector, gyro_bias_collector):
 // pio test -e native -f test_cal_stillness
 #include <math.h>
+#include <string.h>
 #include <unity.h>
 
 #include "../cal_test_support.hpp"
@@ -229,7 +230,8 @@ static void test_gyro_motion_restarts_and_gives_up() {
 }
 
 static void test_gyro_steady_rotation_detected() {
-  // A slow steady rotation (1 deg/s) keeps the gyro std low; the turning gravity vector restarts the window.
+  // A steady rotation (10 deg/s) keeps the gyro std at zero; the turning gravity vector (accel std about 0.5 m/s^2
+  // over a 1 s block, limit 0.3) restarts the window. (1 deg/s is now accepted: below the accel limit and the bias limit.)
   GyroBiasCollector g;
   ImuSim sim;
   int64_t t = 0;
@@ -238,8 +240,8 @@ static void test_gyro_steady_rotation_detected() {
   for (int i = 0; i < 9000; i++, t += MS) {
     double w[3], a[3];
     sim.sample(w, a);
-    w[0] += 1.0 * kDeg;
-    ang += 1.0 * kDeg * 0.001;
+    w[0] += 10.0 * kDeg;
+    ang += 10.0 * kDeg * 0.001;
     const double ay = a[1], az = a[2];
     a[1] = cos(ang) * ay - sin(ang) * az;
     a[2] = sin(ang) * ay + cos(ang) * az;
@@ -266,6 +268,144 @@ static void test_gyro_checks() {
   TEST_ASSERT_TRUE((g.result().checks & kGyroCheckTemp) == 0);
 }
 
+/// One 1 kHz sample stream with a hook to disturb it; returns the collector result after `seconds`.
+template <typename F>
+static GyroBiasResult runCustom(const GyroBiasConfig &cfg, double seconds, F disturb, double deadlineS = 6.5) {
+  GyroBiasCollector g(cfg);
+  ImuSim sim;
+  sim.gyroNoise = 1e-5;
+  sim.accNoise = 1e-4;
+  int64_t t = 0;
+  g.start(t, t + int64_t(deadlineS * S));
+  for (int i = 0; i < int(seconds * 1000); i++, t += MS) {
+    double w[3], a[3];
+    sim.sample(w, a);
+    disturb(i, w, a);
+    g.addGyro(t, w);
+    g.addAccel(t, a);
+    g.poll(t);
+  }
+  return g.result();
+}
+
+static void test_gyro_owner_like_noise_passes() {
+  // Bench data: gyro std 0.7 deg/s per axis, accel std 0.2 m/s^2 per axis: passes with the loosened limits.
+  GyroBiasCollector g;
+  ImuSim sim;
+  sim.gyroNoise = 0.7 * kDeg;
+  sim.accNoise = 0.2;
+  int64_t t = 0;
+  g.start(t, t + 10 * S);
+  feedGyroWindow(g, sim, t, 7.0, 300.0, 0.0);
+  TEST_ASSERT_TRUE(g.state() == GyroBiasCollector::State::Done);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(g.result().result));
+  TEST_ASSERT_EQUAL(0, g.result().restarts);
+  for (int k = 0; k < 3; k++)
+    TEST_ASSERT_DOUBLE_WITHIN(0.002, sim.bias[k], g.result().bias[k]); // 5000 samples of 0.012 rad/s noise
+}
+
+static void test_gyro_real_motion_fails_with_reason() {
+  // Handled / rotating: 10 deg/s rate changing sign every 0.1 s, accel shake 1 m/s^2.
+  GyroBiasCollector g;
+  ImuSim sim;
+  sim.rate = 10.0 * kDeg;
+  sim.shake = 1.0;
+  int64_t t = 0;
+  g.start(t, t + 8 * S);
+  feedGyroWindow(g, sim, t, 9.0, 300.0, 0.0);
+  const GyroBiasResult &r = g.result();
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_EQUAL(0, r.bestRun);
+  TEST_ASSERT_TRUE(r.rejectedBlocks >= 7);
+  char txt[160];
+  describeGyroRun(r, g.config(), txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "best 0 of 5 blocks"));
+  TEST_ASSERT_NOT_NULL(strstr(txt, "worst: gyro std X"));  // 10 deg/s / 1.5 deg/s is the largest ratio, on the x axis
+  TEST_ASSERT_NOT_NULL(strstr(txt, "> limit 1.50 deg/s"));
+}
+
+static void test_gyro_block_limit_boundaries() {
+  const GyroBiasConfig cfg;
+  const double gl = cfg.maxBlockStd, pl = cfg.maxBlockP2P;
+  char txt[160];
+  // Gyro std: alternating +-A per sample on y gives std A and p2p 2A (below the p2p limit for A < 2.5 deg/s).
+  auto alt = [&](double amp) {
+    return runCustom(cfg, 7.0, [&](int i, double *w, double *) { w[1] += (i & 1) ? amp : -amp; });
+  };
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(alt(0.95 * gl).result));
+  GyroBiasResult r = alt(1.1 * gl);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_TRUE(r.worstViolation.kind == GyroViolation::GyroStd);
+  TEST_ASSERT_EQUAL(1, r.worstViolation.axis);
+  TEST_ASSERT_DOUBLE_WITHIN(0.02 * gl, 1.1 * gl, r.worstViolation.value);
+  describeGyroRun(r, cfg, txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "gyro std Y 1.65 deg/s > limit 1.50 deg/s"));
+
+  // Gyro p2p: one spike per block on z (low std) of height P.
+  auto spike = [&](double h) {
+    return runCustom(cfg, 7.0, [&](int i, double *w, double *) { if (i % 1000 == 500) w[2] += h; });
+  };
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(spike(0.95 * pl).result));
+  r = spike(1.1 * pl);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_TRUE(r.worstViolation.kind == GyroViolation::GyroP2P);
+  TEST_ASSERT_EQUAL(2, r.worstViolation.axis);
+  describeGyroRun(r, cfg, txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "gyro p2p Z"));
+
+  // Accel axis std: alternating +-A per sample on x (g is on z).
+  const double al = cfg.maxAccelAxisStd;
+  auto accAlt = [&](double amp) {
+    return runCustom(cfg, 7.0, [&](int i, double *, double *a) { a[0] += (i & 1) ? amp : -amp; });
+  };
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(accAlt(0.95 * al).result));
+  r = accAlt(1.1 * al);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_TRUE(r.worstViolation.kind == GyroViolation::AccelAxisStd);
+  TEST_ASSERT_EQUAL(0, r.worstViolation.axis);
+  describeGyroRun(r, cfg, txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "accel std X 0.330 m/s^2 > limit 0.300 m/s^2"));
+
+  // |a| std alone (per-axis accel check disabled): alternating +-A along the gravity axis.
+  GyroBiasConfig nc = cfg;
+  nc.maxAccelAxisStd = 0;
+  const double nl = nc.maxAccelNormStd;
+  auto normAlt = [&](double amp) {
+    return runCustom(nc, 7.0, [&](int i, double *, double *a) { a[2] += (i & 1) ? amp : -amp; });
+  };
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(normAlt(0.95 * nl).result));
+  r = normAlt(1.1 * nl);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_TRUE(r.worstViolation.kind == GyroViolation::AccelNormStd);
+  describeGyroRun(r, nc, txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "|a| std 0.330 m/s^2"));
+}
+
+static void test_gyro_isolated_bad_block_costs_only_its_predecessors() {
+  // 3 good blocks, one disturbed block, then good data: the run needs 5 consecutive good blocks AFTER the bad one.
+  auto bump = [](int i, double *w, double *) { if (i >= 3000 && i < 4000) w[0] += (i & 1) ? 0.2 : -0.2; };
+  GyroBiasResult r = runCustom(GyroBiasConfig(), 10.0, bump, 11.0);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
+  TEST_ASSERT_EQUAL(1, r.restarts);
+  TEST_ASSERT_EQUAL(1, r.rejectedBlocks);
+  TEST_ASSERT_EQUAL(5, r.bestRun);
+  // Deadline at 7.5 s: only 3 + 3 good blocks fit around the bad one: MOTION, and the text says best 3 of 5.
+  r = runCustom(GyroBiasConfig(), 8.5, bump, 7.5);
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Motion), uint8_t(r.result));
+  TEST_ASSERT_EQUAL(3, r.bestRun);
+  char txt[160];
+  describeGyroRun(r, GyroBiasConfig(), txt, sizeof txt);
+  TEST_ASSERT_NOT_NULL(strstr(txt, "best 3 of 5 blocks, 1 rejected, worst: gyro std X"));
+}
+
+static void test_gyro_noise_check_follows_block_limit() {
+  // Accepted blocks near the limit must not fail the final window noise check.
+  GyroBiasConfig cfg;
+  const GyroBiasResult r =
+      runCustom(cfg, 7.0, [&](int i, double *w, double *) { w[0] += (i & 1) ? 0.9 * cfg.maxBlockStd : -0.9 * cfg.maxBlockStd; });
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(r.result));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_stillness_detects_still_and_motion);
@@ -275,5 +415,10 @@ int main() {
   RUN_TEST(test_gyro_motion_restarts_and_gives_up);
   RUN_TEST(test_gyro_steady_rotation_detected);
   RUN_TEST(test_gyro_checks);
+  RUN_TEST(test_gyro_owner_like_noise_passes);
+  RUN_TEST(test_gyro_real_motion_fails_with_reason);
+  RUN_TEST(test_gyro_block_limit_boundaries);
+  RUN_TEST(test_gyro_isolated_bad_block_costs_only_its_predecessors);
+  RUN_TEST(test_gyro_noise_check_follows_block_limit);
   return UNITY_END();
 }
