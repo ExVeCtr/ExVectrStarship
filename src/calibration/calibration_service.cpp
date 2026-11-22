@@ -14,6 +14,12 @@ using DSP::Calib::PoseEvent;
 
 namespace {
 constexpr double kRadToDeg = 57.29577951308232;
+DSP::Calib::MagEllipsoidConfig magConfig(const ServiceConfig &cfg) {
+  DSP::Calib::MagEllipsoidConfig mc;
+  mc.softIron = cfg.magSoftIron;
+  return mc;
+}
+
 constexpr int64_t kUpdateEstimateNs = 1000000000LL; // mag centre refresh (thinning and coverage), 1 Hz
 }
 
@@ -40,7 +46,7 @@ const char *toString(State s) {
 }
 
 CalibrationService::CalibrationService(float (*magBuffer)[3], size_t magCapacity, const ServiceConfig &cfg)
-    : cfg_(cfg), magFit_(magBuffer, magCapacity) {
+    : cfg_(cfg), magFit_(magBuffer, magCapacity, magConfig(cfg)) {
   poses_.reset();
   coverageHintGiven_ = false;
 }
@@ -48,7 +54,7 @@ CalibrationService::CalibrationService(float (*magBuffer)[3], size_t magCapacity
 void CalibrationService::logf(const char *fmt, ...) {
   if (sink_ == nullptr)
     return;
-  char line[160];
+  char line[256];
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(line, sizeof(line), fmt, ap);
@@ -186,7 +192,7 @@ StartResult CalibrationService::start(Sensor s, bool verify, int64_t nowNs) {
     magVerifyN_ = 0;
     magVerifySum_ = magVerifySum2_ = 0;
     magVerifyCoverage_.reset();
-    magRes_ = DSP::Calib::MagFitResult();
+    magRes_ = DSP::Calib::MagEllipsoidResult();
     logf("Mag calibration%s started: tumble the ship slowly in all directions (60-120 s), away from metal",
          verify ? " VERIFY" : "");
     break;
@@ -359,13 +365,12 @@ void CalibrationService::runMagFit(int64_t nowNs) {
     }
     const double spread = mean > 0 ? sd / mean : 1.0;
     const double cov = magVerifyCoverage_.fractionAtLeast(1);
-    const DSP::Calib::MagFitConfig mc;
-    const bool pass = active_[2].valid && enough && spread < mc.maxResidualRms && cov >= cfg_.verifyMagMinCoverage;
+    const bool pass = active_[2].valid && enough && spread < cfg_.verifyMagMaxSpread && cov >= cfg_.verifyMagMinCoverage;
     verifyPass_[i] = pass;
     result_[i] = pass ? CalResult::Pass : (enough ? CalResult::FailResidual : CalResult::FailCoverage);
     state_[i] = State::Idle;
     logf("Mag VERIFY %s: %u samples, |B_cal| %.4f spread %.2f %% (limit %.1f %%), coverage %.0f %% (min %.0f %%)",
-         pass ? "PASS" : "FAIL", (unsigned)magVerifyN_, mean, spread * 100, mc.maxResidualRms * 100, cov * 100,
+         pass ? "PASS" : "FAIL", (unsigned)magVerifyN_, mean, spread * 100, cfg_.verifyMagMaxSpread * 100, cov * 100,
          cfg_.verifyMagMinCoverage * 100);
     return;
   }
@@ -377,11 +382,14 @@ void CalibrationService::runMagFit(int64_t nowNs) {
     state_[i] = State::Failed;
     logf("Mag candidate rejected: parameters not acceptable for arming (%s)", toString(magParams));
   }
-  logf("Mag fit %s: %u stored, coverage %.0f %%, residual rms %.2f %% max %.2f %%, centre %.4f %.4f %.4f, radius %.4f, "
-       "checks 0x%02x",
+  logf("Mag fit %s: %u stored, coverage %.0f %%, residual rms %.2f %% max %.2f %% (inliers), centre %.4f %.4f %.4f, "
+       "radius %.4f, soft-iron axis ratio %.3f (%s), rejected %u of %u, checks 0x%03x",
        DSP::Calib::toString(magRes_.result), (unsigned)magRes_.nStored, magRes_.coverage * 100,
        magRes_.residualRms * 100, magRes_.residualMax * 100, magRes_.offset[0], magRes_.offset[1], magRes_.offset[2],
-       magRes_.radius, (unsigned)magRes_.checks);
+       magRes_.radius, magRes_.axisRatio, magRes_.softIron ? "ellipsoid" : "sphere", (unsigned)magRes_.nRejected,
+       (unsigned)magRes_.nStored, (unsigned)magRes_.checks);
+  if (magRes_.result != DSP::Calib::CalResult::Pass)
+    logf("Mag fit reason: %s", DSP::Calib::magFailReason(magRes_));
   logf("%s", state_[i] == State::Review ? "Mag candidate ready: apply with CalibApply (then Save), or discard"
                                         : "Mag candidate rejected: discard, tumble through more directions and repeat");
 }
@@ -544,18 +552,26 @@ Reason accelCandidateParams(const DSP::Calib::AccelFitResult &fit) {
   return checkAccelParams(st);
 }
 
-Reason magCandidateParams(const DSP::Calib::MagFitResult &fit) {
+Reason magCandidateParams(const DSP::Calib::MagEllipsoidResult &fit) {
   StoredCalibration st;
   st.keyPresent = true;
-  magCandidateToLegacy(fit, st.offset, st.C);
+  for (int i = 0; i < 3; i++)
+    st.offset[i] = fit.offset[i];
+  for (int i = 0; i < 9; i++)
+    st.C[i] = fit.A[i]; // T = identity: C = T A T^-1 = A
   return checkMagParams(st);
 }
 
-void magCandidateToLegacy(const DSP::Calib::MagFitResult &fit, double offsetOut[3], double COut[9]) {
+bool magCandidateToLegacy(const DSP::Calib::MagEllipsoidResult &fit, const double T[9], double offsetOut[3],
+                          double COut[9]) {
+  double Ti[9], TA[9];
+  if (!mat3Inverse(T, Ti))
+    return false;
+  mat3Mul(T, fit.A, TA);
+  mat3Mul(TA, Ti, COut); // C = T A T^-1
   for (int i = 0; i < 3; i++)
     offsetOut[i] = fit.offset[i];
-  for (int i = 0; i < 9; i++)
-    COut[i] = (i % 4 == 0) ? fit.scale : 0.0;
+  return true;
 }
 
 } // namespace Calibration

@@ -24,13 +24,13 @@ static constexpr int64_t S = 1000000000LL;
 static float g_magBuf[CalibrationService::kMagBufferCapacity][3];
 
 struct Log {
-  char lines[64][160];
+  char lines[64][256];
   int n = 0;
   static void sink(void *ctx, const char *line) {
     Log *l = static_cast<Log *>(ctx);
     if (l->n < 64) {
-      strncpy(l->lines[l->n], line, 159);
-      l->lines[l->n][159] = 0;
+      strncpy(l->lines[l->n], line, 255);
+      l->lines[l->n][255] = 0;
       l->n++;
     }
   }
@@ -333,12 +333,77 @@ static void test_mag_session_recovers_centre() {
     TEST_ASSERT_DOUBLE_WITHIN(0.002, c[k], r.offset[k]);
   TEST_ASSERT_DOUBLE_WITHIN(0.003, R, r.radius);
   double off[3], C[9];
-  magCandidateToLegacy(r, off, C);
+  const double I3[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  TEST_ASSERT_TRUE(magCandidateToLegacy(r, I3, off, C));
   TEST_ASSERT_DOUBLE_WITHIN(0.002, 0.05 / R, C[0]);
-  TEST_ASSERT_EQUAL_DOUBLE(0.0, C[1]);
+  TEST_ASSERT_DOUBLE_WITHIN(0.003, 0.0, C[1]);
+  TEST_ASSERT_TRUE(log.has("soft-iron axis ratio"));
+  TEST_ASSERT_TRUE(log.has("rejected "));
   TEST_ASSERT_TRUE(log.has("Mag candidate ready"));
   // samples are decimated to 10 Hz: about 1000 of the 10000 offered (600 buffer limit applies to the stored ones)
   TEST_ASSERT_TRUE(r.nAccumulated > 900 && r.nAccumulated < 1100);
+}
+
+/// Soft-iron tumble: raw = c + R S u, S symmetric (axis ratio about 1.3), through the whole service path with a
+/// non-trivial mounting matrix; the stored legacy matrix must pass checkMagParams and calibrate the field to length
+/// 0.05 in every direction (the attitude filter uses the direction: M = C T must undo the distortion).
+static void feedSoftMagTumble(CalibrationService &svc, Rng &rng, int64_t &t, double seconds, const double c[3],
+                              double R, const double S[9]) {
+  const int steps = int(seconds * 100);
+  for (int i = 0; i < steps; i++) {
+    double u[3];
+    rng.unit(u);
+    double m[3];
+    for (int r = 0; r < 3; r++)
+      m[r] = c[r] + R * (S[3 * r] * u[0] + S[3 * r + 1] * u[1] + S[3 * r + 2] * u[2]) + 0.001 * rng.normal();
+    svc.addMag(t, m);
+    t += 10 * MS;
+    if (i % 10 == 9)
+      svc.tick(t);
+  }
+}
+
+static void test_mag_soft_iron_session_and_legacy_matrix() {
+  const double c[3] = {0.012, -0.021, 0.008};
+  const double S[9] = {1.12, 0.05, -0.03, 0.05, 0.90, 0.04, -0.03, 0.04, 1.05};
+  const double T[9] = {0, 0, -1, 1, 0, 0, 0, -1, 0}; // the bench mounting matrix
+  for (int mode = 0; mode < 2; mode++) {
+    ServiceConfig cfg;
+    cfg.magSoftIron = mode == 0;
+    CalibrationService svc(g_magBuf, CalibrationService::kMagBufferCapacity, cfg);
+    Log log;
+    svc.setLogSink(Log::sink, &log);
+    Rng rng(4);
+    int64_t t = 0;
+    svc.start(Sensor::Mag, false, t);
+    feedSoftMagTumble(svc, rng, t, 100.0, c, 0.31, S);
+    svc.stop(Sensor::Mag, t);
+    svc.tick(t);
+    if (mode == 1) { // sphere: cannot fit the distortion
+      TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::FailResidual), uint8_t(svc.result(Sensor::Mag)));
+      TEST_ASSERT_TRUE(log.has("(sphere)"));
+      TEST_ASSERT_TRUE(log.has("Mag fit reason"));
+      continue;
+    }
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(CalResult::Pass), uint8_t(svc.result(Sensor::Mag)));
+    TEST_ASSERT_TRUE(svc.applicable(Sensor::Mag));
+    TEST_ASSERT_TRUE(log.has("(ellipsoid)"));
+    StoredCalibration st;
+    st.keyPresent = true;
+    for (int i = 0; i < 9; i++)
+      st.T[i] = T[i];
+    TEST_ASSERT_TRUE(magCandidateToLegacy(svc.magResult(), T, st.offset, st.C));
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkMagParams(st)));
+    // |C T (raw - b)| = 0.05 for fresh points of the distorted ellipsoid in all directions
+    Rng r2(99);
+    for (int i = 0; i < 200; i++) {
+      double u[3], raw[3];
+      r2.unit(u);
+      for (int r = 0; r < 3; r++)
+        raw[r] = c[r] + 0.31 * (S[3 * r] * u[0] + S[3 * r + 1] * u[1] + S[3 * r + 2] * u[2]);
+      TEST_ASSERT_DOUBLE_WITHIN(0.0015, 0.05, calibratedNorm(st, raw)); // within 3 %
+    }
+  }
 }
 
 static void test_mag_poor_coverage_fails() {
@@ -490,7 +555,8 @@ static void test_candidate_must_pass_arming_param_checks() {
     svc.tick(t);
     TEST_ASSERT_TRUE(svc.applicable(Sensor::Mag));
     double off[3], C[9];
-    magCandidateToLegacy(svc.magResult(), off, C);
+    const double I3[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    TEST_ASSERT_TRUE(magCandidateToLegacy(svc.magResult(), I3, off, C));
     StoredCalibration st;
     st.keyPresent = true;
     for (int i = 0; i < 3; i++)
@@ -538,6 +604,7 @@ int main(int, char **) {
   RUN_TEST(test_accel_clustered_poses_hint_and_fail_text);
   RUN_TEST(test_duplicate_pose_not_stored);
   RUN_TEST(test_mag_session_recovers_centre);
+  RUN_TEST(test_mag_soft_iron_session_and_legacy_matrix);
   RUN_TEST(test_mag_poor_coverage_fails);
   RUN_TEST(test_accel_verify_mode);
   RUN_TEST(test_timeouts_start_fit);

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "ExVectrDSP/calibration/cal_linalg.hpp"
 #include "calibration/calibration_math.hpp"
 
 namespace VCTR {
@@ -106,19 +107,26 @@ Reason checkMagParams(const StoredCalibration &s) {
     return Reason::OutOfRange;
   if (isIdentityDefault(s))
     return Reason::Default;
-  // C = s I (uniform scale to kMagRef): s = kMagRef / R with R the raw field radius.
-  const double mean = (s.C[0] + s.C[4] + s.C[8]) / 3.0;
+  // Sensor-frame matrix A = T^-1 C T (M = C T = T A): symmetric positive definite (hard + soft iron; a sphere-era
+  // calibration C = s I is the special case A = s I). Eigenvalues within [0.6, 1.6] x their mean, axis ratio < 1.5.
+  double Ti[9], A[9];
+  if (!mat3Inverse(s.T, Ti))
+    return Reason::OutOfRange;
+  mat3Mul(Ti, s.C, A);
+  mat3Mul(A, s.T, A);
+  const double mean = (A[0] + A[4] + A[8]) / 3.0;
   if (!(mean > 0))
     return Reason::OutOfRange;
-  for (int i = 0; i < 9; i++) {
-    if (i % 4 == 0) {
-      if (fabs(s.C[i] - mean) > kMagMatrixDiagSpread * mean)
-        return Reason::OutOfRange;
-    } else if (fabs(s.C[i]) > kMagMatrixOffDiagRatio * mean) {
-      return Reason::OutOfRange;
-    }
-  }
-  const double R = kMagRef / mean;
+  if (fabs(A[1] - A[3]) > kMagSymmetryTol * mean || fabs(A[2] - A[6]) > kMagSymmetryTol * mean ||
+      fabs(A[5] - A[7]) > kMagSymmetryTol * mean)
+    return Reason::OutOfRange;
+  double eig[3];
+  if (!DSP::Calib::symmetricEigenvalues(A, 3, eig))
+    return Reason::OutOfRange;
+  if (!(eig[0] > 0) || eig[0] < kMagEigMinRel * mean || eig[2] > kMagEigMaxRel * mean ||
+      !(eig[2] / eig[0] < kMagAxisRatioMax))
+    return Reason::OutOfRange;
+  const double R = kMagRef / mean; // mean raw field radius
   if (R < kMagRadiusMin || R > kMagRadiusMax)
     return Reason::OutOfRange;
   if (vec3Norm(s.offset) > kMagOffsetRatioMax * R)

@@ -12,6 +12,7 @@
 #include "ExVectrData/memory_internal.hpp"
 #include "ExVectrData/memory_manager.hpp"
 #include "ExVectrDSP/value_covariance.hpp"
+#include "calibration/calibration_service.hpp"
 #include "calibration/calibration_validity.hpp"
 #include "memory_keys.hpp"
 
@@ -122,11 +123,61 @@ static void test_save_to_second_memory_and_reboot_from_it() {
   TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkMagParams(storedFrom(r, true))));
 }
 
+/// An ellipsoid (soft-iron) mag candidate through the legacy key: C = T A T^-1 written as float, read back, still
+/// valid (checkMagParams with the real mounting matrix) and calibrating to |B| = 0.05; a sphere-era record stays valid.
+static void test_ellipsoid_mag_round_trip_through_legacy_key() {
+  DSP::Calib::MagEllipsoidResult fit;
+  // A = (0.05 / R) S^-1 for R = 0.31 and S = [[1.12 .05 -.03] [.05 .90 .04] [-.03 .04 1.05]] (axis ratio 1.3)
+  const double A[9] = {0.1446, -0.0082, 0.0045, -0.0082, 0.1801, -0.0071, 0.0045, -0.0071, 0.1538};
+  for (int i = 0; i < 9; i++)
+    fit.A[i] = A[i];
+  fit.offset[0] = 0.0105;
+  fit.offset[1] = -0.0147;
+  fit.offset[2] = 0.0082;
+  const double T[9] = {0, 0, -1, 1, 0, 0, 0, -1, 0};
+  double off[3], C[9];
+  TEST_ASSERT_TRUE(magCandidateToLegacy(fit, T, off, C));
+
+  Data::Memory_Internal<512> mem;
+  Data::Memory_Manager mgr(mem);
+  mgr.clearMemory();
+  Cal def = identityDefault();
+  mgr.allocateItem(def, MEMORY_KEY_MAGCALIB);
+  Cal rec;
+  for (int i = 0; i < 3; i++)
+    rec.val(i) = float(off[i]);
+  for (int r = 0; r < 3; r++)
+    for (int k = 0; k < 3; k++)
+      rec.cov(r, k) = float(C[3 * r + k]);
+  TEST_ASSERT_TRUE(mgr.writeItem(rec, MEMORY_KEY_MAGCALIB));
+  Data::Memory_Manager mgr2(mem); // reboot
+  Cal r;
+  TEST_ASSERT_TRUE(mgr2.readItem(r, MEMORY_KEY_MAGCALIB));
+  StoredCalibration st = storedFrom(r, true);
+  for (int i = 0; i < 9; i++)
+    st.T[i] = T[i];
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkMagParams(st)));
+  // a raw point on the true ellipsoid: raw = b + R S u: field length 0.05 after calibration
+  const double S[9] = {1.12, 0.05, -0.03, 0.05, 0.90, 0.04, -0.03, 0.04, 1.05};
+  const double u[3] = {0.6, 0.0, 0.8};
+  double raw[3];
+  for (int k = 0; k < 3; k++)
+    raw[k] = fit.offset[k] + 0.31 * (S[3 * k] * u[0] + S[3 * k + 1] * u[1] + S[3 * k + 2] * u[2]);
+  TEST_ASSERT_DOUBLE_WITHIN(0.0015, 0.05, calibratedNorm(st, raw));
+  // the old bench sphere record is still valid with the same check
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::Ok), uint8_t(checkMagParams(storedFrom(benchMagRecord(), true))));
+  // a non-symmetric matrix is refused
+  StoredCalibration bad = st;
+  bad.C[1] += 0.05;
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Reason::OutOfRange), uint8_t(checkMagParams(bad)));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_record_size_is_48_bytes);
   RUN_TEST(test_missing_key_then_default_then_reboot);
   RUN_TEST(test_write_read_round_trip_and_key_isolation);
   RUN_TEST(test_save_to_second_memory_and_reboot_from_it);
+  RUN_TEST(test_ellipsoid_mag_round_trip_through_legacy_key);
   return UNITY_END();
 }

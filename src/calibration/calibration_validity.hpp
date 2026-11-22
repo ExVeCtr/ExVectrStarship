@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "ExVectrDSP/calibration/accel_ellipsoid_fit.hpp"
+#include "ExVectrDSP/calibration/mag_ellipsoid_fit.hpp"
 
 namespace VCTR {
 namespace Calibration {
@@ -43,8 +44,10 @@ constexpr double kAccelOffDiagMax = 0.02;         ///< |A_jk|, j != k (= AccelFi
 constexpr double kMagRadiusMin = 0.10;            ///< raw field radius R = kMagRef / s, driver units
 constexpr double kMagRadiusMax = 1.00;
 constexpr double kMagOffsetRatioMax = 0.8;        ///< |b| < ratio * R (= MagFitConfig::maxOffsetRatio)
-constexpr double kMagMatrixDiagSpread = 0.20;     ///< C = s I: each diagonal within +- this of the mean
-constexpr double kMagMatrixOffDiagRatio = 0.05;   ///< |C_jk| <= this * mean diagonal
+constexpr double kMagAxisRatioMax = DSP::Calib::kMagAxisRatioMax; ///< sensor-frame A = T^-1 C T: max/min eigenvalue
+constexpr double kMagEigMinRel = DSP::Calib::kMagEigMinRel;       ///< every eigenvalue of A within [min, max] x mean
+constexpr double kMagEigMaxRel = DSP::Calib::kMagEigMaxRel;
+constexpr double kMagSymmetryTol = 0.02;          ///< |A_jk - A_kj| <= this * mean eigenvalue (A must be symmetric)
 constexpr double kDefaultEps = 1e-6;              ///< identity-default detection
 
 // ---- Gyro automatic run planning ----

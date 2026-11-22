@@ -978,10 +978,15 @@ public:
       written = applyLegacyCalibration(accLegacy, MEMORY_KEY_ACCCALIB, accTransformTopic, accCalApplied, offset, C);
       break;
     }
-    case Calibration::Sensor::Mag:
-      Calibration::magCandidateToLegacy(calibrationService.magResult(), offset, C);
+    case Calibration::Sensor::Mag: {
+      const Calibration::StoredCalibration st = storedFrom(magLegacy);
+      if (!Calibration::magCandidateToLegacy(calibrationService.magResult(), st.T, offset, C)) {
+        Core::printW("Calibration apply refused: mag mounting matrix is singular\n");
+        return;
+      }
       written = applyLegacyCalibration(magLegacy, MEMORY_KEY_MAGCALIB, magTransformTopic, magCalApplied, offset, C);
       break;
+    }
     case Calibration::Sensor::Gyro: {
       const auto &r = calibrationService.gyroResult();
       applyGyroBias(r.bias, true);

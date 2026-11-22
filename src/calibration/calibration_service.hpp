@@ -15,7 +15,8 @@
  * - Accel: the 12-pose magnitude fit (fitAccel). Poses are captured automatically (StillnessDetector with the active
  *   gyro bias, PoseCollector: still 1.5 s, averaged over 2 s, new if > 20 deg from every earlier pose). Stop (or the
  *   15 min timeout) fits.
- * - Mag: hard-iron sphere fit (MagSphereFit, decimated to 10 Hz). Stop (or the 5 min timeout) evaluates.
+ * - Mag: hard + soft iron ellipsoid fit (MagEllipsoidFit, decimated to 10 Hz; ServiceConfig::magSoftIron false gives the
+ *   former sphere fit). Stop (or the 5 min timeout) evaluates.
  * - Gyro: the stationary bias run (GyroBiasCollector). Two uses: the AUTOMATIC run (startGyroRun, zeroing windows and
  *   the countdown; the result is reported through takeGyroRunDone and applied by the vehicle task) and a manual
  *   session (start(Gyro), result goes to Review).
@@ -30,7 +31,7 @@
 
 #include "ExVectrDSP/calibration/accel_ellipsoid_fit.hpp"
 #include "ExVectrDSP/calibration/gyro_bias_collector.hpp"
-#include "ExVectrDSP/calibration/mag_sphere_fit.hpp"
+#include "ExVectrDSP/calibration/mag_ellipsoid_fit.hpp"
 #include "ExVectrDSP/calibration/pose_collector.hpp"
 #include "ExVectrDSP/calibration/stillness_detector.hpp"
 #include "calibration/calibration_validity.hpp"
@@ -62,6 +63,8 @@ struct ServiceConfig {
   size_t verifyAccelMinPoses = 3;
   double verifyGyroTolerance = 0.1 * 3.14159265358979 / 180.0; ///< |mean - active bias| per axis, rad/s
   size_t verifyMagMinSamples = 200;
+  double verifyMagMaxSpread = 0.03;                ///< std/mean of |B_cal| in a verify tumble
+  bool magSoftIron = true;                         ///< false: sphere fit (A = s I), to compare on the same data
   double verifyMagMinCoverage = 0.6;               ///< fraction of bins with at least one sample
   double gRef = 9.81;
 };
@@ -137,7 +140,7 @@ public:
   /// by the arming check as "out of range").
   bool applicable(Sensor s) const;
   const DSP::Calib::AccelFitResult &accelResult() const { return accelRes_; }
-  const DSP::Calib::MagFitResult &magResult() const { return magRes_; }
+  const DSP::Calib::MagEllipsoidResult &magResult() const { return magRes_; }
   const DSP::Calib::GyroBiasResult &gyroResult() const { return gyroRes_; }
   size_t poseCount() const { return poses_.count(); }
   const DSP::Calib::PoseCollector &poses() const { return poses_; }
@@ -172,13 +175,13 @@ private:
 
   DSP::Calib::StillnessDetector still_;
   DSP::Calib::PoseCollector poses_;
-  DSP::Calib::MagSphereFit magFit_;
+  DSP::Calib::MagEllipsoidFit magFit_;
   DSP::Calib::GyroBiasCollector gyro_;
   bool gyroBiasTrusted_ = false;
   bool gyroAuto_ = false;
   bool gyroDone_ = false;
   DSP::Calib::AccelFitResult accelRes_;
-  DSP::Calib::MagFitResult magRes_;
+  DSP::Calib::MagEllipsoidResult magRes_;
   DSP::Calib::GyroBiasResult gyroRes_;     ///< the manual session's result (the candidate)
   DSP::Calib::GyroBiasResult autoRes_;     ///< the finished automatic run, until taken
 
@@ -207,13 +210,15 @@ private:
 /// Returns false if T is singular.
 bool accelCandidateToLegacy(const DSP::Calib::AccelFitResult &fit, const double T[9], double offsetOut[3],
                             double COut[9]);
-/// Mag: b = centre, C = s I.
-void magCandidateToLegacy(const DSP::Calib::MagFitResult &fit, double offsetOut[3], double COut[9]);
+/// Mag: calibrated = T A (raw - b) like the accelerometer, so C = T A T^-1 (C = s I for a sphere); offset = b.
+/// Returns false if T is singular.
+bool magCandidateToLegacy(const DSP::Calib::MagEllipsoidResult &fit, const double T[9], double offsetOut[3],
+                          double COut[9]);
 
 /// The arming validity range check (checkAccelParams / checkMagParams) applied to a candidate. The accel check is
 /// independent of the mounting matrix T (A = T^-1 C T = fit.A), so T = identity is used.
 Reason accelCandidateParams(const DSP::Calib::AccelFitResult &fit);
-Reason magCandidateParams(const DSP::Calib::MagFitResult &fit);
+Reason magCandidateParams(const DSP::Calib::MagEllipsoidResult &fit);
 
 } // namespace Calibration
 } // namespace VCTR
