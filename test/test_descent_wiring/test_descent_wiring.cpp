@@ -92,6 +92,53 @@ static void test_position_usable() {
   TEST_ASSERT_TRUE(Safety::descentPositionUsable(true, false, 99999999999LL, to, true)); // simulation: no GNSS needed
   TEST_ASSERT_FALSE(Safety::descentPositionUsable(true, false, 0, to, false));
 }
+/// Feed `raw` for `durMs` at 10 Hz (observer rate), starting at tMs; returns the last filtered value.
+static bool feed(Safety::DescentGnssHysteresis &h, int64_t &tMs, bool raw, int durMs) {
+  bool f = h.filtered();
+  for (int i = 0; i < durMs / 100; i++) {
+    f = h.update(tMs * 1000000LL, raw);
+    tMs += 100;
+  }
+  return f;
+}
+static void test_gnss_hysteresis_transitions() {
+  Safety::DescentGnssHysteresis h;
+  int64_t t = 0;
+  TEST_ASSERT_FALSE(feed(h, t, true, 400)); // needs 0.5 s of good GNSS first (boot)
+  TEST_ASSERT_TRUE(feed(h, t, true, 200));  // 0.6 s good: valid
+  // Dropout: still valid at 0.3 s, invalid beyond.
+  TEST_ASSERT_TRUE(h.update(t * 1000000LL, false));
+  int64_t t0 = t;
+  t += 300;
+  TEST_ASSERT_TRUE(h.update(t * 1000000LL, false));  // exactly 0.3 s: hold ("more than")
+  t += 100;
+  TEST_ASSERT_FALSE(h.update(t * 1000000LL, false)); // 0.4 s: dropped
+  TEST_ASSERT_TRUE(t - t0 > 300);
+  // Recovery: not before 0.5 s of good GNSS.
+  t += 100;
+  TEST_ASSERT_FALSE(h.update(t * 1000000LL, true));
+  t += 400;
+  TEST_ASSERT_FALSE(h.update(t * 1000000LL, true)); // 0.4 s good, still invalid
+  t += 100;
+  TEST_ASSERT_TRUE(h.update(t * 1000000LL, true)); // 0.5 s good: resumed
+}
+static void test_gnss_hysteresis_flicker_does_not_toggle() {
+  Safety::DescentGnssHysteresis h;
+  int64_t t = 0;
+  feed(h, t, true, 1000);
+  TEST_ASSERT_TRUE(h.filtered());
+  for (int i = 0; i < 50; i++) { // valid/invalid alternating every 100 ms, from the valid state
+    TEST_ASSERT_TRUE(feed(h, t, false, 100));
+    TEST_ASSERT_TRUE(feed(h, t, true, 100));
+  }
+  // From the invalid state flicker never resumes either.
+  Safety::DescentGnssHysteresis g;
+  t = 0;
+  for (int i = 0; i < 50; i++) {
+    TEST_ASSERT_FALSE(feed(g, t, true, 100));
+    TEST_ASSERT_FALSE(feed(g, t, false, 100));
+  }
+}
 static void test_telemetry_setpoint_source() {
   auto d = Safety::flapSetpointAngles(true, false, true, 1.0f, 2.0f, 0.5f);
   TEST_ASSERT_TRUE(d.flapsActive);
@@ -464,6 +511,8 @@ int main(int, char **) {
   RUN_TEST(test_target_is_home_and_stop_altitude);
   RUN_TEST(test_target_invalid_cases);
   RUN_TEST(test_position_usable);
+  RUN_TEST(test_gnss_hysteresis_transitions);
+  RUN_TEST(test_gnss_hysteresis_flicker_does_not_toggle);
   RUN_TEST(test_telemetry_setpoint_source);
   RUN_TEST(test_entry_init_holds_heading_and_leaving_resets);
   RUN_TEST(test_other_modes_pass_through);

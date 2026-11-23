@@ -1897,6 +1897,7 @@ private:
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>>
       posEstSubr; // Subscriber for the position estimator
   Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr; // GNSS fix validity (real mode)
+  Safety::DescentGnssHysteresis gnssHysteresis;
 
 public:
   FlapModeObserverTask()
@@ -1983,9 +1984,13 @@ public:
       const auto &g = gnssSubr.getItem();
       Safety::DescentTargetInputs ti;
       ti.descentActive = descentActive;
+      // Real mode: the GNSS part goes through the hysteresis (dropout hold 0.3 s, resume 0.5 s); finite is immediate.
+      const int64_t nowNs = Core::NowNs();
+      const bool gnssRaw = Safety::descentPositionUsable(false, g.data.positionValid, nowNs - g.timestamp,
+                                                         500 * Core::MILLISECONDS, true);
+      const bool gnssFiltered = gnssHysteresis.update(nowNs, gnssRaw);
       ti.positionUsable = Safety::descentPositionUsable(vehicleSafetyAndControlTask.simulationModeEnabled(),
-                                                        g.data.positionValid, Core::NowNs() - g.timestamp,
-                                                        500 * Core::MILLISECONDS, posFinite);
+                                                        gnssFiltered, 0, 0, posFinite);
       ti.stopAltitude_m = missionFreefallTask.getStopAltitude();
       descentTargetTopic.publish(Safety::makeDescentTarget(ti));
     }
@@ -2541,7 +2546,7 @@ void initialiseHardware() {
                                5 * DEG_TO_RAD);
 }
 
-void initialiseMemory() {
+FLASHMEM void initialiseMemory() { // boot only: runs from flash, keeps ITCM (RAM1 code) small
   // Initialise the memory and read the EEPROM into the internal memory
   EEPROM.begin();
   internalMemory.transferFrom(eeprom);

@@ -52,6 +52,36 @@ inline bool descentPositionUsable(bool simulationMode, bool gnssPositionValid, i
   return gnssPositionValid && gnssAgeNs >= 0 && gnssAgeNs <= timeoutNs;
 }
 
+/// GNSS validity hysteresis for the descent (owner decision 2026-11-23): a GNSS dropout shorter than the hold does not
+/// reach the guidance; a recovery must last the resume time before the guidance resumes. The stale (0.5 s) and
+/// non-finite rules do not go through this filter (they stay immediate).
+constexpr int64_t kDescentGnssLossHoldNs = 300000000LL;   ///< raw invalid for MORE than this -> filtered invalid
+constexpr int64_t kDescentGnssResumeGoodNs = 500000000LL; ///< raw valid for AT LEAST this -> filtered valid
+
+class DescentGnssHysteresis {
+ public:
+  /// Call every observer tick with the raw GNSS usability (valid fix and fresh sample). Starts invalid (a boot or
+  /// reset needs the resume time of good GNSS). Returns the filtered value.
+  bool update(int64_t nowNs, bool rawValid) {
+    if (rawValid) {
+      if (!goodSinceValid_) goodSinceValid_ = true, goodSinceNs_ = nowNs;
+      badSinceValid_ = false;
+      if (!filtered_ && nowNs - goodSinceNs_ >= kDescentGnssResumeGoodNs) filtered_ = true;
+    } else {
+      if (!badSinceValid_) badSinceValid_ = true, badSinceNs_ = nowNs;
+      goodSinceValid_ = false;
+      if (filtered_ && nowNs - badSinceNs_ > kDescentGnssLossHoldNs) filtered_ = false;
+    }
+    return filtered_;
+  }
+  bool filtered() const { return filtered_; }
+
+ private:
+  bool filtered_ = false;
+  bool goodSinceValid_ = false, badSinceValid_ = false;
+  int64_t goodSinceNs_ = 0, badSinceNs_ = 0;
+};
+
 /// Telemetry attitude setpoint source for the flap controller: the heading setpoint and pitch of the nose direction.
 /// Descent: heading setpoint of the guidance with pitch 0 (the split is not representable as an attitude; the GS
 /// sees it in the actual flap angles). Stabilize: the setting's azimuth and pitch.
