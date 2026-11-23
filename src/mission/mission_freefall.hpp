@@ -50,6 +50,14 @@ public:
 
   float getStopTargetAltitude() const { return stopAlt_; }
 
+  /// The one runtime-settable stop altitude (SetStopAltitude telecommand, limits checked by the caller).
+  void setStopTargetAltitude(float stopAlt) { stopAlt_ = stopAlt; }
+
+  /// True while the freefall phase is running (before the stop trigger fired): flip_start_altitude is valid.
+  bool flipPhaseActive() const {
+    return missionState_.missionMode == MissionMode::MissionMode_Running && !missionEnd_;
+  }
+
   float getStopAltitude() const {
     return calculateStoppingDistance(tvcThrustLimit_N_, vehicleMass_kg_,
                                      positionIs_) +

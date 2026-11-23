@@ -34,6 +34,7 @@ namespace VCTR {
         Telecommand_SimFlapStuck,   //SIMULATION ONLY (refused otherwise): stuck flap servo fault, owner-approved 2026-11-21. subsystem = flap 0..3 (0 TL, 1 TR, 2 BL, 3 BR), any other bit refused (the 'arm for descent' bit 0x10 was removed 2026-11-21). Takes effect immediately on the modelled true flap angle. paramFloat = stuck angle in rad (finite, clamped 0..pi/2), -1.0 = hold the current true angle. paramInt must be equal to 0x57. Cleared on every simulation mode switch. Value 16.
         Telecommand_SimFlapSlow,    //SIMULATION ONLY (refused otherwise): slow flap servo fault. subsystem = flap index, paramFloat = servo rate factor (finite, clamped 0.05..1). paramInt must be equal to 0x57. Value 17.
         Telecommand_SimFaultClear,  //SIMULATION ONLY (refused otherwise): clears all flap faults. paramInt must be equal to 0x57, other fields ignored. Value 18.
+        Telecommand_SetStopAltitude, //Sets the stop altitude of the freefall mission (m above the position reference, default 20), paramFloat in metres (finite, 5..60), paramInt ignored. Accepted only on the ground (interlock closed, motors not enabled, not committed), otherwise refused with a log line. Not persisted. No acknowledgement: the stop_altitude field of MISSION / AIR_MISSION telemetry echoes the value. Value 19.
         Telecommand_MAX             //Max value for the enum. This is used to check if the command is valid or not.
     };
 
