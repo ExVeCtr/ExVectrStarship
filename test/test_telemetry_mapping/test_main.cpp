@@ -465,7 +465,7 @@ void test_cmd_telemetry_fields_and_cmd_applied() {
   const uint16_t want = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsUartFresh |
                         Packets::VehicleStatus::kCtrlFlagsSourceLatched | Packets::VehicleStatus::kCtrlFlagsGsFailsafeReq;
   TEST_ASSERT_EQUAL_HEX16(want, p.ctrl_flags);
-  TEST_ASSERT_EQUAL_UINT8(2, p.rc_rejected); // the source reject and the duplicate copy
+  TEST_ASSERT_EQUAL_UINT8(1, p.rc_rejected); // the source reject only; the duplicate copy is not counted
   auto a = roundTrip(makeCmdApplied(s));
   TEST_ASSERT_EQUAL_UINT(26, Packets::CmdApplied::kMaxSize);
   TEST_ASSERT_EQUAL_UINT8(0x84, Packets::CmdApplied::kPort);

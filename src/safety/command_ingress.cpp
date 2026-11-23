@@ -49,12 +49,16 @@ CommandIngress::Result CommandIngress::onFrame(uint8_t srcNode, CmdLink link, ui
         cur_.linkSeen[li] = true;
         cur_.linkLastNs[li] = rxNs;
         sessionRxNs_ = rxNs;
+        cur_.duplicates++;
+        return res; // not a reject: the normal second copy
       } else if (d >= 256 - kLateCopyFrames) {
         // A late copy: the radio path (air slot, ship node, UART) delivers the same stream tens of milliseconds
         // behind the USB copy, so its sequence number is already a few frames old. It proves the link is alive
         // (freshness is information only) but is neither new nor does it keep the session alive.
         cur_.linkSeen[li] = true;
         cur_.linkLastNs[li] = rxNs;
+        cur_.lateCopies++;
+        return res; // not a reject: the normal radio-path copy
       }
       reject(CmdReject::StaleSequence);
       return res;

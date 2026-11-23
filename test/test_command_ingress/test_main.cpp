@@ -73,7 +73,9 @@ void test_malformed_counted_and_never_latches() {
 void test_per_link_copies_are_deduped() {
   TEST_ASSERT_TRUE(send(1 * S, A, CmdLink::Uart).accepted);
   TEST_ASSERT_FALSE(copy(1 * S + 2 * MS, A, CmdLink::Usb).accepted); // second copy: duplicate
-  TEST_ASSERT_EQUAL_UINT8(1, t->rejectCounts()[3]);
+  TEST_ASSERT_EQUAL_UINT8(0, t->rejectCounts()[3]); // a duplicate is not a reject
+  TEST_ASSERT_EQUAL_UINT8(0, t->live().rejectedTotal);
+  TEST_ASSERT_EQUAL_UINT8(1, t->live().duplicates);
   TEST_ASSERT_EQUAL_UINT32(1, t->live().accepted);
   // the first copy may arrive on either link
   TEST_ASSERT_TRUE(send(1 * S + 40 * MS, A, CmdLink::Usb).accepted);
@@ -112,10 +114,13 @@ void test_late_radio_copy_refreshes_the_uart_link_age() {
   const CmdIngressSnapshot &s = t->live();
   TEST_ASSERT_TRUE(s.linkSeen[static_cast<size_t>(CmdLink::Uart)]);
   TEST_ASSERT_EQUAL_INT64(10 * MS, s.linkAgeNs(CmdLink::Uart, 1 * S + 100 * MS));
+  TEST_ASSERT_EQUAL_UINT8(0, s.rejects[3]); // a late copy is not a reject
+  TEST_ASSERT_EQUAL_UINT8(1, s.lateCopies);
   // A copy far behind (replay) does not refresh the link.
   t->onFrame(0, CmdLink::Usb, 100, frame(), 1 * S + 120 * MS);
   t->onFrame(0, CmdLink::Uart, 50, frame(), 1 * S + 130 * MS);
   TEST_ASSERT_EQUAL_INT64(50 * MS, t->live().linkAgeNs(CmdLink::Uart, 1 * S + 140 * MS)); // still the 1.090 s copy
+  TEST_ASSERT_EQUAL_UINT8(1, t->live().rejects[3]); // 50 frames old: a genuine stale frame counts
 }
 
 void test_sequence_stale_rejected_and_wraps() {
@@ -123,7 +128,7 @@ void test_sequence_stale_rejected_and_wraps() {
   TEST_ASSERT_FALSE(t->onFrame(0, CmdLink::Uart, 249, frame(), 1 * S + 10 * MS).accepted); // older
   TEST_ASSERT_TRUE(t->onFrame(0, CmdLink::Uart, 3, frame(), 1 * S + 20 * MS).accepted);    // wrap: +9
   TEST_ASSERT_FALSE(t->onFrame(0, CmdLink::Uart, 200, frame(), 1 * S + 30 * MS).accepted); // 197 ahead = behind
-  TEST_ASSERT_EQUAL_UINT8(2, t->rejectCounts()[3]);
+  TEST_ASSERT_EQUAL_UINT8(1, t->rejectCounts()[3]); // 249 is a late copy (not counted), 200 is stale
 }
 
 void test_sequence_resync_after_silence() {
