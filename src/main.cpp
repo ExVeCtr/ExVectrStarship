@@ -2835,6 +2835,7 @@ void initialiseTopicConnections() {
 
   positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
   attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
+  groundTopicSwitch.subscribe(posEstTask.getGroundDistanceEstTopic()); // landing detector range cue (was missing at boot)
 
   Math::Quat<float> accTiltX({1, 0, 0}, 0 * DEG_TO_RAD);
   Math::Quat<float> accTiltY({0, 1, 0}, 0 * DEG_TO_RAD);
