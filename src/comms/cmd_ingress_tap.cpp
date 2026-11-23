@@ -43,8 +43,19 @@ void CmdIngressTap::onFrame(const network::FrameView &f, uint8_t linkIndex) {
       rcIgnored_++; // the handset stream is not a command stream (owner decision 2026-11-23)
     } else if (port == Packets::Request::kPort && payloadLen >= Packets::Request::kMinSize) {
       Packets::Request rq;
-      if (rq.decode(f.data + kPayloadAt, payloadLen) && rq.target == vehicleNode_)
-        ingress_.onRequest(rq.session);
+      if (rq.decode(f.data + kPayloadAt, payloadLen)) {
+        ingress_.onRequest(rq.session); // counters only; the executor re-checks session, target and action
+        Safety::RequestMsg m;
+        m.link = static_cast<uint8_t>(link_);
+        m.src = h.src;
+        m.reqId = rq.req_id;
+        m.action = rq.action;
+        m.target = rq.target;
+        m.argI = rq.arg_i;
+        m.argF = rq.arg_f;
+        m.session = rq.session;
+        requests_.push(m);
+      }
     }
   }
   if (next) next->onFrame(f, linkIndex);

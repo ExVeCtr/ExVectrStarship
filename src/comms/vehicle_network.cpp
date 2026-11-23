@@ -1,5 +1,13 @@
 #include "vehicle_network.hpp"
 
+#ifndef FLASHMEM // cold code runs from flash and keeps ITCM (RAM1 code) small; empty on the host
+#ifdef __IMXRT1062__
+#define FLASHMEM __attribute__((section(".flashmem")))
+#else
+#define FLASHMEM
+#endif
+#endif
+
 namespace VCTR {
 namespace Comms {
 
@@ -51,13 +59,13 @@ network::EgressFilter VehicleNetwork::uartFilter() {
   return f;
 }
 
-VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart,
+FLASHMEM VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart,
                                TelecommandSinkI &telecommands)
     : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
       telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false),
-      usbCmdTap_(Safety::CmdLink::Usb, ingress_, rcMapper_, motorInterlock_, kVehicleNode),
-      uartCmdTap_(Safety::CmdLink::Uart, ingress_, rcMapper_, motorInterlock_, kVehicleNode) {
+      usbCmdTap_(Safety::CmdLink::Usb, ingress_, rcMapper_, motorInterlock_, requests_, kVehicleNode),
+      uartCmdTap_(Safety::CmdLink::Uart, ingress_, rcMapper_, motorInterlock_, requests_, kVehicleNode) {
   const int usbIndex = usbNode_.addLink(usbLink_);
   const int uartIndex = uartNode_.addLink(uartLink_, uartFilter());
   // Interpose the taps (same link indices): USB link -> usbCmdTap_ -> USB node,
@@ -76,6 +84,14 @@ VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI 
 void VehicleNetwork::pollLinks() {
   usbLink_.poll();
   uartLink_.poll();
+}
+
+FLASHMEM bool VehicleNetwork::sendRequestAck(uint8_t link, uint8_t dst, uint16_t reqId, uint8_t status, uint8_t detail) {
+  Packets::RequestAck ack;
+  ack.req_id = reqId;
+  ack.status = static_cast<Packets::RequestStatus>(status);
+  ack.detail = detail;
+  return sendOn(link == static_cast<uint8_t>(Safety::CmdLink::Uart) ? uartNode_ : usbNode_, dst, ack);
 }
 
 void VehicleNetwork::pollNodes() {

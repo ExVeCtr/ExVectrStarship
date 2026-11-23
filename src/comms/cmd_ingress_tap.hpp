@@ -13,8 +13,9 @@
  * CmdState::kMaxSize bytes or whose strict decode fails (any out-of-range field rejects the whole frame) is a
  * BadLength reject. The shared Safety::CommandIngress decides (source node 0, session latch, sequence); on
  * acceptance the tap feeds the mapper and the motor interlock (a session change resets both first). Vehicle-directed
- * REQUESTs (port 0x11, target 1) are checked against the latched session (design Q5) and counted; the vehicle has
- * no REQUEST executor yet (T9b-5), so the result is only recorded in the ingress counters.
+ * REQUESTs (port 0x11, addressed to the vehicle) are counted by session (design Q5) and queued, with their ingress link
+ * and source node, in the RequestInbox; the safety task executes them (Safety::RequestExecutor) and the ACK goes back
+ * on the same link (VehicleNetwork::sendRequestAck).
  * Both taps run in the comms task, no locking between them. Pure of platform code, host-tested through
  * VehicleNetwork (test/test_vehicle_network).
  */
@@ -24,6 +25,7 @@
 #include "safety/command_ingress.hpp"
 #include "safety/motor_interlock.hpp"
 #include "safety/rc_mapper.hpp"
+#include "safety/request_executor.hpp"
 
 namespace VCTR {
 namespace Comms {
@@ -31,8 +33,9 @@ namespace Comms {
 class CmdIngressTap : public network::FrameSinkI {
 public:
   CmdIngressTap(Safety::CmdLink link, Safety::CommandIngress &ingress, Safety::RcCommandMapper &mapper,
-                Safety::MotorInterlock &interlock, uint8_t vehicleNode)
-      : link_(link), ingress_(ingress), mapper_(mapper), interlock_(interlock), vehicleNode_(vehicleNode) {}
+                Safety::MotorInterlock &interlock, Safety::RequestInbox &requests, uint8_t vehicleNode)
+      : link_(link), ingress_(ingress), mapper_(mapper), interlock_(interlock), requests_(requests),
+        vehicleNode_(vehicleNode) {}
 
   network::FrameSinkI *next = nullptr;
 
@@ -46,6 +49,7 @@ private:
   Safety::CommandIngress &ingress_;
   Safety::RcCommandMapper &mapper_;
   Safety::MotorInterlock &interlock_;
+  Safety::RequestInbox &requests_;
   uint8_t vehicleNode_;
   uint32_t rcIgnored_ = 0;
 };
