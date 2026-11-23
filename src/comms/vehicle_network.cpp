@@ -39,7 +39,6 @@ static_assert(kHz % Packets::AirMission::kAirRateHz == 0, "air rate must divide 
 static_assert((VehicleNetwork::kAirActuatorsPhase % VehicleNetwork::kActuatorSampleTicks) == 0,
               "AIR_ACTUATORS must be sent on a sampling tick");
 static_assert(kHz % Packets::CmdApplied::kUsbRateHz == 0, "USB rate must divide the tick rate");
-static_assert(LegacyTelecommandPacket::kPort < 0x80, "the legacy telecommand must pass the radio-path filters");
 
 } // namespace
 
@@ -59,11 +58,9 @@ network::EgressFilter VehicleNetwork::uartFilter() {
   return f;
 }
 
-FLASHMEM VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart,
-                               TelecommandSinkI &telecommands)
-    : time_(time), telecommands_(telecommands), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
+FLASHMEM VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart)
+    : time_(time), usbLink_(usb, time), uartLink_(uart, time), usbNode_(nodeConfig(), time),
       uartNode_(nodeConfig(), time),
-      telecommandPort_(usbNode_, mux_, LegacyTelecommandPacket::kPort, kGroundStationNode, Qos::Event, false),
       usbCmdTap_(Safety::CmdLink::Usb, ingress_, rcMapper_, motorInterlock_, requests_, kVehicleNode),
       uartCmdTap_(Safety::CmdLink::Uart, ingress_, rcMapper_, motorInterlock_, requests_, kVehicleNode) {
   const int usbIndex = usbNode_.addLink(usbLink_);
@@ -78,7 +75,6 @@ FLASHMEM VehicleNetwork::VehicleNetwork(network::TimeSourceI &time, network::Byt
   // One transport for both links: a frame arriving on both is delivered once.
   usbNode_.setDataSink(mux_);
   uartNode_.setDataSink(mux_);
-  telecommandPort_.setListener(this);
 }
 
 void VehicleNetwork::pollLinks() {
@@ -92,6 +88,11 @@ FLASHMEM bool VehicleNetwork::sendRequestAck(uint8_t link, uint8_t dst, uint16_t
   ack.status = static_cast<Packets::RequestStatus>(status);
   ack.detail = detail;
   return sendOn(link == static_cast<uint8_t>(Safety::CmdLink::Uart) ? uartNode_ : usbNode_, dst, ack);
+}
+
+FLASHMEM bool VehicleNetwork::sendHomePosition(uint8_t link, uint8_t dst, const HomeInput &in) {
+  const Packets::HomePosition home = makeHomePosition(in);
+  return sendOn(link == static_cast<uint8_t>(Safety::CmdLink::Uart) ? uartNode_ : usbNode_, dst, home);
 }
 
 void VehicleNetwork::pollNodes() {
@@ -205,16 +206,6 @@ bool VehicleNetwork::anyIncompatiblePeer() const {
     if (r && r->incompatible && uartNode_.isPresent(a)) return true;
   }
   return false;
-}
-
-void VehicleNetwork::onPacket(const LegacyTelecommandPacket &packet, const network::RxInfo &info) {
-  // TEMPORARY (T9b): only the ground station commanded the vehicle on the old port 1000.
-  if (info.src != LegacyTelecommandPacket::kAcceptedSource) {
-    telecommandsRejected_++;
-    return;
-  }
-  telecommandsAccepted_++;
-  telecommands_.onTelecommand(packet.tc);
 }
 
 } // namespace Comms

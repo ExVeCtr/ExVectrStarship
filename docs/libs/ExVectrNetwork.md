@@ -67,7 +67,7 @@ usbNode.send(0, Packets::Pose::kPort, buf, n, network::wire::Qos::Telemetry, tru
 - **Two Nodes, both address 1** (one per link), so the USB link carries the USB telemetry set and the UART carries the radio set at the air rates. One shared `PortMux<2>`, so a frame that arrives on both links is delivered once. The UART node's egress filter drops ports >= 0x80.
 - **Heartbeats:** each node sends the vehicle heartbeat at 1 Hz on its link.
 - **Ground-station presence:** `presenceTimeoutNs = 2 s` on both nodes; `isPresent(0)` on either node is `GS_PRESENT`, **information only since T9b-3** (the control failsafe is the `RC_STATE` control-source timeout; the ground station is never a failure condition).
-- **Ports:** the generated telemetry packets, plus the TEMPORARY legacy telecommand port 0x7F (`PacketPort<LegacyTelecommandPacket>`).
+- **Ports:** the generated telemetry packets, and no legacy port: the telecommand port 0x7F is deleted (`feature/requests-all`), requests arrive as `REQUEST` (0x11) through the `CmdIngressTap`.
 - Everything runs in the `VehicleComms` task (100 Hz, priority 50). The whole comms object (links, nodes, buffers, about 10 KB) is in DMAMEM.
 - Host tests: `test/test_vehicle_network` builds the stack natively (`pio test -e native`).
 

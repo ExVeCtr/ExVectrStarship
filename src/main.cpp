@@ -49,7 +49,6 @@
 #include "safety/mission_chain.hpp"
 #include "safety/mission_profile.hpp"
 #include "subsystems.hpp"
-#include "telecommand.hpp"
 #include "safety/stop_altitude.hpp"
 #include "telemetry.hpp"
 #include "ublox_gnss.hpp"
@@ -258,7 +257,6 @@ DMAMEM DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
                                  TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 
 // Networking: VehicleComms (src/comms/), defined below the vehicle tasks it reads from.
-Core::Topic<Telecommand> telecommandTopic;
 extern Comms::VehicleComms vehicleComms;
 
 // Control
@@ -361,7 +359,6 @@ private:
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attEstSubr;
 
-  Core::Simple_Subscriber<Telecommand> telecommandSubr;
 
   VehicleMode vehicleMode_ = VehicleMode::VehicleMode_Startup;
   SensoryState sensoryState_;
@@ -373,8 +370,6 @@ private:
   Safety::RcCommandLogic rcLogic_;
   uint16_t cmdFlags_ = 0;          ///< VEHICLE_STATUS ctrl_flags bits owned by the vehicle logic
   uint8_t missionProfile_ = 255;   ///< SB position latched at the last go, 255 = none
-  uint32_t removedTelecommands_ = 0;
-  Safety::LogRateLimit removedTelecommandLog_{5 * Core::SECONDS};
   Safety::LogRateLimit goRefusedLog_{2 * Core::SECONDS};
   Safety::LogRateLimit scRefusedLog_{2 * Core::SECONDS};
   Safety::LogRateLimit seRefusedLog_{2 * Core::SECONDS};
@@ -389,6 +384,7 @@ private:
   Safety::EstimatorZeroing zeroing_;
   // Telemetry cache (VEHICLE_STATUS home_epoch / calib_state), written by updateTelemetryCache() every task run.
   Comms::HomeEpoch homeEpoch_;
+  int64_t homeSetNs_ = 0; ///< time of the last homeEpoch_.referenceSet() (HOME_POSITION set_time)
   bool calibGyroValid_ = false, calibAccelValid_ = false, calibMagValid_ = false;
   bool calibSessionActive_ = false, readyToArm_ = false;
   Safety::LogRateLimit zeroRefusedLog_{1 * Core::SECONDS};
@@ -404,7 +400,6 @@ private:
   Safety::LogRateLimit calibWarnLog_{CALIB_LOG_PERIOD};
   Safety::LogRateLimit calibArmLog_{CALIB_LOG_PERIOD};
   Safety::LogRateLimit calibBeginLog_{CALIB_LOG_PERIOD};
-  Safety::LogRateLimit calibCmdLog_{1 * Core::SECONDS};
   bool countdownGyroRun_ = false; ///< the active automatic gyro run closes the mission countdown
   char lastCalibAbortReason_[96] = ""; ///< reason text of the last countdown abort for bad calibration (log only)
 
@@ -1034,7 +1029,6 @@ public:
     posEstSubr.subscribe(positionTopicSwitch.getTopic());
     attEstSubr.subscribe(attitudeTopicSwitch.getTopic());
 
-    telecommandSubr.subscribe(telecommandTopic);
 
     missionList_.append(&defaultMission_);
     missionList_.append(&missionWaypointTask);
@@ -1082,7 +1076,6 @@ public:
 
   void taskThread() override {
     applyRcCommands();
-    handleTelecommands();
     handleRequests();
     superviseMotorInterlock();
 
@@ -1173,8 +1166,10 @@ public:
     bodySimulator.enableZeroingMode(want);
     // The position reference (GNSS reference point of the position KF) moves only in zeroing mode: when it ends the
     // reference is set (home_epoch).
-    if (zeroingApplied_ && !want)
+    if (zeroingApplied_ && !want) {
       homeEpoch_.referenceSet();
+      homeSetNs_ = Core::NowNs();
+    }
     zeroingApplied_ = want;
   }
 
@@ -1276,10 +1271,10 @@ public:
 
   // ---- Sensor calibration commands (legacy telecommands, docs/project/calibration.md) ----
 
-  /// Preconditions of every calibration command (design section 3.3): initialised, disarmed, motors off, mode
+  /// Preconditions of every calibration request (design section 3.3): initialised, disarmed, motors off, mode
   /// Startup/Ready/SensorCalib, mission Idle or Finished (the same in simulation and real mode: calibration works on
-  /// the real sensors). Logs the refusal (1/s).
-  bool calibrationCommandAllowed(const char *what) {
+  /// the real sensors). The REQUEST executor takes the result as RequestContext::calibGatesOk (REJECTED_STATE 6).
+  bool calibrationGatesOk() {
     Calibration::CommandContext c;
     c.initialised = allSystemsInitialised_;
     c.armed = vehicleComms.motorInterlock().open(Core::NowNs());
@@ -1288,49 +1283,46 @@ public:
                     vehicleMode_ == VehicleMode::VehicleMode_SensorCalib;
     const MissionMode mm = mission_->getMissionState().missionMode;
     c.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
-    const Calibration::CommandResult r = Calibration::checkCommand(c);
-    if (r == Calibration::CommandResult::Ok)
-      return true;
-    if (calibCmdLog_.due(Core::NowNs()))
-      Core::printW("Calibration %s refused: %s\n", what, Calibration::toString(r));
-    return false;
+    return Calibration::checkCommand(c) == Calibration::CommandResult::Ok;
   }
 
-  static bool calibrationSensor(Subsystem sub, Calibration::Sensor &out) {
+  /// REQUEST subsystem number (0 gyro, 1 accel, 2 mag, validated by the executor) to the calibration sensor.
+  static bool calibrationSensor(uint8_t sub, Calibration::Sensor &out) {
     switch (sub) {
-    case Subsystem::Subsystem_Gyro: out = Calibration::Sensor::Gyro; return true;
-    case Subsystem::Subsystem_Accel: out = Calibration::Sensor::Accel; return true;
-    case Subsystem::Subsystem_Magneto: out = Calibration::Sensor::Mag; return true;
+    case 0: out = Calibration::Sensor::Gyro; return true;
+    case 1: out = Calibration::Sensor::Accel; return true;
+    case 2: out = Calibration::Sensor::Mag; return true;
     default: return false;
     }
   }
 
   /**
-   * CalibStart: subsystem 0 gyro, 1 accel, 2 mag. paramInt 1 (or any value > 2) calibrate, 2 verify the active
-   * calibration, -1 discard a candidate (also ends a collection), 0 or any other value <= 0 stop and fit.
+   * CALIB_CONTROL (gates and argument range already checked by the RequestExecutor): subsystem 0 gyro, 1 accel,
+   * 2 mag. code 1 start a calibration, 2 verify the active calibration, 9 discard a candidate (also ends a
+   * collection), 0 stop and fit. False = refused by the calibration service.
    */
-  void handleCalibStart(const Telecommand &tc) {
+  bool calibControl(uint8_t subsystem, uint8_t code) override {
     Calibration::Sensor sensor;
-    if (!calibrationSensor(tc.subsystem, sensor))
-      return;
-    if (!calibrationCommandAllowed("command"))
-      return;
+    if (!calibrationSensor(subsystem, sensor))
+      return false;
     const int64_t now = Core::NowNs();
 
-    if (tc.paramInt == -1) {
+    if (code == 9) {
       calibrationService.discard(sensor);
-      return;
+      return true;
     }
-    if (tc.paramInt <= 0) {
-      if (!calibrationService.stop(sensor, now))
+    if (code == 0) {
+      if (!calibrationService.stop(sensor, now)) {
         Core::printW("Calibration stop ignored: %s is not collecting\n", Calibration::toString(sensor));
-      return;
+        return false;
+      }
+      return true;
     }
 
-    const bool verify = tc.paramInt == 2;
+    const bool verify = code == 2;
     if (calibrationService.anyBusy()) {
       Core::printW("Calibration start refused: another calibration is running, stop or discard it first\n");
-      return;
+      return false;
     }
     // The vehicle will be handled or rotated: an active zeroing window is aborted, and whatever zero exists is no
     // longer trusted (the automatic zero runs again when the session ends).
@@ -1345,22 +1337,22 @@ public:
       starshipTVC.enableActuators(false);
       vehicleMode_ = VehicleMode::VehicleMode_SensorCalib;
       applyEstimatorZeroing();
+      return true;
     }
+    return false;
   }
 
   /// CalibApply: only a candidate with verdict PASS or WARN (owner decision D6). Writes the legacy keys (RAM image),
   /// applies the transform, invalidates the estimator zero (the automatic zero runs again before Ready).
-  void handleCalibApply(const Telecommand &tc) {
+  bool calibApply(uint8_t subsystem) override {
     Calibration::Sensor sensor;
-    if (!calibrationSensor(tc.subsystem, sensor))
-      return;
-    if (!calibrationCommandAllowed("apply"))
-      return;
+    if (!calibrationSensor(subsystem, sensor))
+      return false;
     if (!calibrationService.applicable(sensor)) {
       Core::printW("Calibration apply refused: no passing candidate for %s (state %s, result %s)\n",
                    Calibration::toString(sensor), Calibration::toString(calibrationService.state(sensor)),
                    DSP::Calib::toString(calibrationService.result(sensor)));
-      return;
+      return false;
     }
 
     // Estimator inputs are about to change: an active zeroing window is void.
@@ -1376,7 +1368,7 @@ public:
       const Calibration::StoredCalibration st = storedFrom(accLegacy);
       if (!Calibration::accelCandidateToLegacy(calibrationService.accelResult(), st.T, offset, C)) {
         Core::printW("Calibration apply refused: accel mounting matrix is singular\n");
-        return;
+        return false;
       }
       written = applyLegacyCalibration(accLegacy, MEMORY_KEY_ACCCALIB, accTransformTopic, accCalApplied, offset, C);
       break;
@@ -1385,7 +1377,7 @@ public:
       const Calibration::StoredCalibration st = storedFrom(magLegacy);
       if (!Calibration::magCandidateToLegacy(calibrationService.magResult(), st.T, offset, C)) {
         Core::printW("Calibration apply refused: mag mounting matrix is singular\n");
-        return;
+        return false;
       }
       written = applyLegacyCalibration(magLegacy, MEMORY_KEY_MAGCALIB, magTransformTopic, magCalApplied, offset, C);
       break;
@@ -1411,18 +1403,14 @@ public:
     Core::printM("Calibration: %s calibration applied (RAM only until Save)%s; the estimator zero is invalid, the automatic "
                  "zero runs next: keep the vehicle still\n",
                  Calibration::toString(sensor), written ? "" : ", RAM image write FAILED");
+    return true;
   }
 
-  /// Save (any of gyro, accel, magneto): RAM image -> EEPROM, read back and compared.
-  void handleCalibSave(const Telecommand &tc) {
-    Calibration::Sensor sensor;
-    if (!calibrationSensor(tc.subsystem, sensor))
-      return;
-    if (!calibrationCommandAllowed("save"))
-      return;
+  /// SAVE_CONFIG (all calibrations): RAM image -> EEPROM, read back and compared. False = refused or failed.
+  bool saveConfig() override {
     if (calibrationService.anyBusy()) {
       Core::printW("Calibration save refused: a calibration is still running\n");
-      return;
+      return false;
     }
     if (saveCalibrationMemory()) {
       // Only records whose value went into the RAM image are now in EEPROM. The per-boot automatic gyro bias is not
@@ -1437,9 +1425,10 @@ public:
       }
       calibrationService.markSaved();
       Core::printM("Calibration: saved to EEPROM and verified by read-back\n");
-    } else {
-      Core::printW("Calibration: EEPROM save FAILED (read-back differs), the values stay in RAM only\n");
+      return true;
     }
+    Core::printW("Calibration: EEPROM save FAILED (read-back differs), the values stay in RAM only\n");
+    return false;
   }
 
   /// MissionBegin gate (Calibration::decideMissionBegin, same in simulation and real mode): all three calibrations
@@ -1548,8 +1537,53 @@ public:
     LOG_MSG("Stop altitude set to %.1f m\n", double(metres));
   }
 
+  // Simulation world requests (the executor checked simulation mode and clamped the values). Simulation-only
+  // world parameters (owner 2026-11-21): they change nothing but the simulated air and the modelled flap angle.
+  void logSimWind() {
+    LOG_MSG("Sim wind: %.2f m/s toward %.1f deg (CCW from North)\n", double(bodySimulator.windSpeed()),
+            double(bodySimulator.windDirection() * 180.0f / float(M_PI)));
+  }
+  void simWindSpeed(float mps) override {
+    bodySimulator.setWind(mps, NAN);
+    logSimWind();
+  }
+  void simWindDirection(float rad) override {
+    bodySimulator.setWind(NAN, rad);
+    logSimWind();
+  }
+  void applyGust(float strength, float period, uint32_t seed) {
+    bodySimulator.setGust(strength, period, seed);
+    LOG_MSG("Sim gusts: strength %.2f m/s, period %.2f s, seed %u\n", double(bodySimulator.gustStrength()),
+            double(bodySimulator.gustPeriod()), unsigned(bodySimulator.gustSeed()));
+  }
+  void simGustStrength(float mps) override { applyGust(mps, bodySimulator.gustPeriod(), bodySimulator.gustSeed()); }
+  void simGustPeriod(float s) override { applyGust(bodySimulator.gustStrength(), s, bodySimulator.gustSeed()); }
+  void simGustSeed(uint32_t seed) override { applyGust(bodySimulator.gustStrength(), bodySimulator.gustPeriod(), seed); }
+
+  /// Flap servo fault (decision from Safety::decideSimFault, made by the executor). The fault only alters the
+  /// modelled true flap angle inside StarshipFlaps and only while simulation mode is active (checked again there).
+  bool simFault(const Safety::SimFaultDecision &d) override {
+    if (!starshipFlaps.simFaults().set(d, simulationMode_)) {
+      LOG_MSG("Sim fault refused (not applied)\n");
+      return false;
+    }
+    static const char *const kFlapNames[4] = {"TL", "TR", "BL", "BR"};
+    if (d.action == Safety::SimFaultAction::Clear) {
+      LOG_MSG("Sim fault: all flap faults cleared\n");
+    } else if (d.action == Safety::SimFaultAction::Slow) {
+      LOG_MSG("Sim fault: flap %s servo rate factor %.2f\n", kFlapNames[d.flap], double(d.value));
+    } else if (d.captureCurrent) {
+      LOG_MSG("Sim fault: flap %s STUCK at its current true angle (now)\n", kFlapNames[d.flap]);
+    } else {
+      LOG_MSG("Sim fault: flap %s STUCK at %.1f deg (now)\n", kFlapNames[d.flap],
+              double(d.value * 180.0f / float(M_PI)));
+    }
+    return true;
+  }
+
   /// Drains the REQUEST inbox (comms task fills it): one executor decision and one REQUEST_ACK per copy, on the link
-  /// the request came from. At most RequestInbox::kSize per run, nothing blocks.
+  /// the request came from; an accepted GET_HOME_POSITION is followed by the HOME_POSITION packet on that link. At
+  /// most RequestInbox::kSize (8) per run, nothing blocks.
   void handleRequests() {
     Safety::RequestMsg m;
     while (vehicleComms.popRequest(m)) {
@@ -1559,134 +1593,28 @@ public:
       ctx.latchedSession = vehicleComms.network().commandIngress().session();
       ctx.interlockOpen = vehicleComms.motorInterlock().open(now);
       ctx.committed = isCommitted(now);
+      ctx.simulationMode = simulationMode_;
+      ctx.calibGatesOk = calibrationGatesOk();
+      ctx.homeAvailable = homeEpoch_.value() != 0;
       const Safety::RequestResult r = requestExecutor_.handle(m, ctx, *this);
       vehicleComms.sendRequestAck(m.link, m.src, m.reqId, r.status, r.detail);
+      if (r.sendHome) {
+        // Home = the position estimator's reference [lat rad, lon rad, alt m] (the NWU origin).
+        const auto &ref = posEstTask.getPositionReference();
+        Comms::HomeInput h;
+        h.haveReference = true;
+        h.latitude = ref(0);
+        h.longitude = ref(1);
+        h.altitude = float(ref(2));
+        h.simulation = simulationMode_;
+        h.zeroing = zeroing_.active() || missionZeroing_;
+        h.epoch = homeEpoch_.value();
+        h.setTimeNs = homeSetNs_;
+        vehicleComms.sendHomePosition(m.link, m.src, h);
+      }
       if (!r.duplicate && (r.status != 0 || r.executed) && requestLog_.due(now))
         LOG_MSG("REQUEST %u action %u from node %u: status %u detail %u\n", unsigned(m.reqId), unsigned(m.action),
                 unsigned(m.src), unsigned(r.status), unsigned(r.detail));
-    }
-  }
-
-  void handleTelecommands() {
-    if (!telecommandSubr.isDataNew())
-      return; // No new telecommand data
-
-    auto telecommand = telecommandSubr.getItem();
-
-    switch (telecommand.type) {
-    case TelecommandType::Telecommand_CalibStart:
-      handleCalibStart(telecommand);
-      break;
-
-    case TelecommandType::Telecommand_CalibApply:
-      handleCalibApply(telecommand);
-      break;
-
-    case TelecommandType::Telecommand_Save:
-      handleCalibSave(telecommand);
-      break;
-
-    case TelecommandType::Telecommand_ZeroEstimators:
-    case TelecommandType::Telecommand_SetStopAltitude:
-    case TelecommandType::Telecommand_SystemReset:
-    case TelecommandType::Telecommand_Arm:
-    case TelecommandType::Telecommand_SimulationMode:
-    case TelecommandType::Telecommand_MissionBegin:
-    case TelecommandType::Telecommand_MissionSelect:
-    case TelecommandType::Telecommand_MissionAbort:
-      // T9b-4: the safety commands are command state now (go, profile, vehicle_mode, motors, reset_button of the GS CMD_STATE; SE
-      // reset/zero). The telecommands are no longer handled; they are ignored and counted, the log line is rate
-      // limited. The port itself goes in T9b-5.
-      removedTelecommands_++;
-      if (removedTelecommandLog_.due(Core::NowNs()))
-        LOG_MSG("Telecommand %d ignored: removed, use the GS command state or a REQUEST (%lu ignored since boot)\n",
-                int(telecommand.type), (unsigned long)removedTelecommands_);
-      break;
-
-    case TelecommandType::Telecommand_SimWindSpeed:
-    case TelecommandType::Telecommand_SimWindDirection: {
-      // Simulation-only world parameter (owner 2026-11-21): steady wind of the body simulator. Refused unless in
-      // simulation mode; it changes nothing but the simulated air (overview.md "Simulation mode").
-      constexpr int16_t kSimWindMagic = 0x57;
-      constexpr float kSimWindMaxMps = 20.0f;
-      const bool isSpeed = telecommand.type == TelecommandType::Telecommand_SimWindSpeed;
-      const float value = telecommand.paramFloat;
-      if (telecommand.paramInt != kSimWindMagic || !simulationMode_ || !isfinite(value)) {
-        LOG_MSG("Sim wind %s refused (%s)\n", isSpeed ? "speed" : "direction",
-                !simulationMode_ ? "not in simulation mode"
-                                 : (telecommand.paramInt != kSimWindMagic ? "bad magic" : "value not finite"));
-        break;
-      }
-      if (isSpeed)
-        bodySimulator.setWind(value < 0.0f ? 0.0f : (value > kSimWindMaxMps ? kSimWindMaxMps : value), NAN);
-      else
-        bodySimulator.setWind(NAN, atan2f(sinf(value), cosf(value)));
-      LOG_MSG("Sim wind: %.2f m/s toward %.1f deg (CCW from North)\n", double(bodySimulator.windSpeed()),
-              double(bodySimulator.windDirection() * 180.0f / float(M_PI)));
-    } break;
-
-    case TelecommandType::Telecommand_SimGustStrength:
-    case TelecommandType::Telecommand_SimGustPeriod:
-    case TelecommandType::Telecommand_SimGustSeed: {
-      // Simulation-only gust settings (owner-approved exception to safety.md rule 7, 2026-11-21). Same refusal
-      // rules as the wind telecommands; the gust series is deterministic (BodySimParams "Gusts").
-      constexpr int16_t kSimWindMagic = 0x57;
-      const float value = telecommand.paramFloat;
-      if (telecommand.paramInt != kSimWindMagic || !simulationMode_ || !isfinite(value)) {
-        LOG_MSG("Sim gust setting %d refused (%s)\n", int(telecommand.type),
-                !simulationMode_ ? "not in simulation mode"
-                                 : (telecommand.paramInt != kSimWindMagic ? "bad magic" : "value not finite"));
-        break;
-      }
-      float strength = bodySimulator.gustStrength(), period = bodySimulator.gustPeriod();
-      uint32_t seed = bodySimulator.gustSeed();
-      if (telecommand.type == TelecommandType::Telecommand_SimGustStrength)
-        strength = value; // clamped 0..10 in the model
-      else if (telecommand.type == TelecommandType::Telecommand_SimGustPeriod)
-        period = value; // clamped 0.5..30 in the model
-      else
-        seed = uint32_t(value < 0.0f ? 0.0f : (value > 16777215.0f ? 16777215.0f : value + 0.5f));
-      bodySimulator.setGust(strength, period, seed);
-      LOG_MSG("Sim gusts: strength %.2f m/s, period %.2f s, seed %u\n", double(bodySimulator.gustStrength()),
-              double(bodySimulator.gustPeriod()), unsigned(bodySimulator.gustSeed()));
-    } break;
-
-    case TelecommandType::Telecommand_SimFlapStuck:
-    case TelecommandType::Telecommand_SimFlapSlow:
-    case TelecommandType::Telecommand_SimFaultClear: {
-      // Simulation-only flap servo faults (owner-approved exception to safety.md rules 7 and 9, 2026-11-21). The
-      // decision is the pure Safety::decideSimFault; the fault only alters the modelled true flap angle inside
-      // StarshipFlaps and only while simulation mode is active (checked again there at apply time).
-      const Safety::SimFaultDecision d = Safety::decideSimFault(uint8_t(telecommand.type), uint8_t(telecommand.subsystem),
-                                                                telecommand.paramInt, telecommand.paramFloat,
-                                                                simulationMode_);
-      if (d.action == Safety::SimFaultAction::Refuse) {
-        LOG_MSG("Sim fault %d refused (%s)\n", int(telecommand.type), Safety::simFaultRefusalText(d.reason));
-        break;
-      }
-      if (!starshipFlaps.simFaults().set(d, simulationMode_)) {
-        LOG_MSG("Sim fault %d refused (not applied)\n", int(telecommand.type));
-        break;
-      }
-      static const char *const kFlapNames[4] = {"TL", "TR", "BL", "BR"};
-      if (d.action == Safety::SimFaultAction::Clear) {
-        LOG_MSG("Sim fault: all flap faults cleared\n");
-      } else if (d.action == Safety::SimFaultAction::Slow) {
-        LOG_MSG("Sim fault: flap %s servo rate factor %.2f\n", kFlapNames[d.flap], double(d.value));
-      } else if (d.captureCurrent) {
-        LOG_MSG("Sim fault: flap %s STUCK at its current true angle (now)\n", kFlapNames[d.flap]);
-      } else {
-        LOG_MSG("Sim fault: flap %s STUCK at %.1f deg (now)\n", kFlapNames[d.flap],
-                double(d.value * 180.0f / float(M_PI)));
-      }
-    } break;
-
-    default:
-      removedTelecommands_++;
-      if (removedTelecommandLog_.due(Core::NowNs()))
-        LOG_MSG("Unknown telecommand type %d ignored (%lu ignored since boot)\n", int(telecommand.type),
-                (unsigned long)removedTelecommands_);
-      break;
     }
   }
 
@@ -2262,7 +2190,7 @@ TelemetryProvider telemetryProvider;
 // RAM2 (DMAMEM). It is constructed like every other global (constructors run
 // for DMAMEM objects too).
 DMAMEM Comms::VehicleComms vehicleComms(Serial, RX_MODULE_SERIALPORT,
-                                        telemetryProvider, telecommandTopic);
+                                        telemetryProvider);
 
 class DisplayTask : public Core::Task_Periodic {
 public:

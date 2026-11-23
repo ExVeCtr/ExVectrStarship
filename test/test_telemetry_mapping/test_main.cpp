@@ -1,6 +1,6 @@
 // Host tests of src/comms/telemetry_mapping.cpp: pio test -e native
 // Checks the vehicle-state -> packet mapping, the flight-software owned bit fields, SI units through the
-// generated encode/decode (round trip), saturation, and the TEMPORARY legacy telecommand layout.
+// generated encode/decode (round trip), saturation, and the HOME_POSITION builder.
 #include <math.h>
 #include <string.h>
 #include <unity.h>
@@ -743,26 +743,41 @@ void test_attitude_std_world() {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, o[2]);
 }
 
-void test_legacy_telecommand_layout() {
-  // Bytes as the old packed struct on the (little-endian) Teensy: Arm (5), subsystem 0, 0xA5, 1.0f
-  const uint8_t wire[8] = {0x05, 0x00, 0xA5, 0x00, 0x00, 0x00, 0x80, 0x3F};
-  LegacyTelecommandPacket p;
-  TEST_ASSERT_TRUE(p.decode(wire, 8));
-  TEST_ASSERT_EQUAL_UINT8(Telecommand_Arm, p.tc.type);
-  TEST_ASSERT_EQUAL_UINT8(Subsystem_Gyro, p.tc.subsystem);
-  TEST_ASSERT_EQUAL_INT16(0xA5, p.tc.paramInt);
-  TEST_ASSERT_EQUAL_FLOAT(1.0f, p.tc.paramFloat);
-  uint8_t out[8];
-  TEST_ASSERT_EQUAL_UINT(8, p.encode(out, sizeof out));
-  TEST_ASSERT_EQUAL_MEMORY(wire, out, 8);
-  // Negative paramInt (MissionBegin -10 s) and wrong lengths
-  const uint8_t begin[8] = {0x07, 0x00, 0xF6, 0xFF, 0, 0, 0, 0};
-  TEST_ASSERT_TRUE(p.decode(begin, 8));
-  TEST_ASSERT_EQUAL_INT16(-10, p.tc.paramInt);
-  TEST_ASSERT_FALSE(p.decode(wire, 7));
-  uint8_t nine[9] = {0};
-  TEST_ASSERT_FALSE(p.decode(nine, 9));
-  TEST_ASSERT_TRUE(LegacyTelecommandPacket::kPort < 0x80); // must pass the radio-path egress filters
+void test_home_position_from_a_faked_reference() {
+  HomeInput in;
+  in.haveReference = true;
+  in.latitude = 48.1234 * M_PI / 180.0;
+  in.longitude = 11.5678 * M_PI / 180.0;
+  in.altitude = 523.25f;
+  in.epoch = 3;
+  in.setTimeNs = 7000000000LL;
+  Packets::HomePosition p = makeHomePosition(in);
+  TEST_ASSERT_EQUAL_UINT8(0x03, p.flags);
+  TEST_ASSERT_EQUAL_UINT8(0x50, Packets::HomePosition::kPort);
+  uint8_t buf[Packets::HomePosition::kMaxSize];
+  TEST_ASSERT_EQUAL_UINT(25, p.encode(buf, sizeof buf));
+  Packets::HomePosition q;
+  TEST_ASSERT_TRUE(q.decode(buf, 25));
+  TEST_ASSERT_DOUBLE_WITHIN(1e-8, in.latitude, q.latitude); // 1e-7 deg wire resolution
+  TEST_ASSERT_DOUBLE_WITHIN(1e-8, in.longitude, q.longitude);
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 523.25f, q.altitude);
+  TEST_ASSERT_TRUE(isnan(q.h_acc));
+  TEST_ASSERT_EQUAL_UINT8(3, q.epoch);
+  TEST_ASSERT_EQUAL_INT64(7000000000LL, q.set_time);
+  in.simulation = true;
+  in.zeroing = true;
+  TEST_ASSERT_EQUAL_UINT8(0x0F, makeHomePosition(in).flags);
+}
+
+void test_home_position_without_fix_has_nan_position() {
+  HomeInput in;
+  in.haveReference = true; // reference set but the estimator never had a GNSS fix (0, 0)
+  in.epoch = 1;
+  Packets::HomePosition p = makeHomePosition(in);
+  TEST_ASSERT_EQUAL_UINT8(0, p.flags);
+  TEST_ASSERT_TRUE(isnan(p.latitude) && isnan(p.longitude) && isnan(p.altitude));
+  uint8_t buf[25];
+  TEST_ASSERT_EQUAL_UINT(25, p.encode(buf, sizeof buf));
 }
 
 // ---- attitude setpoint (MISSION / AIR_MISSION setpoint_q) ----
@@ -946,7 +961,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x2361516Fu, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x036F9C45u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -977,7 +992,8 @@ int main() {
   RUN_TEST(test_imu_raw_and_estimator);
   RUN_TEST(test_calibration);
   RUN_TEST(test_attitude_std_world);
-  RUN_TEST(test_legacy_telecommand_layout);
+  RUN_TEST(test_home_position_from_a_faked_reference);
+  RUN_TEST(test_home_position_without_fix_has_nan_position);
   RUN_TEST(test_air_actuators_two_samples);
   RUN_TEST(test_air_actuators_saturation_and_nan);
   RUN_TEST(test_air_mission);
