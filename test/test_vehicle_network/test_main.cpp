@@ -527,7 +527,7 @@ void test_cmd_state_on_both_links_is_one_stream() {
   gsTicks(kSafe, 10, true, true);
   const auto &ing = rig->net.commandIngress();
   TEST_ASSERT_EQUAL_UINT32(10, ing.live().accepted); // the second copy is a duplicate
-  TEST_ASSERT_EQUAL_UINT8(10, ing.rejectCounts()[3]);
+  TEST_ASSERT_EQUAL_UINT8(0, ing.rejectCounts()[3]); // a duplicate or late second copy is not a reject (feature/reject-count)
   TelemetrySnapshot s;
   rig->net.fillCmdTelemetry(s);
   TEST_ASSERT_TRUE(s.ctrlFlags & Packets::VehicleStatus::kCtrlFlagsUartFresh);
