@@ -14,7 +14,9 @@
  *        (the tilted resting body reads a larger range than an upright one, hence 0.10 m);
  *     b. tracking contact (the old criterion, now only low and slow): the vehicle is held more than
  *        kLandingTrackingErrorM above the descending setpoint, with |vz| < kLandingContactVz and speed
- *        < kLandingContactSpeed, for kLandingTrackingHoldNs. Works without any range data.
+ *        < kLandingContactSpeed, for kLandingTrackingHoldNs. Works without any range data. Only below
+ *        kLandingTrackingMaxAltitudeM (0.4 m) AND with the Z setpoint below it too (not a ground-contact measurement:
+ *        a wind-lagged RTH descent in the air must never fire it).
  *     c. ground contact: altitude below kLandingGroundAltitudeM, |vz| < kLandingGroundVz, speed < kLandingContactSpeed,
  *        for 2 s (no range needed; lands a vehicle that sits on the ground below the setpoint).
  *  3. Invalid range (stale, uncertain, absent) neither vetoes nor triggers: cue b and the altitude gate decide alone.
@@ -31,6 +33,7 @@ namespace Safety {
 constexpr float kLandingMaxAltitudeM = 1.5f;    ///< above this height over the reference: never landed
 constexpr float kLandingMaxRangeM = 1.0f;       ///< a valid range above this: never landed
 constexpr float kLandingRangeContactM = 0.10f;  ///< valid range below this = ground contact (old: 0.04 m, upright)
+constexpr float kLandingTrackingMaxAltitudeM = 0.4f; ///< tracking cue only below this altitude AND with the setpoint below it
 constexpr float kLandingTrackingErrorM = 0.2f;  ///< vehicle above the setpoint by more than this = held up
 constexpr float kLandingContactSpeed = 0.5f;    ///< m/s, total speed limit of both contact cues
 constexpr float kLandingContactVz = 0.2f;       ///< m/s, |vz| limit of the tracking cue
@@ -51,7 +54,14 @@ struct LandingInput {
 
 class LandingDetector {
 public:
-  void reset() { rangeSince_ = trackSince_ = groundSince_ = -1; }
+  /// Which cue declared the landing (valid after update() returned true).
+  enum class Cue : uint8_t { None, Range, Tracking, Altitude };
+  Cue lastCue() const { return cue_; }
+  static const char *cueName(Cue c) {
+    return c == Cue::Range ? "range" : c == Cue::Tracking ? "tracking" : c == Cue::Altitude ? "altitude" : "none";
+  }
+
+  void reset() { rangeSince_ = trackSince_ = groundSince_ = -1; cue_ = Cue::None; }
 
   /// Call every tick of the descent. Returns true while the landing condition holds.
   bool update(const LandingInput &in) {
@@ -65,15 +75,21 @@ public:
     const bool slow = in.speed < kLandingContactSpeed;
 
     const bool rangeCue = rangeOk && in.rangeM < kLandingRangeContactM && slow;
-    const bool trackCue = in.trackingErrorM > kLandingTrackingErrorM && slow && fabsf(in.verticalSpeed) < kLandingContactVz;
+    // The tracking cue does not measure ground contact: only trusted when the vehicle is low AND the (descending) Z
+    // setpoint has itself reached the ground region, so a wind-lagged descent in the air (setpoint above 0.4 m) can't fire.
+    const float setpointM = in.altitudeM - in.trackingErrorM;
+    const bool trackCue = in.trackingErrorM > kLandingTrackingErrorM && slow && fabsf(in.verticalSpeed) < kLandingContactVz &&
+                          in.altitudeM < kLandingTrackingMaxAltitudeM && setpointM < kLandingTrackingMaxAltitudeM;
 
     // c. at rest at ground level (altitude estimate, works with no range and with a setpoint at or below the vehicle):
     //    sitting on the ground below the descending setpoint never produces a tracking error above it.
     const bool groundCue = in.altitudeM < kLandingGroundAltitudeM && slow && fabsf(in.verticalSpeed) < kLandingGroundVz;
 
-    return hold(rangeCue, rangeSince_, in.nowNs, kLandingRangeHoldNs) |
-           hold(trackCue, trackSince_, in.nowNs, kLandingTrackingHoldNs) |
-           hold(groundCue, groundSince_, in.nowNs, kLandingTrackingHoldNs);
+    const bool r = hold(rangeCue, rangeSince_, in.nowNs, kLandingRangeHoldNs);
+    const bool t = hold(trackCue, trackSince_, in.nowNs, kLandingTrackingHoldNs);
+    const bool g = hold(groundCue, groundSince_, in.nowNs, kLandingTrackingHoldNs);
+    cue_ = r ? Cue::Range : t ? Cue::Tracking : g ? Cue::Altitude : Cue::None;
+    return r || t || g;
   }
 
 private:
@@ -89,6 +105,7 @@ private:
   int64_t rangeSince_ = -1;
   int64_t trackSince_ = -1;
   int64_t groundSince_ = -1;
+  Cue cue_ = Cue::None;
 };
 
 } // namespace Safety

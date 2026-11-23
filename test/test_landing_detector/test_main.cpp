@@ -74,11 +74,47 @@ void test_tilted_ground_contact_landed_without_range() {
 void test_range_invalid_does_not_trigger_or_block() {
   LandingDetector d;
   LandingInput in; // invalid range with a garbage tiny value must not count as contact
-  in.altitudeM = 0.5f; in.rangeValid = false; in.rangeM = 0.01f;
+  in.altitudeM = 0.35f; in.rangeValid = false; in.rangeM = 0.01f;
   TEST_ASSERT_FALSE(run(d, in, 0, 20000 * kMs));
   // invalid range with a huge value must not veto the tracking cue
   in.rangeM = 5.0f; in.trackingErrorM = 0.3f;
   TEST_ASSERT_TRUE(run(d, in, 30000 * kMs, 2500 * kMs));
+}
+
+void test_wind_lagged_descent_in_air_not_landed() {
+  LandingDetector d;
+  LandingInput in; // 1.0 m altitude, setpoint 0.7 m (error 0.3), slow, vz -0.1, held 5 s (the simulated wind bug)
+  in.altitudeM = 1.0f; in.trackingErrorM = 0.3f; in.verticalSpeed = -0.1f; in.speed = 0.15f;
+  TEST_ASSERT_FALSE(run(d, in, 0, 5000 * kMs));
+  in.altitudeM = 0.5f; in.trackingErrorM = 0.3f; // 0.5 m, setpoint 0.2 m: still above the 0.4 m gate
+  TEST_ASSERT_FALSE(run(d, in, 10000 * kMs, 5000 * kMs));
+  in.altitudeM = 0.45f; in.trackingErrorM = 0.3f; // setpoint 0.15 but vehicle above the gate
+  TEST_ASSERT_FALSE(run(d, in, 20000 * kMs, 5000 * kMs));
+  in.altitudeM = 0.39f; in.trackingErrorM = 0.25f; // setpoint 0.14, vehicle low
+  TEST_ASSERT_TRUE(run(d, in, 30000 * kMs, 2500 * kMs));
+  TEST_ASSERT_TRUE(d.lastCue() == LandingDetector::Cue::Tracking);
+}
+
+void test_setpoint_above_vehicle_no_tracking_cue() {
+  LandingDetector d;
+  LandingInput in; // 0.35 m, setpoint 0.55 m above the vehicle (error -0.2): no tracking cue, altitude cue off (> 0.3 m)
+  in.altitudeM = 0.35f; in.trackingErrorM = -0.2f;
+  TEST_ASSERT_FALSE(run(d, in, 0, 10000 * kMs));
+}
+
+void test_tilted_rest_setpoint_zero_lands_without_range() {
+  LandingDetector d;
+  LandingInput in; // resting tilted at 0.2 m, setpoint 0.0 (error 0.2+), no range
+  in.altitudeM = 0.2f; in.trackingErrorM = 0.2f;
+  TEST_ASSERT_FALSE(run(d, in, 0, 1500 * kMs));
+  TEST_ASSERT_TRUE(run(d, in, 2000 * kMs, 2500 * kMs));
+}
+
+void test_hover_one_metre_wind_lag_no_landing() {
+  LandingDetector d;
+  LandingInput in; // hover at 1 m, lag error 0.5 m, tiny speed, setpoint constant 0.5 m, 60 s
+  in.altitudeM = 1.0f; in.trackingErrorM = 0.5f; in.speed = 0.3f;
+  TEST_ASSERT_FALSE(run(d, in, 0, 60000 * kMs));
 }
 
 void test_bounce_restarts_timers() {
@@ -177,6 +213,10 @@ int main() {
   RUN_TEST(test_tilted_ground_contact_landed_with_range);
   RUN_TEST(test_tilted_ground_contact_landed_without_range);
   RUN_TEST(test_range_invalid_does_not_trigger_or_block);
+  RUN_TEST(test_wind_lagged_descent_in_air_not_landed);
+  RUN_TEST(test_setpoint_above_vehicle_no_tracking_cue);
+  RUN_TEST(test_tilted_rest_setpoint_zero_lands_without_range);
+  RUN_TEST(test_hover_one_metre_wind_lag_no_landing);
   RUN_TEST(test_bounce_restarts_timers);
   RUN_TEST(test_nonfinite_inputs_never_land);
   RUN_TEST(test_sim_lidar_validity);
