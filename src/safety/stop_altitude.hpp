@@ -4,7 +4,7 @@
 /**
  * Stop altitude parameter of the freefall mission (the height above the position reference where the vehicle ends up
  * stopped; the stop trigger is Pz < stopDist(Vz) + stopAlt). The ONE runtime value lives in MissionFreefall
- * (stopAlt_, set by setStopTargetAltitude); this header holds the default, the limits and the pure decisions.
+ * (stopAlt_, set by setStopTargetAltitude); this header holds the default, the minimum and the pure decisions.
  * Pure, no heap, host-tested (test/test_stop_altitude).
  */
 
@@ -15,8 +15,7 @@ namespace VCTR {
 namespace Safety {
 
 constexpr float kStopAltitudeDefaultM = 20.0f; ///< boot default (not persisted)
-constexpr float kStopAltitudeMinM = 5.0f;
-constexpr float kStopAltitudeMaxM = 60.0f;
+constexpr float kStopAltitudeMinM = 1.0f; ///< no maximum (owner decision 2026-11-23); must be finite
 
 enum class StopAltResult : uint8_t { Accepted = 0, NotFinite, OutOfRange, InterlockOpen, MotorsEnabled, Committed };
 
@@ -27,7 +26,7 @@ struct StopAltContext {
 };
 
 /// SetStopAltitude (telecommand 19): accepted only on the ground (interlock closed, motors not enabled, not committed),
-/// finite, within kStopAltitudeMinM..kStopAltitudeMaxM. First failing rule wins.
+/// finite, at least kStopAltitudeMinM (no maximum). First failing rule wins.
 StopAltResult decideSetStopAltitude(float valueM, const StopAltContext &c);
 const char *toString(StopAltResult r);
 
