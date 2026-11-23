@@ -124,6 +124,11 @@ public:
   /// TEMPORARY (T9b): publishes the telecommand on the existing topic (handled by the safety task as before).
   void onTelecommand(const Telecommand &tc) override { telecommandTopic_.publish(tc); }
 
+  /// REQUESTs addressed to the vehicle and their ACKs (T9b-5), see VehicleNetwork.
+  bool popRequest(Safety::RequestMsg &m) { return net_.popRequest(m); }
+  bool sendRequestAck(uint8_t link, uint8_t dst, uint16_t reqId, uint8_t status, uint8_t detail) {
+    return net_.sendRequestAck(link, dst, reqId, status, detail);
+  }
   const VehicleNetwork &network() const { return net_; }
   /// The hard motor interlock (owned by the network, fed by the command taps).
   Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }

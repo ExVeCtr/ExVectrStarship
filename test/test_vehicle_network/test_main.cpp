@@ -688,6 +688,63 @@ void test_foreign_session_rejected_multi_master_and_requests() {
   TEST_ASSERT_EQUAL_UINT16(3, rig->net.commandIngress().requestsRefused());
 }
 
+/// T9b-5: a REQUEST arriving on a link is queued with that link; the ACK goes back on the same link only.
+static void requestRoundTrip(bool overUart) {
+  cmdSeq = 0;
+  gsTicks(kSafe, 5, true, true); // latches kSessA on both links
+  Peer &gs = overUart ? rig->gsUart : rig->gsUsb;
+  Peer &other = overUart ? rig->gsUsb : rig->gsUart;
+  Packets::Request rq;
+  rq.req_id = 42;
+  rq.action = 13;
+  rq.target = VehicleNetwork::kVehicleNode;
+  rq.arg_f = 25.0f;
+  rq.session = kSessA;
+  uint8_t b[16] = {};
+  TEST_ASSERT_EQUAL(16, (int)rq.encode(b, sizeof b));
+  TEST_ASSERT_TRUE(gs.node.send(VehicleNetwork::kVehicleNode, Packets::Request::kPort, b, 16, wire::Qos::Event, false));
+  gs.poll();
+  rig->net.pollLinks();
+  Safety::RequestMsg m;
+  TEST_ASSERT_TRUE(rig->net.popRequest(m));
+  TEST_ASSERT_EQUAL_UINT16(42, m.reqId);
+  TEST_ASSERT_EQUAL_UINT8(0, m.src);
+  TEST_ASSERT_EQUAL_UINT8(overUart ? 1 : 0, m.link);
+  TEST_ASSERT_EQUAL_FLOAT(25.0f, m.argF);
+  TEST_ASSERT_EQUAL_HEX32(kSessA, m.session);
+  const uint32_t before = gs.counter.n[Packets::RequestAck::kPort];
+  TEST_ASSERT_TRUE(rig->net.sendRequestAck(m.link, m.src, m.reqId, 2, 3));
+  rig->net.pollLinks();
+  rig->gsUsb.poll();
+  rig->gsUart.poll();
+  TEST_ASSERT_EQUAL_UINT32(before + 1, gs.counter.n[Packets::RequestAck::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(0, other.counter.n[Packets::RequestAck::kPort]);
+}
+void test_request_over_usb_gets_its_ack_on_usb() { requestRoundTrip(false); }
+void test_request_over_uart_gets_its_ack_on_uart() { requestRoundTrip(true); }
+
+void test_request_inbox_is_bounded_and_does_not_block() {
+  cmdSeq = 0;
+  gsTicks(kSafe, 3);
+  Packets::Request rq;
+  rq.action = 12;
+  rq.target = VehicleNetwork::kVehicleNode;
+  rq.session = kSessA;
+  uint8_t b[16] = {};
+  for (uint16_t i = 1; i <= 20; i++) {
+    rq.req_id = i;
+    rq.encode(b, sizeof b);
+    rig->gsUsb.node.send(VehicleNetwork::kVehicleNode, Packets::Request::kPort, b, 16, wire::Qos::Event, false);
+    rig->gsUsb.poll();
+    rig->net.pollLinks();
+  }
+  int n = 0;
+  Safety::RequestMsg m;
+  while (rig->net.popRequest(m)) n++;
+  TEST_ASSERT_EQUAL(Safety::RequestInbox::kSize, n);
+  TEST_ASSERT_TRUE(rig->net.requestsDropped() > 0);
+}
+
 void test_new_session_resets_detectors_and_needs_new_edges() {
   cmdSeq = 0;
   Cmd c;
@@ -1028,6 +1085,9 @@ int main() {
   RUN_TEST(test_heartbeats_and_other_ports_are_not_commands);
   RUN_TEST(test_source_goes_none_after_2s_and_age_is_reported);
   RUN_TEST(test_foreign_session_rejected_multi_master_and_requests);
+  RUN_TEST(test_request_over_usb_gets_its_ack_on_usb);
+  RUN_TEST(test_request_over_uart_gets_its_ack_on_uart);
+  RUN_TEST(test_request_inbox_is_bounded_and_does_not_block);
   RUN_TEST(test_new_session_resets_detectors_and_needs_new_edges);
   RUN_TEST(test_committed_vehicle_keeps_its_session_against_a_restarted_gs);
   RUN_TEST(test_gs_failsafe_level_is_visible_and_cleared_by_the_next_state);

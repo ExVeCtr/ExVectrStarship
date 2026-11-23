@@ -40,6 +40,7 @@
 #include "safety/command_ingress.hpp"
 #include "safety/motor_interlock.hpp"
 #include "safety/rc_mapper.hpp"
+#include "safety/request_executor.hpp"
 #include "telemetry_mapping.hpp"
 
 namespace VCTR {
@@ -149,6 +150,12 @@ public:
   void fillCmdTelemetry(TelemetrySnapshot &s);
   /// CMD_APPLIED rate: 10 Hz on USB only (schema rate_usb), tick phase 5.
   static constexpr uint32_t kCmdAppliedPhase = 5;
+  /// REQUESTs addressed to the vehicle, received on either link (T9b-5). The safety task pops them, runs the
+  /// RequestExecutor and answers with sendRequestAck on the link the request came from. Never blocks.
+  bool popRequest(Safety::RequestMsg &m) { return requests_.pop(m); }
+  uint32_t requestsDropped() const { return requests_.dropped(); }
+  /// Queues a REQUEST_ACK to `dst` on the link `link` (Safety::CmdLink value). False if the TX ring was full.
+  bool sendRequestAck(uint8_t link, uint8_t dst, uint16_t reqId, uint8_t status, uint8_t detail);
   /// A present node reported another network version or schema hash than ours.
   bool anyIncompatiblePeer() const;
 
@@ -193,6 +200,7 @@ private:
   Safety::CommandIngress ingress_;
   Safety::RcCommandMapper rcMapper_;
   Safety::MotorInterlock motorInterlock_;
+  Safety::RequestInbox requests_;
   CmdIngressTap usbCmdTap_, uartCmdTap_; ///< per-link CMD_STATE decoding
   bool committed_ = false;
   bool modeFailure_ = false;

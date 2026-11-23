@@ -38,6 +38,7 @@
 #include "starship_hardware.h"
 #include "starship_tvc.hpp"
 #include "safety/estimator_zeroing.hpp"
+#include "safety/request_executor.hpp"
 #include "safety/control_phase.hpp"
 #include "safety/motor_enable.hpp"
 #include "safety/mission_abort.hpp"
@@ -342,7 +343,7 @@ MotorInterlockWatchdog motorInterlockWatchdog;
  * the rocket. It also prepares the system for mission start and signals when
  * something is wrong.
  */
-class VehicleSafetyAndControlTask : public Core::Task_Periodic {
+class VehicleSafetyAndControlTask : public Core::Task_Periodic, public Safety::RequestActionsI {
 private:
   const int64_t DATA_TIMEOUT = 0.5 * Core::SECONDS;
 
@@ -391,7 +392,6 @@ private:
   bool calibGyroValid_ = false, calibAccelValid_ = false, calibMagValid_ = false;
   bool calibSessionActive_ = false, readyToArm_ = false;
   Safety::LogRateLimit zeroRefusedLog_{1 * Core::SECONDS};
-  Safety::LogRateLimit stopAltRefusedLog_{2 * Core::SECONDS};
   Safety::LogRateLimit zeroBlockedLog_{1 * Core::SECONDS};
   bool missionZeroing_ = false;
   bool zeroingApplied_ = false;
@@ -1083,6 +1083,7 @@ public:
   void taskThread() override {
     applyRcCommands();
     handleTelecommands();
+    handleRequests();
     superviseMotorInterlock();
 
     // GNSS configuration visibility (review 2026-11-20). Information only: no mode, Ready or Arm decision uses it.
@@ -1511,6 +1512,61 @@ public:
     }
   }
 
+  // ---- REQUESTs (T9b-5): RequestExecutor decides, these two are its actions ----
+  Safety::RequestExecutor requestExecutor_;
+  Safety::LogRateLimit requestLog_{1 * Core::SECONDS};
+
+  /// ZERO_ESTIMATORS action: same effect and preconditions as the former telecommand (initialised, disarmed, motors
+  /// off, mode Startup or Ready with the missions Idle or Finished). False = refused by the zeroing object.
+  bool zeroEstimators(float windowS) override {
+    Safety::ZeroRequestContext ctx;
+    ctx.initialised = allSystemsInitialised_;
+    ctx.armed = vehicleComms.motorInterlock().open(Core::NowNs()); // armed = interlock open (T9b-4)
+    ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
+    const MissionMode mm = mission_->getMissionState().missionMode;
+    ctx.onGround = (vehicleMode_ == VehicleMode::VehicleMode_Startup ||
+                    vehicleMode_ == VehicleMode::VehicleMode_Ready) &&
+                   (mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished);
+    const int64_t now = Core::NowNs();
+    const auto result = zeroing_.request(Safety::EstimatorZeroing::kParamInt, windowS, ctx, now);
+    if (Safety::accepted(result)) {
+      LOG_MSG("Estimator zeroing %s (%.1f s), keep the vehicle still\n", Safety::toString(result),
+              double(zeroing_.endNs() - now) / Core::SECONDS);
+      applyEstimatorZeroing();
+      startGyroRunForWindow(zeroing_.endNs(), false);
+      return true;
+    }
+    if (zeroRefusedLog_.due(now))
+      LOG_MSG("ZERO_ESTIMATORS refused: %s (%lu refused since boot)\n", Safety::toString(result),
+              (unsigned long)zeroing_.refusedCount());
+    return false;
+  }
+
+  /// SET_STOP_ALTITUDE action (value already validated by the executor).
+  void setStopAltitude(float metres) override {
+    missionFreefallTask.setStopTargetAltitude(metres);
+    LOG_MSG("Stop altitude set to %.1f m\n", double(metres));
+  }
+
+  /// Drains the REQUEST inbox (comms task fills it): one executor decision and one REQUEST_ACK per copy, on the link
+  /// the request came from. At most RequestInbox::kSize per run, nothing blocks.
+  void handleRequests() {
+    Safety::RequestMsg m;
+    while (vehicleComms.popRequest(m)) {
+      const int64_t now = Core::NowNs();
+      Safety::RequestContext ctx;
+      ctx.sessionLatched = vehicleComms.network().commandIngress().sessionLatched();
+      ctx.latchedSession = vehicleComms.network().commandIngress().session();
+      ctx.interlockOpen = vehicleComms.motorInterlock().open(now);
+      ctx.committed = isCommitted(now);
+      const Safety::RequestResult r = requestExecutor_.handle(m, ctx, *this);
+      vehicleComms.sendRequestAck(m.link, m.src, m.reqId, r.status, r.detail);
+      if (!r.duplicate && (r.status != 0 || r.executed) && requestLog_.due(now))
+        LOG_MSG("REQUEST %u action %u from node %u: status %u detail %u\n", unsigned(m.reqId), unsigned(m.action),
+                unsigned(m.src), unsigned(r.status), unsigned(r.detail));
+    }
+  }
+
   void handleTelecommands() {
     if (!telecommandSubr.isDataNew())
       return; // No new telecommand data
@@ -1530,49 +1586,8 @@ public:
       handleCalibSave(telecommand);
       break;
 
-    case TelecommandType::Telecommand_ZeroEstimators: {
-      // One-shot ground action (safety.md section 2 rule 5): accepted only while initialised, disarmed, motors
-      // off and on the ground (mode Startup or Ready). The window ends on the vehicle's own timer.
-      Safety::ZeroRequestContext ctx;
-      ctx.initialised = allSystemsInitialised_;
-      ctx.armed = vehicleComms.motorInterlock().open(Core::NowNs()); // armed = interlock open (T9b-4)
-      ctx.motorsEnabled = starshipTVC.isMotorsEnabled();
-      // On the ground: no mode in which the vehicle can fly, and no mission active (since 2026-11-20 a SystemReset
-      // always returns the missions to Idle; the mission check stays as defence in depth).
-      const MissionMode mm = mission_->getMissionState().missionMode;
-      ctx.onGround = (vehicleMode_ == VehicleMode::VehicleMode_Startup ||
-                      vehicleMode_ == VehicleMode::VehicleMode_Ready) &&
-                     (mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished);
-      const int64_t now = Core::NowNs();
-      const auto result = zeroing_.request(telecommand.paramInt, telecommand.paramFloat, ctx, now);
-      if (Safety::accepted(result)) {
-        LOG_MSG("Estimator zeroing %s (%.1f s), keep the vehicle still\n", Safety::toString(result),
-                double(zeroing_.endNs() - now) / Core::SECONDS);
-        applyEstimatorZeroing();
-        startGyroRunForWindow(zeroing_.endNs(), false);
-      } else if (zeroRefusedLog_.due(now)) {
-        LOG_MSG("ZeroEstimators refused: %s (%lu refused since boot)\n", Safety::toString(result),
-                (unsigned long)zeroing_.refusedCount());
-      }
-      break;
-    }
-
-    case TelecommandType::Telecommand_SetStopAltitude: {
-      // Ground-only parameter of the freefall stop trigger (not persisted, no ack: the telemetry echoes it).
-      const int64_t now = Core::NowNs();
-      Safety::StopAltContext sc;
-      sc.interlockOpen = vehicleComms.motorInterlock().open(now);
-      sc.committed = isCommitted(now);
-      const auto res = Safety::decideSetStopAltitude(telecommand.paramFloat, sc);
-      if (res == Safety::StopAltResult::Accepted) {
-        missionFreefallTask.setStopTargetAltitude(telecommand.paramFloat);
-        LOG_MSG("Stop altitude set to %.1f m\n", double(telecommand.paramFloat));
-      } else if (stopAltRefusedLog_.due(now)) {
-        LOG_MSG("SetStopAltitude refused: %s\n", Safety::toString(res));
-      }
-      break;
-    }
-
+    case TelecommandType::Telecommand_ZeroEstimators:
+    case TelecommandType::Telecommand_SetStopAltitude:
     case TelecommandType::Telecommand_SystemReset:
     case TelecommandType::Telecommand_Arm:
     case TelecommandType::Telecommand_SimulationMode:
@@ -1584,7 +1599,7 @@ public:
       // limited. The port itself goes in T9b-5.
       removedTelecommands_++;
       if (removedTelecommandLog_.due(Core::NowNs()))
-        LOG_MSG("Telecommand %d ignored: removed in T9b-4, use the GS command state (%lu ignored since boot)\n",
+        LOG_MSG("Telecommand %d ignored: removed, use the GS command state or a REQUEST (%lu ignored since boot)\n",
                 int(telecommand.type), (unsigned long)removedTelecommands_);
       break;
 
