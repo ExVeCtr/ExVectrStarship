@@ -465,7 +465,7 @@ void test_cmd_telemetry_fields_and_cmd_applied() {
   const uint16_t want = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsUartFresh |
                         Packets::VehicleStatus::kCtrlFlagsSourceLatched | Packets::VehicleStatus::kCtrlFlagsGsFailsafeReq;
   TEST_ASSERT_EQUAL_HEX16(want, p.ctrl_flags);
-  TEST_ASSERT_EQUAL_UINT8(2, p.rc_rejected); // the source reject and the duplicate copy
+  TEST_ASSERT_EQUAL_UINT8(1, p.rc_rejected); // the source reject only; the duplicate copy is not counted
   auto a = roundTrip(makeCmdApplied(s));
   TEST_ASSERT_EQUAL_UINT(26, Packets::CmdApplied::kMaxSize);
   TEST_ASSERT_EQUAL_UINT8(0x84, Packets::CmdApplied::kPort);
@@ -482,7 +482,7 @@ void test_cmd_telemetry_fields_and_cmd_applied() {
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, a.usb_age);
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.245f, a.uart_age);
   TEST_ASSERT_EQUAL_UINT8(1, a.rejects[1]);
-  TEST_ASSERT_EQUAL_UINT8(1, a.rejects[3]);
+  TEST_ASSERT_EQUAL_UINT8(0, a.rejects[3]); // the duplicate copy is not a reject
   // no session: safe values, NaN ages, ctrl_source NONE, cmd_session 0
   CommandIngress t2;
   CmdIngressSnapshot c2;

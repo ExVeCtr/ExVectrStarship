@@ -22,8 +22,8 @@
  *          Result::sessionChanged before it feeds the frame to the mapper and the interlock);
  *        - otherwise a foreign session is rejected and MULTI_MASTER is set for kMultiMasterShowNs;
  *   4. the per-session sequence filter ((seq - last) mod 256 in 1..127, or the session was silent for
- *      kSeqResyncNs). An exact duplicate (same sequence, the copy on the other link) is counted as a reject
- *      (reason StaleSequence, "stale or duplicate") but refreshes the link freshness and the session silence timer.
+ *      kSeqResyncNs). An exact duplicate (same sequence, the copy on the other link) and a late copy are NOT rejects (counted in
+ *      the internal duplicates / lateCopies); a duplicate refreshes the link freshness and the session silence timer.
  *
  * Control failsafe rule (T9b-3 rule, new source; failsafeDue()): committed and no accepted state of the latched
  * session within kCtrlTimeoutNs. Not committed: never due (D2-B), the source only reads NONE.
@@ -74,6 +74,8 @@ struct CmdIngressSnapshot {
   int64_t foreignLastNs = 0;   ///< last rejected foreign-session frame
   uint8_t rejects[4] = {};     ///< wrapping counts per CmdReject
   uint8_t rejectedTotal = 0;   ///< wrapping count over all reasons
+  uint8_t lateCopies = 0;      ///< wrapping count of late copies (not a reject, internal, not on the wire)
+  uint8_t duplicates = 0;      ///< wrapping count of exact duplicates (not a reject, internal, not on the wire)
 
   /// Age of the last accepted state in ns, -1 if none.
   int64_t ageNs(int64_t nowNs) const { return (latched && seen) ? nowNs - lastRxNs : -1; }
