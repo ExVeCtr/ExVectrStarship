@@ -11,6 +11,7 @@
 #include "ExVectrCore/topic.hpp"
 #include "ExVectrCore/topic_subscribers.hpp"
 #include "../safety/landing_detector.hpp"
+#include "../safety/rth_altitude.hpp"
 #include "mission_abstract.hpp"
 
 namespace VCTR {
@@ -48,6 +49,7 @@ private:
 
   Math::Vector<float, 3> homePosition_ = {
       0, 0, 1}; // The home position of the vehicle in reference frame.
+  float returnAltitude_ = 3; // z of the return point of this run (Safety::rthReturnAltitude, set at the start)
   float translationVelocity_ =
       2; // The translation velocity of the vehicle in m/s.
 
@@ -129,8 +131,9 @@ public:
     positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
     positionSetpoint_(1) = 0;
     positionSetpoint_(2) = 0;
-    LOG_MSG("Started mission ReturnToHome. Hot starting the mission "
-            "immedietly\n"); // Log the mission start
+    returnAltitude_ = Safety::rthReturnAltitude(positionSetpoint_(5), true, homePosition_(2));
+    LOG_MSG("Started mission ReturnToHome (return altitude %.2f m). Hot starting the mission "
+            "immedietly\n", double(returnAltitude_)); // Log the mission start
     missionStartup();
   };
 
@@ -279,8 +282,9 @@ private:
     case RunningState::RunningState_Translation:
 
     {
+      const Math::Vector<float, 3> returnPoint = {homePosition_(0), homePosition_(1), returnAltitude_};
       auto travelDistance =
-          homePosition_ -
+          returnPoint -
           positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the
                                             // home position in reference frame
       auto travelDistanceMag =
@@ -321,7 +325,7 @@ private:
       // flapSettings_.brAngle = 90;
 
       auto distance =
-          homePosition_ -
+          returnPoint -
           positionIs_.block<3, 1>(
               3); // Get the distance to the home position in reference frame
 
