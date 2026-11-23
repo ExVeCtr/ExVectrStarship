@@ -410,8 +410,17 @@ private:
     li.rangeValid = rangeValid;
     li.rangeM = groundDistance;
     li.nowNs = Core::NowNs();
-    if (landingDetector_.update(li))
+    if (landingDetector_.update(li)) {
+      // Loud: a landing shuts the motors off without a failsafe flag. Above 0.4 m it should be impossible.
+      if (li.altitudeM > Safety::kLandingTrackingMaxAltitudeM) {
+        LOG_MSG("WARNING: LANDING declared at %.2f m altitude (cue %s)\n", li.altitudeM,
+                Safety::LandingDetector::cueName(landingDetector_.lastCue()));
+      } else {
+        LOG_MSG("Landing declared at %.2f m altitude (cue %s)\n", li.altitudeM,
+                Safety::LandingDetector::cueName(landingDetector_.lastCue()));
+      }
       missionState_.missionMode = MissionMode::MissionMode_Finished; // Go to landed mode (motors off in missionLanded)
+    }
 
     // LOG_MSG("Descent mode. Position: (%f, %f, %f)\n", positionSetpoint_(3),
     // positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start
