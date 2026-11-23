@@ -184,12 +184,14 @@ static void test_entry_init_holds_heading_and_leaving_resets() {
   // Acsent first: nothing runs, guidance memory pristine.
   c.step(Mode::BellyFlopMode_Acsent, homeTarget(), pos, true, att);
   TEST_ASSERT_FALSE(c.ctrl.status().active);
-  // Entry: heading setpoint = the nose heading at entry, entry hold (split -20 deg), nothing blows up.
+  // Entry: the guidance is active from the first tick: heading setpoint towards home (bearing of (-20,-5) from the
+  // origin, atan2(-5,-20)), entry hold (split -20 deg), nothing blows up.
   auto f = c.step(Mode::BellyFlopMode_Descent, homeTarget(), pos, true, att);
   TEST_ASSERT_TRUE(c.ctrl.status().active);
   float a[7];
   for (int i = 0; i < 7; i++) a[i] = att(i);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4f, D::bellyAttitude(a).heading, c.ctrl.status().headingSp_rad);
+  (void)a;
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, atan2f(-5.0f, -20.0f), c.ctrl.status().headingSp_rad);
   for (float v : {f.flapTLAngle_Rad, f.flapTRAngle_Rad, f.flapBLAngle_Rad, f.flapBRAngle_Rad}) {
     TEST_ASSERT_TRUE(isfinite(v));
     TEST_ASSERT_TRUE(v >= 14.9f * kDeg && v <= 90.1f * kDeg);
@@ -207,7 +209,8 @@ static void test_entry_init_holds_heading_and_leaving_resets() {
   const Vector<float, 7> att2 = attOf(Quat_F(Vector_F{0, 0, 1}, -2.0f) * bellyDown(0));
   c.step(Mode::BellyFlopMode_Descent, homeTarget(), pos, true, att2);
   for (int i = 0; i < 7; i++) a[i] = att2(i);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4f, D::bellyAttitude(a).heading, c.ctrl.status().headingSp_rad);
+  (void)a;
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, atan2f(-5.0f, -20.0f), c.ctrl.status().headingSp_rad);
   TEST_ASSERT_TRUE(c.ctrl.memory().elapsed_s < 0.05f);
 }
 
@@ -342,13 +345,14 @@ static void test_nan_attitude_gives_neutral_flaps() {
 static float stopAltitude(float vz) { return 0.5f * vz * vz / (14.0f / 1.1f - 9.81f) + 20.0f; }
 
 struct Scn {
-  float offset = 3, betaDeg = 0, headingErrDeg = 180, wind = 0;
+  float offset = 3, betaDeg = 0, headingErrDeg = 180, wind = 0, z0 = 120;
   uint32_t seed = 3;
   bool noise = false;
 };
 struct Res {
   float miss = 0, vhEnd = 0, zEnd = 0, tEnd = 0, bellyMax = 0;
   float lateHeadErrMax = 0;  ///< max |nose heading - heading setpoint| over the last 5 s, deg
+  float spEarlyDeg = 999;    ///< heading setpoint 0.4 s into the Descent (inside the entry hold), deg
   float lateHeadSpSpan = 0;  ///< max-min of the heading setpoint over the last 5 s, deg
   int lateHeadSwings = 0;    ///< sign changes of the heading error between excursions beyond +-10 deg, last 5 s
   int bottomReversals = 0;   ///< sign changes (both sides > 10 deg) of the bottom flap differential after 4 s
@@ -371,7 +375,7 @@ static Res runWired(const Scn &sc) {
   Vector<float, 7> a0 = attOf(q);
   a0(1) = 0.3f;
   m.setAttitudeState(a0);
-  m.setPositionState({3.6f * cosf(psi0), 3.6f * sinf(psi0), 0, px, py, 120});
+  m.setPositionState({3.6f * cosf(psi0), 3.6f * sinf(psi0), 0, px, py, sc.z0});
   if (sc.wind > 0) m.setWind(sc.wind, rng.uni() * 2 * kPi);
   GaussMarkov np[3], nv[3], nh;
   for (int i = 0; i < 3; i++) {
@@ -451,6 +455,7 @@ static Res runWired(const Scn &sc) {
       if (getenv("WIRING_TRACE") && i % 25 == 0)
         printf("WIRING trace t %5.2f z %6.1f x %+6.1f y %+6.1f head %+6.1f sp %+6.1f split %+5.1f belly %3.0f flaps %2.0f %2.0f %2.0f %2.0f\n", t, m.positionState()(5), m.positionState()(3), m.positionState()(4), b.heading / kDeg, sp, chain.ctrl.status().pitchSplit_rad / kDeg, b.belly / kDeg, cmd[0] / kDeg, cmd[1] / kDeg, cmd[2] / kDeg, cmd[3] / kDeg);
     }
+    if (r.spEarlyDeg == 999 && t >= 1.0f && descent) r.spEarlyDeg = chain.ctrl.status().headingSp_rad / kDeg; // t = 1.0 s (descent 0.5 s)
     if (i == maxSteps - 1) r.timeout = true;
   }
   float mn = 1e9f, mx = -1e9f;
@@ -508,19 +513,36 @@ static void runMatrix(bool noise) {
         // a late setpoint change from the position noise is not an oscillation; seen worst: 38 deg).
         if (noise) {
           TEST_ASSERT_TRUE(r.lateHeadSwings <= 1); // worst seen: 1 (position noise at the end of the funnel)
-          TEST_ASSERT_TRUE(r.lateHeadErrMax < 45.0f);
+          TEST_ASSERT_TRUE(r.lateHeadErrMax < 60.0f); // was 45 before the guidance ran in the entry hold (worst now 53.5)
         } else { // the bench condition (simulator states, no estimator noise): the design acceptance
           TEST_ASSERT_EQUAL_INT(0, r.lateHeadSwings);
           TEST_ASSERT_TRUE(r.lateHeadErrMax < 10.0f);
         }
         TEST_ASSERT_TRUE(r.bellyMax < 35.0f);
-        TEST_ASSERT_TRUE(r.bottomReversals <= 2);
+        // Noisy: the setpoint now follows from the first tick (no 1.5 s hold), near home it chases the position noise
+        // (worst seen 4); clean: the design acceptance.
+        TEST_ASSERT_TRUE(r.bottomReversals <= (noise ? 4 : 2));
         worst = std::max(worst, r.miss);
         n++;
       }
   printf("WIRING %s matrix: %d runs, worst miss %.2f m\n", noise ? "noisy" : "clean", n, worst);
 }
 
+/// The guidance steers from the first tick of the Descent at any altitude (owner 2026-11-23, "also above 100 m"): from a
+/// 150 m and a 120 m apogee, 30 m South of home with the nose South, the heading setpoint already points home (North, 0
+/// deg) inside the entry hold (before the fix it was held at the nose heading, 180 deg, for 1.5 s), and the ship
+/// reaches the stop altitude within 3 m of home.
+static void test_guidance_active_from_start_any_altitude() {
+  for (float z0 : {150.0f, 120.0f}) {
+    Scn sc;
+    sc.offset = 30, sc.z0 = z0;
+    Res r = runWired(sc);
+    print("high", sc, r);
+    TEST_ASSERT_TRUE(fabsf(wrapDeg(r.spEarlyDeg)) < 20.0f);
+    TEST_ASSERT_FALSE(r.timeout);
+    TEST_ASSERT_TRUE(r.miss < 3.0f);
+  }
+}
 static void test_closed_loop_offsets_clean() { runMatrix(false); }
 static void test_closed_loop_offsets_with_noise() { runMatrix(true); }
 
@@ -580,6 +602,7 @@ int main(int, char **) {
   RUN_TEST(test_invalid_position_falls_straight);
   RUN_TEST(test_recovery_after_invalid);
   RUN_TEST(test_nan_attitude_gives_neutral_flaps);
+  RUN_TEST(test_guidance_active_from_start_any_altitude);
   RUN_TEST(test_closed_loop_owner_case);
   RUN_TEST(test_closed_loop_offsets_clean);
   RUN_TEST(test_closed_loop_offsets_with_noise);
