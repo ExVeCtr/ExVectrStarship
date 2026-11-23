@@ -106,6 +106,7 @@ public:
   static constexpr int64_t kCtrlTimeoutNs = 2000000000LL;   ///< T_ctrl: fresh = at most 2 s old
   static constexpr int64_t kSessionSilentNs = 1000000000LL; ///< the latched session must be silent this long
   static constexpr int64_t kSeqResyncNs = 1000000000LL;     ///< a silent session resyncs its sequence
+  static constexpr uint8_t kLateCopyFrames = 16;           ///< a copy up to this many frames behind refreshes the link age only
   static constexpr int64_t kMultiMasterShowNs = 2000000000LL;
 
   struct Result {

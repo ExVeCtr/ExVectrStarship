@@ -103,6 +103,21 @@ void test_per_link_freshness_is_information_only() {
   TEST_ASSERT_FALSE(t->failsafeDue(now, true)); // one dead link changes nothing
 }
 
+void test_late_radio_copy_refreshes_the_uart_link_age() {
+  // USB copy leads, the UART copy arrives 2 frames (80 ms) later: stale for acceptance, but the UART link is alive.
+  t->onFrame(0, CmdLink::Usb, 10, frame(), 1 * S);
+  t->onFrame(0, CmdLink::Usb, 11, frame(), 1 * S + 40 * MS);
+  t->onFrame(0, CmdLink::Usb, 12, frame(), 1 * S + 80 * MS);
+  TEST_ASSERT_FALSE(t->onFrame(0, CmdLink::Uart, 10, frame(), 1 * S + 90 * MS).accepted);
+  const CmdIngressSnapshot &s = t->live();
+  TEST_ASSERT_TRUE(s.linkSeen[static_cast<size_t>(CmdLink::Uart)]);
+  TEST_ASSERT_EQUAL_INT64(10 * MS, s.linkAgeNs(CmdLink::Uart, 1 * S + 100 * MS));
+  // A copy far behind (replay) does not refresh the link.
+  t->onFrame(0, CmdLink::Usb, 100, frame(), 1 * S + 120 * MS);
+  t->onFrame(0, CmdLink::Uart, 50, frame(), 1 * S + 130 * MS);
+  TEST_ASSERT_EQUAL_INT64(50 * MS, t->live().linkAgeNs(CmdLink::Uart, 1 * S + 140 * MS)); // still the 1.090 s copy
+}
+
 void test_sequence_stale_rejected_and_wraps() {
   t->onFrame(0, CmdLink::Uart, 250, frame(), 1 * S);
   TEST_ASSERT_FALSE(t->onFrame(0, CmdLink::Uart, 249, frame(), 1 * S + 10 * MS).accepted); // older
@@ -336,6 +351,7 @@ int main() {
   RUN_TEST(test_per_link_copies_are_deduped);
   RUN_TEST(test_duplicates_refresh_the_link_age_not_the_state_age);
   RUN_TEST(test_per_link_freshness_is_information_only);
+  RUN_TEST(test_late_radio_copy_refreshes_the_uart_link_age);
   RUN_TEST(test_sequence_stale_rejected_and_wraps);
   RUN_TEST(test_sequence_resync_after_silence);
   RUN_TEST(test_session_survives_its_own_resync_without_changing);
