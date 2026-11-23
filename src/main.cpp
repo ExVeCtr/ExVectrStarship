@@ -358,7 +358,9 @@ private:
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 3>>> magSubr;
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 1>>> baroSubr;
 
-  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr;
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr; // isDataNew() used by systemsInitialised: only that path may call getItem()
+  // Own subscriber for every other read of the position (getItem() clears isDataNew, see codebase-structure.md).
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posPeekSubr_;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 2>>> groundRestSubr_; // range for GroundRest
   Safety::GroundRest groundRest_;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attEstSubr;
@@ -753,7 +755,7 @@ public:
     const MissionMode mm = mission_->getMissionState().missionMode;
     g.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
     {
-      const auto &pe = posEstSubr.getItem();
+      const auto &pe = posPeekSubr_.getItem();
       const auto &gr = groundRestSubr_.getItem();
       const bool posFresh = pe.timestamp != 0 && now - pe.timestamp < 500 * Core::MILLISECONDS;
       const bool rangeFresh = gr.timestamp != 0 && now - gr.timestamp < 100 * Core::MILLISECONDS;
@@ -767,7 +769,7 @@ public:
   /// SA released while a chain is pending or Running: the abort decision, every tick (idempotent). On the ground it
   /// is reset and stop, in flight RTH (user decision 2026-11-20, docs/project/missions.md 6.2). Never clears a latch.
   void applyAbort() {
-    const auto pos = posEstSubr.getItem().data;
+    const auto pos = posPeekSubr_.getItem().data;
     Safety::AbortInput in;
     in.vehicleRunning = vehicleMode_ == VehicleMode::VehicleMode_Running;
     in.active = activeMissionKind();
@@ -1041,6 +1043,7 @@ public:
     magSubr.subscribe(magTransformTopic.getOutputTopic());
     baroSubr.subscribe(bme.getBaroTopic());
     posEstSubr.subscribe(positionTopicSwitch.getTopic());
+    posPeekSubr_.subscribe(positionTopicSwitch.getTopic());
     groundRestSubr_.subscribe(groundTopicSwitch.getTopic());
     attEstSubr.subscribe(attitudeTopicSwitch.getTopic());
 
@@ -1238,7 +1241,7 @@ public:
     chainIn.nextIsBellyflop = (mission_->nextMission() == &missionBellyflop);
     chainIn.activeCancelled =
         (mission_ == &missionWaypointTask && missionWaypointTask.endReason() == MissionWaypoint::EndReason::Cancelled);
-    chainIn.altitudeM = posEstSubr.getItem().data(5);
+    chainIn.altitudeM = posPeekSubr_.getItem().data(5);
     const bool chainWasPending = missionChain_.pending();
 
     switch (missionChain_.step(chainIn)) {

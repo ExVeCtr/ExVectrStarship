@@ -75,6 +75,7 @@ Rules of thumb:
 - Attitude state: `Vector<float,7>` = `[ωx, ωy, ωz, qw, qx, qy, qz]`. The quaternion rotates body → reference (`q.rotate(v_body) = v_ref`).
 - Position state: `Vector<float,6>` = `[Vx, Vy, Vz, Px, Py, Pz]` in the reference frame (velocity first).
 - SI units throughout (m, m/s, rad, rad/s, N, N·m, Pa). Exception: magnetometer units are inconsistent between drivers; see [libs/ExVectrSensor.md](libs/ExVectrSensor.md).
+- **`Simple_Subscriber::getItem()` clears `isDataNew()`** (ExVectrCore). A subscriber whose `isDataNew()` is checked somewhere (for example `posEstSubr`/`attEstSubr`/`gyroSubr` in `systemsInitialised()`, the missions' `posSubr_`, `ctrlSubr_` in the flaps and TVC) must only be read with `getItem()` by that code. Any other reader subscribes its own `Simple_Subscriber` to the same topic (for example `posPeekSubr_`, `groundRestSubr_` in main.cpp). Bug 2026-11-23: a new `getItem()` on `posEstSubr` in the command path kept the vehicle in Startup ("Position data not new"). Test: `test/test_subscriber_newflag`.
 - Naming: namespaces `VCTR::{Core,HAL,Platform,Math,DSP,CTRL,SNSR,ACTR,Net,Data}`; members end in `_`; units as suffixes where ambiguous (`angle_Rad`, `thrust_N`).
 
 ## Data flow (topic graph)
