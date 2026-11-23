@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "sim_lidar.hpp"
 #include "ExVectrActuator/pwm_output.hpp"
 #include "ExVectrActuator/servo_control.hpp"
 #include "ExVectrArduinoPlatform.hpp"
@@ -283,6 +284,7 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 7>>>
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>>
     positionTopicSwitch;
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 2>>> groundTopicSwitch;
+SimLidar simLidar; // simulated ground distance source (only below kSimLidarMaxRangeM)
 
 
 MissionRTH defaultMission_(
@@ -860,7 +862,8 @@ public:
     if (simulationMode_) {
       positionTopicSwitch.subscribe(bodySimulator.getStateEstTopic());      // body simulator position
       attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic());   // body simulator attitude
-      groundTopicSwitch.subscribe(bodySimulator.getGroundTopic());          // body simulator ground distance
+      simLidar.subscribe(bodySimulator.getGroundTopic());                   // simulated lidar from the body simulator height
+      groundTopicSwitch.subscribe(simLidar.topic());                        // valid only below kSimLidarMaxRangeM
       bodySimulator.resetToStartPose(); // upright, at the origin, at rest
       bodySimulator.clearWind();        // every simulation starts without wind and gusts (SimWind*/SimGust* set them)
       bodySimulator.setPaused(false);   // Unpause the body simulator to start the simulation
@@ -2153,7 +2156,7 @@ public:
     }
 
     const auto &ground = groundSubr_.getItem();
-    s.groundDistance = ground.timestamp != 0 ? ground.data(1) : NAN;
+    s.groundDistance = (ground.timestamp != 0 && Core::NowNs() - ground.timestamp < 100 * Core::MILLISECONDS) ? ground.data(1) : NAN; // stale = no reading
 
     const auto &flaps = flapSubr_.getItem();
     s.flaps[0] = flaps.flapTLAngle_Rad;

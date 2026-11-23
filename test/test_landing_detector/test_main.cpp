@@ -2,6 +2,8 @@
 #include <unity.h>
 
 #include "safety/landing_detector.hpp"
+#include "ExVectrCore/topic_subscribers.hpp"
+#include "sim_lidar.hpp"
 
 using namespace VCTR::Safety;
 
@@ -98,6 +100,41 @@ void test_nonfinite_inputs_never_land() {
   TEST_ASSERT_FALSE(run(d, in, 0, 5000 * kMs));
 }
 
+void test_sim_lidar_validity() {
+  float d = -1;
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, VCTR::kSimLidarMaxRangeM);
+  TEST_ASSERT_TRUE(VCTR::simLidarReading(0.8f, d));
+  TEST_ASSERT_EQUAL_FLOAT(0.8f, d);
+  TEST_ASSERT_FALSE(VCTR::simLidarReading(1.0f, d));
+  TEST_ASSERT_FALSE(VCTR::simLidarReading(1.5f, d));
+  TEST_ASSERT_FALSE(VCTR::simLidarReading(NAN, d));
+}
+
+void test_sim_lidar_topic_publishes_only_below_range() {
+  VCTR::SimLidar lidar;
+  VCTR::Core::Topic<VCTR::Core::Timestamped<VCTR::Math::Vector<float, 2>>> src;
+  lidar.subscribe(src);
+  VCTR::Core::Simple_Subscriber<VCTR::Core::Timestamped<VCTR::Math::Vector<float, 2>>> sink;
+  sink.subscribe(lidar.topic());
+  VCTR::Core::Timestamped<VCTR::Math::Vector<float, 2>> in;
+  in.timestamp = 5;
+  in.data = {0.0f, 1.5f};
+  src.publish(in);
+  TEST_ASSERT_EQUAL_INT64(0, sink.getItem().timestamp); // nothing published = no reading
+  in.data = {0.0f, 0.8f};
+  src.publish(in);
+  TEST_ASSERT_EQUAL_FLOAT(0.8f, sink.getItem().data(1));
+}
+
+void test_sim_tilted_rest_lands_with_sim_lidar() {
+  LandingDetector d;
+  float r = 0;
+  TEST_ASSERT_TRUE(VCTR::simLidarReading(0.06f, r)); // resting tilted, true height 6 cm
+  LandingInput in;
+  in.altitudeM = 0.06f; in.rangeValid = true; in.rangeM = r; in.trackingErrorM = 0.3f;
+  TEST_ASSERT_TRUE(run(d, in, 0, 500 * kMs));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_air_hover_never_landed);
@@ -108,5 +145,8 @@ int main() {
   RUN_TEST(test_range_invalid_does_not_trigger_or_block);
   RUN_TEST(test_bounce_restarts_timers);
   RUN_TEST(test_nonfinite_inputs_never_land);
+  RUN_TEST(test_sim_lidar_validity);
+  RUN_TEST(test_sim_lidar_topic_publishes_only_below_range);
+  RUN_TEST(test_sim_tilted_rest_lands_with_sim_lidar);
   return UNITY_END();
 }

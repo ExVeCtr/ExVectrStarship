@@ -461,3 +461,9 @@ In `Acsent` mode the flap controller commands 90° (retracted) unless extend is 
 `src/safety/landing_detector.hpp` (pure, host tests `test/test_landing_detector`). Constants: `kLandingMaxAltitudeM` 1.5, `kLandingMaxRangeM` 1.0, `kLandingRangeContactM` 0.10, `kLandingTrackingErrorM` 0.2, `kLandingContactSpeed` 0.5, `kLandingContactVz` 0.2, hold times 0.3 s (range) and 2 s (tracking). Range valid = estimate fresh (< 100 ms), covariance < 7, value > -0.02 m. On landed the mission goes to Finished, `missionLanded` disables actuators and sets `missionEnd_` exactly as before (interlock gate untouched; D12 treats Running + Finished + interlock closed as on the ground).
 
 Owner simulation bench check: run an RTH in simulation and let the body come to rest tilted on the ground with thrust on. Expected: within about 2 s (0.3 s with range) the motors go off, the mission ends and the mode is on the ground. Also check that a hover at 1 to 3 m or a slow RTH descent is NOT declared landed.
+
+### Simulated ground distance (lidar)
+
+In simulation mode the ground distance topic is fed by `SimLidar` (`src/sim_lidar.hpp`) instead of the VL53L0X path; only the source is switched (`groundTopicSwitch` in main.cpp), consumers have no simulation checks. The body simulator's height above flat ground (position reference) is republished as the measured distance only below `kSimLidarMaxRangeM` = 1.0 m; at 1.0 m or more nothing is published, the topic goes stale and the landing detector (range valid needs < 100 ms) and telemetry (`ground_distance` = NaN when older than 100 ms) see no reading, like the real sensor out of range. No noise. The covariance still comes from the real estimator topic. The GS shows it as "Ground distance".
+
+Owner simulation bench check: in simulation, hover at 0.8 m: ground distance reads 0.8 in the GS. At 1.5 m the field shows none. A tilted landing ends with motors off and mode on the ground.
