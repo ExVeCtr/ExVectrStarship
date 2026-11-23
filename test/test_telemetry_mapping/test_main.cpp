@@ -8,6 +8,7 @@
 #include <initializer_list>
 
 #include "comms/telemetry_mapping.hpp"
+#include "safety/stop_altitude.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Comms;
@@ -251,6 +252,27 @@ void test_air_mission() {
   p = roundTrip(makeAirMission(s));
   TEST_ASSERT_EQUAL_UINT8(255, p.waypoint);
   TEST_ASSERT_FLOAT_WITHIN(1e-2f, 327.67f, p.setpoint_vel[0]);
+}
+
+void test_mission_flip_start_and_stop_altitude() {
+  TelemetrySnapshot s = sample();
+  // Not in the freefall phase: flip start NaN (sentinel), stop altitude echo always present (default 20 m).
+  s.flipStartAltitudeM = Safety::flipStartAltitude(false, 96.0f);
+  auto am = roundTrip(makeAirMission(s));
+  auto m = roundTrip(makeMission(s));
+  TEST_ASSERT_TRUE(isnan(am.flip_start_altitude));
+  TEST_ASSERT_TRUE(isnan(m.flip_start_altitude));
+  TEST_ASSERT_FLOAT_WITHIN(0.06f, 20.0f, am.stop_altitude);
+  TEST_ASSERT_EQUAL_FLOAT(20.0f, m.stop_altitude);
+  // Freefall phase active: the trigger threshold, 0.1 m resolution on air, exact on USB.
+  s.stopAltitudeM = 35.0f;
+  s.flipStartAltitudeM = Safety::flipStartAltitude(true, 96.37f);
+  am = roundTrip(makeAirMission(s));
+  m = roundTrip(makeMission(s));
+  TEST_ASSERT_FLOAT_WITHIN(0.06f, 96.4f, am.flip_start_altitude);
+  TEST_ASSERT_EQUAL_FLOAT(96.37f, m.flip_start_altitude);
+  TEST_ASSERT_FLOAT_WITHIN(0.06f, 35.0f, am.stop_altitude);
+  TEST_ASSERT_EQUAL_FLOAT(35.0f, m.stop_altitude);
 }
 
 void test_pose_full_precision() {
@@ -555,7 +577,7 @@ void test_actuators_roll_torque_and_mission_fields() {
   h.push(makeActuatorSample(s));
   TEST_ASSERT_FLOAT_WITHIN(0.00001f, a.roll_torque, makeAirActuators(h).roll_torque[0]);
   // MISSION.mission_mode / waypoint exactly as AIR_MISSION
-  TEST_ASSERT_EQUAL_UINT(52, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(60, Packets::Mission::kMaxSize);
   s.waypointIndex = 2;
   auto m = roundTrip(makeMission(s));
   auto am = roundTrip(makeAirMission(s));
@@ -889,7 +911,7 @@ void test_mission_setpoint_q_encoding() {
   m = roundTrip(makeMission(s));
   for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(q[i], m.setpoint_q[i]);
   uint8_t buf[Packets::AirMission::kMaxSize];
-  TEST_ASSERT_EQUAL_UINT(38, makeAirMission(s).encode(buf, sizeof buf));
+  TEST_ASSERT_EQUAL_UINT(42, makeAirMission(s).encode(buf, sizeof buf));
   const int16_t want[4] = {16384, 16384, -16384, 16384}; // 16383.5 rounds away from zero
   for (int i = 0; i < 4; i++) {
     const int16_t raw = int16_t(uint16_t(buf[30 + 2 * i]) | (uint16_t(buf[31 + 2 * i]) << 8));
@@ -914,8 +936,8 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(38, Packets::AirMission::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(52, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(42, Packets::AirMission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(60, Packets::Mission::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(22, Packets::AirGnss::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(10, Packets::AirGnssInfo::kMaxSize);
   TEST_ASSERT_EQUAL_UINT16(25, Packets::AirPose::kAirRateHz);
@@ -924,7 +946,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0xF1941A87u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x0E1E8CABu, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -959,6 +981,7 @@ int main() {
   RUN_TEST(test_air_actuators_two_samples);
   RUN_TEST(test_air_actuators_saturation_and_nan);
   RUN_TEST(test_air_mission);
+  RUN_TEST(test_mission_flip_start_and_stop_altitude);
   RUN_TEST(test_attitude_setpoint_selection);
   RUN_TEST(test_attitude_setpoint_sanitize);
   RUN_TEST(test_flap_pointing_setpoint);

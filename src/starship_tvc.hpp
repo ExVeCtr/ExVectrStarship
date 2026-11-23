@@ -35,6 +35,7 @@ private:
   float actualThrustMag = 0.0f;
   float actualTwistAngle = 0.0f;
   Core::Topic<Math::Vector<float, 4>> tvcActualThrustTopic_;
+  Core::Topic<Math::Vector<float, 4>> tvcSimThrustTopic_; // same as above, zero while the motor gate is closed
 
   Core::Simple_Subscriber<Math::Vector<float, 4>> ctrlSubr_;
 
@@ -140,6 +141,15 @@ public:
    */
   Core::Topic<Math::Vector<float, 4>> &getTVCActualThrustTopic() {
     return tvcActualThrustTopic_;
+  }
+
+  /**
+   * @brief Thrust vector for the body simulator only (owner decision 2026-11-23): the modelled actual thrust, but zero
+   * while the motor gate output is closed (motors disarmed: no pulses, no thrust, no vane force). The telemetry topic
+   * above is unchanged.
+   */
+  Core::Topic<Math::Vector<float, 4>> &getTVCSimThrustTopic() {
+    return tvcSimThrustTopic_;
   }
 
   void enableMotors(bool enable) { enableMotors_ = enable; }

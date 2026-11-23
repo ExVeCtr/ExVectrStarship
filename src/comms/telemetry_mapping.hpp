@@ -70,6 +70,8 @@ struct TelemetrySnapshot {
   // Mission
   float setpoint[6] = {0, 0, 0, 0, 0, 0}; ///< [Vx, Vy, Vz, Px, Py, Pz]
   int64_t missionTime_ns = 0;
+  float stopAltitudeM = 20.0f;        ///< stop altitude parameter of the freefall mission (always sent)
+  float flipStartAltitudeM = NAN;     ///< getStopAltitude() while the freefall phase is active, else NaN
   uint8_t waypointIndex = 0xFF; ///< current waypoint of the waypoint mission, 0xFF = another mission is active
   /// Attitude setpoint of the active attitude controller, [w,x,y,z] body -> world (NWU). All 0 = none
   /// (attitudeSetpoint()).

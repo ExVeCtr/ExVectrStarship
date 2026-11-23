@@ -393,6 +393,8 @@ Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
   p.phase = static_cast<uint8_t>(s.missionPhase);
   p.index = s.missionIndex;
   p.waypoint = s.waypointIndex;
+  p.flip_start_altitude = s.flipStartAltitudeM;
+  p.stop_altitude = s.stopAltitudeM;
   copy3(&s.setpoint[3], p.setpoint_pos);
   copy3(&s.setpoint[0], p.setpoint_vel);
   for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
@@ -410,6 +412,8 @@ Packets::Mission makeMission(const TelemetrySnapshot &s) {
   for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
   p.mission_mode = static_cast<uint8_t>(s.missionMode); // as AIR_MISSION
   p.waypoint = s.waypointIndex;                         // 255 = not the waypoint mission
+  p.flip_start_altitude = s.flipStartAltitudeM;
+  p.stop_altitude = s.stopAltitudeM;
   return p;
 }
 

@@ -46,6 +46,7 @@
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
+#include "safety/stop_altitude.hpp"
 #include "telemetry.hpp"
 #include "ublox_gnss.hpp"
 #include "vl53l0x/vl53l0x_driver.hpp"
@@ -283,7 +284,7 @@ MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(),
                                     positionTopicSwitch.getTopic());
 MissionFreefall missionFreefallTask(attitudeTopicSwitch.getTopic(),
                                     positionTopicSwitch.getTopic(),
-                                    VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, 20);
+                                    VEHICLE_MASS_KG, TVC_THRUST_LIMIT_N, Safety::kStopAltitudeDefaultM);
 // Kick timing, triggers, target and thrust limit: src/safety/bellyflop_kick.hpp.
 MissionBellyflop missionBellyflop(attitudeTopicSwitch.getTopic(),
                                   controlAttitudeTvc, controlMappingAccToAtt);
@@ -378,6 +379,7 @@ private:
   bool calibGyroValid_ = false, calibAccelValid_ = false, calibMagValid_ = false;
   bool calibSessionActive_ = false, readyToArm_ = false;
   Safety::LogRateLimit zeroRefusedLog_{1 * Core::SECONDS};
+  Safety::LogRateLimit stopAltRefusedLog_{2 * Core::SECONDS};
   Safety::LogRateLimit zeroBlockedLog_{1 * Core::SECONDS};
   bool missionZeroing_ = false;
   bool zeroingApplied_ = false;
@@ -1519,6 +1521,23 @@ public:
       break;
     }
 
+    case TelecommandType::Telecommand_SetStopAltitude: {
+      // Ground-only parameter of the freefall stop trigger (not persisted, no ack: the telemetry echoes it).
+      const int64_t now = Core::NowNs();
+      Safety::StopAltContext sc;
+      sc.interlockOpen = vehicleComms.motorInterlock().open(now);
+      sc.motorsEnabled = starshipTVC.isMotorsEnabled();
+      sc.committed = isCommitted(now);
+      const auto res = Safety::decideSetStopAltitude(telecommand.paramFloat, sc);
+      if (res == Safety::StopAltResult::Accepted) {
+        missionFreefallTask.setStopTargetAltitude(telecommand.paramFloat);
+        LOG_MSG("Stop altitude set to %.1f m\n", double(telecommand.paramFloat));
+      } else if (stopAltRefusedLog_.due(now)) {
+        LOG_MSG("SetStopAltitude refused: %s\n", Safety::toString(res));
+      }
+      break;
+    }
+
     case TelecommandType::Telecommand_SystemReset:
     case TelecommandType::Telecommand_Arm:
     case TelecommandType::Telecommand_SimulationMode:
@@ -1945,7 +1964,7 @@ public:
             angle = -40;
           starshipFlopSetting.azimuthAngle_Rad = -azimuthTowardsZero;
           starshipFlopSetting.pitchAngle_Rad = (angle + 20) * DEGREES;
-        } else if (posEst(2) < missionFreefallTask.getStopAltitude() + 20) {
+        } else if (Safety::freefallTiltBackStage(posEst(2), missionFreefallTask.getStopAltitude())) {
           starshipFlopSetting.pitchAngle_Rad = 30 * DEGREES;
         }
       } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
@@ -2035,6 +2054,10 @@ public:
     s.waypointIndex = vt.getCurrentMission() == &missionWaypointTask
                           ? static_cast<uint8_t>(missionWaypointTask.currentWaypointIndex())
                           : uint8_t(0xFF);
+    s.stopAltitudeM = missionFreefallTask.getStopTargetAltitude();
+    s.flipStartAltitudeM = Safety::flipStartAltitude(vt.getCurrentMission() == &missionFreefallTask &&
+                                                         missionFreefallTask.flipPhaseActive(),
+                                                     missionFreefallTask.getStopAltitude());
     s.zeroing = vt.estimatorZeroingActive();
     vt.fillTelemetryCache(s);
 
@@ -2742,7 +2765,7 @@ void initialiseTopicConnections() {
   starshipFlaps.setSimulationFlag(vehicleSafetyAndControlTask.simulationFlag()); // gate of the sim-only flap faults
 
   bodySimulator.setPaused(true);
-  bodySimulator.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(),
+  bodySimulator.setTVCInputTopic(starshipTVC.getTVCSimThrustTopic(),
                                  Math::Vector<float, 3>({0, 0, -0.35}),
                                  TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N);
   bodySimulator.setFlapSettingInputTopic(trueFlapSettingTopic);

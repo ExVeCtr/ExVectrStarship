@@ -1,3 +1,4 @@
+#include "safety/motor_enable.hpp"
 #include "starship_tvc.hpp"
 
 #include "ExVectrActuator/pwm_output.hpp"
@@ -223,7 +224,7 @@ void StarshipTVC::taskThread() {
   // Lets update the actual thrust vector with what we expect to get from the
   // motors and servos. This is used for telemetry and simulation purposes.
   Math::Vector<float, 4> actualThrustVector = 0;
-  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) { // thrust model: independent of the gate (D16 rejected)
+  if (enableActuators_ && actuatorTestState_ == ActuatorTestingState::Idle) { // telemetry thrust model: independent of the gate; the simulator gets the gated copy
     auto thrustVector = tvcVector.normalize() * (motorCWOut + motorCCWOut) / 2 *
                         tvcThrustLimit_N_;
 
@@ -266,6 +267,13 @@ void StarshipTVC::taskThread() {
       cos(actualThrustXAngle) * cos(actualThrustYAngle) * actualThrustMag, //
       actualTwistAngle                                                     //
   });
+  {
+    const float actual[4] = {sin(actualThrustYAngle) * actualThrustMag, sin(actualThrustXAngle) * actualThrustMag,
+                             cos(actualThrustXAngle) * cos(actualThrustYAngle) * actualThrustMag, actualTwistAngle};
+    float simThrust[4];
+    Safety::gateSimulatedThrust(actual, gate.outputsEnabled, simThrust); // the gate result, never the simulation flag
+    tvcSimThrustTopic_.publish({simThrust[0], simThrust[1], simThrust[2], simThrust[3]});
+  }
   servoXP_.enableOutput(enableActuators);
   servoXN_.enableOutput(enableActuators);
   servoYP_.enableOutput(enableActuators);
