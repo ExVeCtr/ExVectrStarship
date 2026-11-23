@@ -74,10 +74,9 @@ bool LogTextQueue::pop(Packets::LogText &out) {
 
 // ---------------------------------------------------------------- VehicleComms
 
-VehicleComms::VehicleComms(usb_serial_class &usb, HardwareSerialIMXRT &uart, TelemetryProviderI &provider,
-                           Core::Topic<Telecommand> &telecommandTopic)
+VehicleComms::VehicleComms(usb_serial_class &usb, HardwareSerialIMXRT &uart, TelemetryProviderI &provider)
     : Task_Periodic("Vehicle Comms", kTickNs), uart_(uart), provider_(provider),
-      telecommandTopic_(telecommandTopic), usbIo_(usb), uartIo_(uart), net_(time_, usbIo_, uartIo_, *this) {
+      usbIo_(usb), uartIo_(uart), net_(time_, usbIo_, uartIo_) {
   // Console text -> LOG_TEXT on USB. Subscribed at construction so boot messages are queued too (the queue
   // keeps the first kLines lines until the task runs).
   gLogQueue = &log_;
@@ -105,7 +104,7 @@ void VehicleComms::taskInit() {
 }
 
 void VehicleComms::taskThread() {
-  // Receive (node table, telecommands) and drain what is queued.
+  // Receive (node table, CMD_STATE, REQUESTs) and drain what is queued.
   net_.pollLinks();
   net_.pollNodes();
 

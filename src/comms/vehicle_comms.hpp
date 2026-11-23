@@ -13,7 +13,6 @@
  *   and never block. The task runs below the control tasks' priority.
  * - Console text (Core print topics, LOG_MSG) is queued as lines and sent as LOG_TEXT on USB only. USB Serial
  *   carries nothing but stream frames (the platform console is off: EXVECTR_ARDUINO_NO_SERIAL_CONSOLE).
- * - TEMPORARY (T9b): accepted legacy telecommands are published on the existing telecommand topic.
  * No heap after construction. main.cpp places the object in DMAMEM (RAM2).
  */
 
@@ -101,15 +100,14 @@ private:
   uint32_t dropped_ = 0;
 };
 
-class VehicleComms : public Core::Task_Periodic, public TelecommandSinkI {
+class VehicleComms : public Core::Task_Periodic {
 public:
   static constexpr uint32_t kUartBaud = 460800;
   static constexpr int64_t kTickNs = Core::SECONDS / VehicleNetwork::kTickHz; ///< 10 ms
   static constexpr int kPriority = 50; ///< below every control task (100..110)
   static constexpr int kMaxLogLinesPerTick = 4;
 
-  VehicleComms(usb_serial_class &usb, HardwareSerialIMXRT &uart, TelemetryProviderI &provider,
-               Core::Topic<Telecommand> &telecommandTopic);
+  VehicleComms(usb_serial_class &usb, HardwareSerialIMXRT &uart, TelemetryProviderI &provider);
 
   /// Ground station (node 0) heard on USB or UART within 2 s. Information only (gs_present).
   bool isGroundStationPresent() const { return net_.isGroundStationPresent(); }
@@ -121,14 +119,12 @@ public:
   void taskInit() override;
   void taskThread() override;
 
-  /// TEMPORARY (T9b): publishes the telecommand on the existing topic (handled by the safety task as before).
-  void onTelecommand(const Telecommand &tc) override { telecommandTopic_.publish(tc); }
-
   /// REQUESTs addressed to the vehicle and their ACKs (T9b-5), see VehicleNetwork.
   bool popRequest(Safety::RequestMsg &m) { return net_.popRequest(m); }
   bool sendRequestAck(uint8_t link, uint8_t dst, uint16_t reqId, uint8_t status, uint8_t detail) {
     return net_.sendRequestAck(link, dst, reqId, status, detail);
   }
+  bool sendHomePosition(uint8_t link, uint8_t dst, const HomeInput &in) { return net_.sendHomePosition(link, dst, in); }
   const VehicleNetwork &network() const { return net_; }
   /// The hard motor interlock (owned by the network, fed by the command taps).
   Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }
@@ -147,7 +143,6 @@ private:
 
   HardwareSerialIMXRT &uart_;
   TelemetryProviderI &provider_;
-  Core::Topic<Telecommand> &telecommandTopic_;
 
   CoreTimeSource time_;
   ArduinoByteStream<usb_serial_class> usbIo_;

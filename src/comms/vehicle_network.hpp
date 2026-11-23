@@ -23,8 +23,8 @@
  *   interpreted.
  * - controlSourceLost(): the ONE control failsafe rule (T9b-3): committed and the accepted CMD_STATE of the latched
  *   session is older than 2 s. General link health (any valid frame, isRadioPacketRecent) is information only.
- * - TEMPORARY (removed in T9b): the legacy Telecommand on port LegacyTelecommandPacket::kPort, from node 0 only,
- *   is handed unchanged to the TelecommandSinkI (main.cpp publishes it on the existing telecommand topic).
+ * - The legacy telecommand port 0x7F is deleted: it has no subscription, so frames on it are ignored. Everything the
+ *   ground station asks for besides CMD_STATE is a REQUEST (RequestExecutor, requests_).
  */
 
 #include <stddef.h>
@@ -46,14 +46,7 @@
 namespace VCTR {
 namespace Comms {
 
-/// Receives accepted legacy telecommands (TEMPORARY, T9b).
-class TelecommandSinkI {
-public:
-  virtual ~TelecommandSinkI() = default;
-  virtual void onTelecommand(const Telecommand &tc) = 0;
-};
-
-class VehicleNetwork : public network::PacketListenerI<LegacyTelecommandPacket> {
+class VehicleNetwork {
 public:
   static constexpr uint8_t kVehicleNode = 1;
   static constexpr uint8_t kGroundStationNode = 0;
@@ -70,10 +63,9 @@ public:
   static constexpr size_t kUsbTxRing = 2048;
   static constexpr size_t kUartTxRing = 1024;
 
-  VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart,
-                 TelecommandSinkI &telecommands);
+  VehicleNetwork(network::TimeSourceI &time, network::ByteStreamI &usb, network::ByteStreamI &uart);
 
-  /// Reads both links (frames -> node table, telecommands) and drains their TX rings. Never blocks.
+  /// Reads both links (frames -> node table, CMD_STATE, REQUESTs) and drains their TX rings. Never blocks.
   void pollLinks();
   /// Heartbeats (1 Hz per link).
   void pollNodes();
@@ -118,7 +110,7 @@ public:
   /// The control failsafe condition (T9b-3, the ONE rule): `committed` (interlock open, mission pending or Running,
   /// computed by the caller at the moment of the check) and the latched session has no accepted CMD_STATE within
   /// 2 s. Not committed: false (D2-B). Reads a seqlock snapshot, so it is safe from the safety task. Only accepted
-  /// CMD_STATE refreshes it: heartbeats, LINK_STATS, REQUESTs and telecommands never do.
+  /// CMD_STATE refreshes it: heartbeats, LINK_STATS, REQUESTs and REQUESTs never do.
   bool controlSourceLost(bool committed) const;
   /// The last accepted CMD_STATE of the latched session carried failsafe = 1 (GS failsafe request, bit 14). Safe
   /// from the safety task (seqlock snapshot); false if there is none.
@@ -156,17 +148,15 @@ public:
   uint32_t requestsDropped() const { return requests_.dropped(); }
   /// Queues a REQUEST_ACK to `dst` on the link `link` (Safety::CmdLink value). False if the TX ring was full.
   bool sendRequestAck(uint8_t link, uint8_t dst, uint16_t reqId, uint8_t status, uint8_t detail);
+  /// Queues HOME_POSITION (0x50) to `dst` on `link`, the answer of an accepted GET_HOME_POSITION request.
+  bool sendHomePosition(uint8_t link, uint8_t dst, const HomeInput &in);
   /// A present node reported another network version or schema hash than ours.
   bool anyIncompatiblePeer() const;
-
-  void onPacket(const LegacyTelecommandPacket &packet, const network::RxInfo &info) override;
 
   const network::Node &usbNode() const { return usbNode_; }
   const network::Node &uartNode() const { return uartNode_; }
   const network::FrameLinkI &usbLink() const { return usbLink_; }
   const network::FrameLinkI &uartLink() const { return uartLink_; }
-  uint32_t telecommandsAccepted() const { return telecommandsAccepted_; }
-  uint32_t telecommandsRejected() const { return telecommandsRejected_; }
 
 private:
   static network::NodeConfig nodeConfig();
@@ -181,13 +171,11 @@ private:
   }
 
   network::TimeSourceI &time_;
-  TelecommandSinkI &telecommands_;
   network::StreamFrameLink<kUsbTxRing> usbLink_;
   network::StreamFrameLink<kUartTxRing> uartLink_;
   network::Node usbNode_;
   network::Node uartNode_;
   network::PortMux<2> mux_;
-  network::PacketPort<LegacyTelecommandPacket> telecommandPort_; ///< TEMPORARY (T9b)
 
   /// Sits between the UART link and the UART node: records radio packets (isRadioPacketRecent), forwards every frame.
   struct RadioTap : network::FrameSinkI {
@@ -204,7 +192,6 @@ private:
   CmdIngressTap usbCmdTap_, uartCmdTap_; ///< per-link CMD_STATE decoding
   bool committed_ = false;
   bool modeFailure_ = false;
-  uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
   ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks
 };
 

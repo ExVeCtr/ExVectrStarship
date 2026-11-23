@@ -9,7 +9,7 @@
 //  - GS control: CMD_STATE (0x13) from node 0 on USB and UART, session latch, per-link freshness, strict field
 //    rejection, handset RC_STATE not interpreted at all, REQUEST session acceptance, the interlock fed through the taps;
 //  - the control failsafe (controlSourceLost, T9b-3): only accepted CMD_STATE of the latched session keeps it alive;
-//  - the TEMPORARY legacy telecommand adapter: from node 0 only, unchanged struct, delivered once when it arrives
+//  - the deleted legacy telecommand port 0x7F: frames on it are ignored
 //    on both links;
 //  - telemetry sets: USB set at the USB rates on USB, radio set at the air rates on the UART, no USB-only port on
 //    the UART, heartbeats on both links;
@@ -80,15 +80,6 @@ struct MemStream : ByteStreamI {
   size_t write(const uint8_t *p, size_t n) override { return out->put(p, n) ? n : 0; }
 };
 
-struct Sink : TelecommandSinkI {
-  int count = 0;
-  Telecommand last = {};
-  void onTelecommand(const Telecommand &tc) override {
-    count++;
-    last = tc;
-  }
-};
-
 /// Counts DATA frames per port (and the destination of the last one).
 struct PortCounter : DataSinkI {
   uint32_t n[256] = {};
@@ -98,6 +89,8 @@ struct PortCounter : DataSinkI {
     lastDst[info.port] = info.dst;
   }
 };
+
+constexpr uint8_t kLegacyTelecommandPort = 0x7F; // deleted: no subscription
 
 /// A peer end node on the far end of one pipe pair.
 struct Peer {
@@ -120,16 +113,11 @@ struct Peer {
   void poll() {
     link.poll();
   }
-  bool sendTelecommand(uint8_t type, int16_t param) {
-    LegacyTelecommandPacket p;
-    p.tc.type = static_cast<TelecommandType>(type);
-    p.tc.subsystem = Subsystem_Magneto;
-    p.tc.paramInt = param;
-    p.tc.paramFloat = 0.5f;
-    uint8_t buf[8];
-    p.encode(buf, sizeof buf);
-    bool ok = node.send(VehicleNetwork::kVehicleNode, LegacyTelecommandPacket::kPort, buf, 8, wire::Qos::Event,
-                        false);
+  /// A GS data frame on the deleted legacy telecommand port 0x7F (8 bytes): nothing subscribes to it any more, but it
+  /// is still a valid DATA frame from node 0 (presence, radio-packet recency).
+  bool sendLegacyPortFrame() {
+    uint8_t buf[8] = {5, 2, 0xA5, 0, 0, 0, 0, 0x3F};
+    bool ok = node.send(VehicleNetwork::kVehicleNode, kLegacyTelecommandPort, buf, 8, wire::Qos::Event, false);
     link.poll();
     return ok;
   }
@@ -140,8 +128,7 @@ struct Rig {
   MemPipe usbUp, usbDown, uartUp, uartDown; // Up: peer -> vehicle
   MemStream usbIo{&usbUp, &usbDown};
   MemStream uartIo{&uartUp, &uartDown};
-  Sink sink;
-  VehicleNetwork net{clk, usbIo, uartIo, sink};
+  VehicleNetwork net{clk, usbIo, uartIo};
   Peer gsUsb{&usbDown, &usbUp, clk, 0, wire::Role::GroundStation};
   Peer gsUart{&uartDown, &uartUp, clk, 0, wire::Role::GroundStation}; // node 0 frames forwarded by the RX module
   void pollAll() {
@@ -182,7 +169,7 @@ void test_gs_heartbeat_on_usb_gives_presence_for_2s() {
 
 void test_gs_data_on_uart_gives_presence() {
   // Over the radio path the RX module drops node 0 heartbeats: only node 0 data frames reach the vehicle.
-  TEST_ASSERT_TRUE(rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0));
+  TEST_ASSERT_TRUE(rig->gsUart.sendLegacyPortFrame());
   rig->pollAll();
   TEST_ASSERT_TRUE(rig->net.isGroundStationPresent());
 }
@@ -235,7 +222,7 @@ void test_radio_node2_data_on_uart_keeps_alive_with_exact_timeout() {
 
 void test_radio_node0_data_on_uart_keeps_alive() {
   rig->clk.advanceMs(20000);
-  TEST_ASSERT_TRUE(rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0)); // relayed by the Router
+  TEST_ASSERT_TRUE(rig->gsUart.sendLegacyPortFrame()); // relayed by the Router
   rig->pollAll();
   TEST_ASSERT_TRUE(rig->net.isRadioPacketRecent());
 }
@@ -322,60 +309,20 @@ void test_corrupted_bytes_do_not_count() {
   TEST_ASSERT_TRUE(rig->net.usbLink().stats.rxBad > 0);
 }
 
-// ---------------------------------------------------------------- TEMPORARY legacy telecommand adapter
+// ---------------------------------------------------------------- deleted legacy telecommand port
 
-void test_telecommand_from_gs_on_usb_delivered_unchanged() {
-  TEST_ASSERT_TRUE(rig->gsUsb.sendTelecommand(Telecommand_Arm, 0xA5));
+void test_legacy_telecommand_port_is_not_subscribed() {
+  // Frames on the old port 0x7F (any length, from the GS on either link) are valid DATA frames but go nowhere: no
+  // listener, no request, no effect on the command state, no crash.
+  TEST_ASSERT_TRUE(rig->gsUsb.sendLegacyPortFrame());
+  TEST_ASSERT_TRUE(rig->gsUart.sendLegacyPortFrame());
+  uint8_t buf[9] = {0};
+  rig->gsUsb.node.send(1, kLegacyTelecommandPort, buf, 9, wire::Qos::Event, false);
   rig->pollAll();
-  TEST_ASSERT_EQUAL_INT(1, rig->sink.count);
-  TEST_ASSERT_EQUAL_UINT8(Telecommand_Arm, rig->sink.last.type);
-  TEST_ASSERT_EQUAL_UINT8(Subsystem_Magneto, rig->sink.last.subsystem);
-  TEST_ASSERT_EQUAL_INT16(0xA5, rig->sink.last.paramInt);
-  TEST_ASSERT_EQUAL_FLOAT(0.5f, rig->sink.last.paramFloat);
-}
-
-void test_telecommand_from_gs_on_uart_delivered() {
-  TEST_ASSERT_TRUE(rig->gsUart.sendTelecommand(Telecommand_SystemReset, 0xC5));
-  rig->pollAll();
-  TEST_ASSERT_EQUAL_INT(1, rig->sink.count);
-  TEST_ASSERT_EQUAL_INT16(0xC5, rig->sink.last.paramInt);
-}
-
-void test_telecommand_from_other_node_rejected() {
-  Peer tx(&rig->uartDown, &rig->uartUp, rig->clk, 2, wire::Role::LinkTx);
-  TEST_ASSERT_TRUE(tx.sendTelecommand(Telecommand_Arm, 0xA5));
-  rig->net.pollLinks();
-  TEST_ASSERT_EQUAL_INT(0, rig->sink.count);
-  TEST_ASSERT_EQUAL_UINT32(1, rig->net.telecommandsRejected());
-}
-
-void test_telecommand_on_both_links_delivered_once() {
-  // The same frame (same sequence number) arriving on USB and over the radio: one delivery. Matters because
-  // SimulationMode toggles.
-  LegacyTelecommandPacket p;
-  p.tc.type = Telecommand_SimulationMode;
-  p.tc.paramInt = 0xA9;
-  uint8_t payload[8];
-  p.encode(payload, sizeof payload);
-  // Build one network frame by hand: CTRL (VER 1, DATA, QoS EVENT, not latest) TTL DST SRC PORT SEQ payload
-  uint8_t frame[6 + 8] = {0x48, 3, 1, 0, LegacyTelecommandPacket::kPort, 42};
-  memcpy(frame + 6, payload, 8);
-  uint8_t wireBuf[wire::kMaxStreamWireLen];
-  size_t n = 0;
-  TEST_ASSERT_TRUE(wire::encodeStreamFrame(frame, sizeof frame, wireBuf, sizeof wireBuf, n));
-  rig->usbUp.put(wireBuf, n);
-  rig->uartUp.put(wireBuf, n);
-  rig->net.pollLinks();
-  TEST_ASSERT_EQUAL_INT(1, rig->sink.count);
-  TEST_ASSERT_EQUAL_UINT8(Telecommand_SimulationMode, rig->sink.last.type);
-}
-
-void test_telecommand_wrong_length_rejected() {
-  uint8_t buf[9] = {Telecommand_Arm, 0, 0xA5, 0, 0, 0, 0, 0, 0};
-  rig->gsUsb.node.send(1, LegacyTelecommandPacket::kPort, buf, 9, wire::Qos::Event, false);
-  rig->gsUsb.node.send(1, LegacyTelecommandPacket::kPort, buf, 7, wire::Qos::Event, false);
-  rig->pollAll();
-  TEST_ASSERT_EQUAL_INT(0, rig->sink.count);
+  Safety::RequestMsg m;
+  TEST_ASSERT_FALSE(rig->net.popRequest(m));
+  TEST_ASSERT_EQUAL_UINT32(0, rig->net.requestsDropped());
+  TEST_ASSERT_FALSE(rig->net.commandIngress().sessionLatched());
 }
 
 // ---------------------------------------------------------------- telemetry sets and rates
@@ -829,7 +776,7 @@ void test_control_failsafe_only_accepted_cmd_state_keeps_it_alive() {
       tx.poll();
       rx.poll();
       sendData(tx, 0x14);                                          // node 2 non-command data
-      rig->gsUart.sendTelecommand(Telecommand_MissionSelect, 0);  // GS telecommand over the radio
+      rig->gsUart.sendLegacyPortFrame();  // GS telecommand over the radio
       putCmd(rig->uartUp, 2, 77, kSafe);                          // CMD_STATE from the Router: rejected
       Cmd other;
       other.session = kSessB;
@@ -1018,7 +965,7 @@ void test_no_heap_after_construction() {
     rig->net.pollLinks();
     rig->net.pollNodes();
     rig->net.sendTelemetry(tick, s);
-    rig->gsUsb.sendTelecommand(Telecommand_MissionSelect, 0);
+    rig->gsUsb.sendLegacyPortFrame();
     rig->pollAll();
     rig->clk.advanceMs(10);
   }
@@ -1069,11 +1016,7 @@ int main() {
   RUN_TEST(test_uart_peer_seen_ignores_usb_and_other_nodes);
   RUN_TEST(test_uart_peer_seen_from_node3_data_frame);
   RUN_TEST(test_corrupted_bytes_do_not_count);
-  RUN_TEST(test_telecommand_from_gs_on_usb_delivered_unchanged);
-  RUN_TEST(test_telecommand_from_gs_on_uart_delivered);
-  RUN_TEST(test_telecommand_from_other_node_rejected);
-  RUN_TEST(test_telecommand_on_both_links_delivered_once);
-  RUN_TEST(test_telecommand_wrong_length_rejected);
+  RUN_TEST(test_legacy_telecommand_port_is_not_subscribed);
   RUN_TEST(test_telemetry_sets_and_rates);
   RUN_TEST(test_task_timing_rate);
   RUN_TEST(test_calibration_rate);

@@ -494,24 +494,23 @@ Packets::Calibration makeCalibration(const TelemetrySnapshot &s) {
   return p;
 }
 
-// ---- TEMPORARY legacy telecommand adapter ----
+// ---- HOME_POSITION ----
 
-size_t LegacyTelecommandPacket::encode(uint8_t *out, size_t cap) const {
-  if (out == nullptr || cap < kMaxSize) return 0;
-  Packets::codec::put_u8(out + 0, static_cast<uint8_t>(tc.type));
-  Packets::codec::put_u8(out + 1, static_cast<uint8_t>(tc.subsystem));
-  Packets::codec::put_i16(out + 2, tc.paramInt);
-  Packets::codec::put_f32(out + 4, tc.paramFloat);
-  return kMaxSize;
-}
-
-bool LegacyTelecommandPacket::decode(const uint8_t *in, size_t len) {
-  if (in == nullptr || len != kMaxSize) return false;
-  tc.type = static_cast<TelecommandType>(Packets::codec::get_u8(in + 0));
-  tc.subsystem = static_cast<Subsystem>(Packets::codec::get_u8(in + 1));
-  tc.paramInt = Packets::codec::get_i16(in + 2);
-  tc.paramFloat = Packets::codec::get_f32(in + 4);
-  return true;
+Packets::HomePosition makeHomePosition(const HomeInput &in) {
+  Packets::HomePosition p;
+  const bool fix = in.latitude != 0.0 || in.longitude != 0.0;
+  p.flags = 0;
+  if (fix) p.flags |= Packets::HomePosition::kFlagsLatlonValid | Packets::HomePosition::kFlagsAltValid;
+  if (in.simulation) p.flags |= Packets::HomePosition::kFlagsSimulation;
+  if (in.zeroing) p.flags |= Packets::HomePosition::kFlagsZeroing;
+  p.latitude = fix ? in.latitude : static_cast<double>(NAN);
+  p.longitude = fix ? in.longitude : static_cast<double>(NAN);
+  p.altitude = fix ? in.altitude : NAN;
+  p.h_acc = NAN;
+  p.epoch = in.epoch;
+  p.set_time = in.setTimeNs;
+  p.reserved = 0;
+  return p;
 }
 
 } // namespace Comms

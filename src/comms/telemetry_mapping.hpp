@@ -20,7 +20,6 @@
 
 #include "safety/command_ingress.hpp"
 #include "safety/rc_mapper.hpp"
-#include "telecommand.hpp"
 #include "telemetry.hpp"
 
 namespace VCTR {
@@ -297,26 +296,23 @@ void attitudeSetpoint(const AttitudeSetpointInputs &in, float out[4]);
 /// AIR_MISSION, the air version of MISSION.
 Packets::AirMission makeAirMission(const TelemetrySnapshot &s);
 
-// ---- TEMPORARY legacy telecommand adapter (removed in T9b) ----
+// ---- HOME_POSITION (answer of the GET_HOME_POSITION request) ----
 
-/**
- * TEMPORARY (network migration T9a, removed in T9b): the old `Telecommand` (8 bytes, formerly network port 1000
- * over the SX1280) carried unchanged through the new stack on port kPort, so the vehicle stays commandable until
- * the RC_STATE command path (T9b) replaces it. Layout, explicit little-endian: u8 type, u8 subsystem,
- * i16 paramInt, f32 paramFloat (identical to the old packed struct on the Teensy). Exactly 8 bytes, else rejected.
- * Accepted only from node 0 (ground station). Same handler, same semantics as before
- * (VehicleSafetyAndControlTask::handleTelecommands).
- */
-struct LegacyTelecommandPacket {
-  static constexpr uint8_t kPort = 0x7F; ///< TEMPORARY, not in the ExVectrPackets schema
-  static constexpr size_t kMaxSize = 8;
-  static constexpr uint8_t kAcceptedSource = 0; ///< ground station
-
-  Telecommand tc = {};
-
-  size_t encode(uint8_t *out, size_t cap) const;
-  bool decode(const uint8_t *in, size_t len);
+/// What HOME_POSITION is built from: the position estimator's reference (gnssRefPos_ = [lat rad, lon rad, alt m]) and
+/// the home epoch.
+struct HomeInput {
+  bool haveReference = false; ///< HomeEpoch::value() != 0
+  double latitude = 0, longitude = 0; ///< rad (0, 0 = the estimator never had a GNSS fix: not valid)
+  float altitude = 0;                 ///< m, the estimator's reference altitude (GNSS datum)
+  bool simulation = false;
+  bool zeroing = false;
+  uint8_t epoch = 0;
+  int64_t setTimeNs = 0; ///< vehicle time when the reference was last set or refined, 0 = never
 };
+
+/// LATLON_VALID and ALT_VALID are set when the reference holds a GNSS position (lat/lon not both 0), else those
+/// fields are NaN. h_acc is always unknown (NaN). Only meaningful when haveReference.
+Packets::HomePosition makeHomePosition(const HomeInput &in);
 
 } // namespace Comms
 } // namespace VCTR
