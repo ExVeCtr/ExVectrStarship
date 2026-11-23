@@ -15,6 +15,8 @@
  *     b. tracking contact (the old criterion, now only low and slow): the vehicle is held more than
  *        kLandingTrackingErrorM above the descending setpoint, with |vz| < kLandingContactVz and speed
  *        < kLandingContactSpeed, for kLandingTrackingHoldNs. Works without any range data.
+ *     c. ground contact: altitude below kLandingGroundAltitudeM, |vz| < kLandingGroundVz, speed < kLandingContactSpeed,
+ *        for 2 s (no range needed; lands a vehicle that sits on the ground below the setpoint).
  *  3. Invalid range (stale, uncertain, absent) neither vetoes nor triggers: cue b and the altitude gate decide alone.
  *  4. Any lost condition restarts that cue's timer (a bounce, a gust lifting the vehicle, a speed spike).
  * Landed is latched by the caller (the mission goes to Finished); reset() clears the timers on a new descent.
@@ -32,6 +34,8 @@ constexpr float kLandingRangeContactM = 0.10f;  ///< valid range below this = gr
 constexpr float kLandingTrackingErrorM = 0.2f;  ///< vehicle above the setpoint by more than this = held up
 constexpr float kLandingContactSpeed = 0.5f;    ///< m/s, total speed limit of both contact cues
 constexpr float kLandingContactVz = 0.2f;       ///< m/s, |vz| limit of the tracking cue
+constexpr float kLandingGroundAltitudeM = 0.3f; ///< altitude cue (no range needed): below this, at rest
+constexpr float kLandingGroundVz = 0.2f;        ///< m/s, |vz| limit of the altitude cue
 constexpr int64_t kLandingRangeHoldNs = 300000000LL;      ///< 0.3 s
 constexpr int64_t kLandingTrackingHoldNs = 2000000000LL;  ///< 2 s (as the old trigger)
 
@@ -47,7 +51,7 @@ struct LandingInput {
 
 class LandingDetector {
 public:
-  void reset() { rangeSince_ = trackSince_ = -1; }
+  void reset() { rangeSince_ = trackSince_ = groundSince_ = -1; }
 
   /// Call every tick of the descent. Returns true while the landing condition holds.
   bool update(const LandingInput &in) {
@@ -63,8 +67,13 @@ public:
     const bool rangeCue = rangeOk && in.rangeM < kLandingRangeContactM && slow;
     const bool trackCue = in.trackingErrorM > kLandingTrackingErrorM && slow && fabsf(in.verticalSpeed) < kLandingContactVz;
 
+    // c. at rest at ground level (altitude estimate, works with no range and with a setpoint at or below the vehicle):
+    //    sitting on the ground below the descending setpoint never produces a tracking error above it.
+    const bool groundCue = in.altitudeM < kLandingGroundAltitudeM && slow && fabsf(in.verticalSpeed) < kLandingGroundVz;
+
     return hold(rangeCue, rangeSince_, in.nowNs, kLandingRangeHoldNs) |
-           hold(trackCue, trackSince_, in.nowNs, kLandingTrackingHoldNs);
+           hold(trackCue, trackSince_, in.nowNs, kLandingTrackingHoldNs) |
+           hold(groundCue, groundSince_, in.nowNs, kLandingTrackingHoldNs);
   }
 
 private:
@@ -79,6 +88,7 @@ private:
   }
   int64_t rangeSince_ = -1;
   int64_t trackSince_ = -1;
+  int64_t groundSince_ = -1;
 };
 
 } // namespace Safety

@@ -87,7 +87,8 @@ ScAction decideSc(uint8_t edgeTo, const ScContext &c);
 /// D12 "on the ground" (SE reset, SC change): interlock closed and motors not enabled and either the mode is
 /// Startup/Ready/SensorCalib with the active mission Idle or Finished, or the mode is Failure (actuators already
 /// cut), or the mode is Running but the chain has ended (landed: no chain pending, mission Idle or Finished; after
-/// RTH the mode stays Running until a reset).
+/// RTH the mode stays Running until a reset). Safety net: the interlock closed, motors not enabled and no chain pending
+/// with the vehicle physically at rest at ground level (Safety::GroundRest) also counts, whatever the mission phase.
 struct GroundContext {
   bool interlockOpen = false;
   bool motorsEnabled = false;
@@ -96,6 +97,7 @@ struct GroundContext {
   bool modeRunning = false;
   bool chainPending = false;
   bool missionIdleOrFinished = false;
+  bool stationaryOnGround = false; ///< GroundRest: at rest at ground level for 2 s (any mission phase)
 };
 bool onGround(const GroundContext &g);
 

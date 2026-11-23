@@ -7,9 +7,8 @@ namespace Safety {
 
 float rthReturnAltitude(float altitudeM, bool valid, float capM) {
   if (!valid || !isfinite(altitudeM)) return capM;
-  const float floorM = kRthMinAltitudeM < capM ? kRthMinAltitudeM : capM;
   if (altitudeM > capM) return capM;
-  if (altitudeM < floorM) return floorM;
+  if (altitudeM < 0.0f) return 0.0f; // on or below the reference: never a setpoint above the vehicle (immediate landing)
   return altitudeM;
 }
 

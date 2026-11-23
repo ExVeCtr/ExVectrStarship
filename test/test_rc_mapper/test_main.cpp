@@ -409,6 +409,21 @@ static void test_on_ground_rule_d12() {
   g.motorsEnabled = false;
   g.missionIdleOrFinished = false; // a mission is running
   TEST_ASSERT_FALSE(onGround(g));
+  // Safety net: a Running vehicle with an RTH that cannot finish, physically at rest on the ground
+  GroundContext s;
+  s.modeRunning = true;
+  s.missionIdleOrFinished = false;
+  TEST_ASSERT_FALSE(onGround(s));
+  s.stationaryOnGround = true;
+  TEST_ASSERT_TRUE(onGround(s));
+  s.motorsEnabled = true;
+  TEST_ASSERT_FALSE(onGround(s));
+  s.motorsEnabled = false;
+  s.interlockOpen = true;
+  TEST_ASSERT_FALSE(onGround(s));
+  s.interlockOpen = false;
+  s.chainPending = true;
+  TEST_ASSERT_FALSE(onGround(s));
   GroundContext f; // Failure: actuators are cut, the reset works whatever the mission says
   f.modeFailure = true;
   TEST_ASSERT_TRUE(onGround(f));
