@@ -1,5 +1,7 @@
 #include "rc_command.hpp"
 
+#include "mission_profile.hpp"
+
 namespace VCTR {
 namespace Safety {
 
@@ -9,7 +11,7 @@ GoRefusal decideGo(const GoContext &c) {
   if (c.zeroingActive || !c.zeroValid) return GoRefusal::Zeroing;
   const bool scOk = (c.mode == 1) == c.simulationApplied;
   if (!scOk) return GoRefusal::ScMismatch;
-  if (c.profile != kImplementedProfile) return GoRefusal::SbProfile;
+  if (!isKnownProfile(c.profile)) return GoRefusal::SbProfile;
   if (c.requestBusy) return GoRefusal::RequestBusy;
   return GoRefusal::None;
 }
@@ -21,7 +23,7 @@ const char *toString(GoRefusal r) {
   case GoRefusal::Latched: return "latched abort or failsafe (SE reset needed)";
   case GoRefusal::Zeroing: return "estimator zeroing active or no valid zero";
   case GoRefusal::ScMismatch: return "vehicle mode (SC) not equal to the applied mode";
-  case GoRefusal::SbProfile: return "profile (SB) not implemented";
+  case GoRefusal::SbProfile: return "profile (SB) not 0, 1 or 2";
   case GoRefusal::Interlock: return "interlock";
   case GoRefusal::RequestBusy: return "request or calibration in progress";
   }

@@ -16,7 +16,7 @@
  *  SA  (go) NOT_GO while a mission chain is pending or the mode is Running: abortLevel EVERY tick (the caller feeds it to
  *      Safety::decideAbort, idempotent; ResetAndStop does not clear latches). SA GO edge: go if decideGo() says so,
  *      otherwise the refusal reason is kept for telemetry (go_refusal).
- *  SB  (profile) read at the GO edge only (profile 2 is the only implemented one, D9); later changes are never looked at.
+ *  SB  (profile) read at the GO edge only (profiles 0, 1, 2); later changes are never looked at.
  *  SC  (vehicle_mode) an observed change of the field REAL (0) <-> SIMULATION (1) selects real / simulation while on
  *      the ground and not committed (decideSc); the vehicle boots in real mode, so a field value at boot does
  *      nothing until it is cycled. Refused
@@ -43,13 +43,12 @@ enum class GoRefusal : uint8_t {
   Latched = 2,     ///< latched abort / failsafe (mode Failure)
   Zeroing = 3,     ///< estimator zeroing window active or no valid zero
   ScMismatch = 4,  ///< vehicle_mode field not equal to the applied mode
-  SbProfile = 5,   ///< the profile is not implemented
+  SbProfile = 5,   ///< the profile is not 0, 1 or 2
   Interlock = 6,   ///< reserved: the interlock is NOT a go precondition (owner decision 2026-11-21)
   RequestBusy = 7, ///< a calibration session or request is in progress
 };
 
-/// Only SB position 2 (today's full flight) is implemented (D9).
-constexpr uint8_t kImplementedProfile = 2;
+/// SB profiles 0 (hover test), 1 (waypoint test) and 2 (the flight) exist; see mission_profile.hpp (isKnownProfile).
 
 /**
  * Countdown of a go, a compiled-in constant (D8, owner decision 2026-11-22: fixed 15 s), as the telecommand "start

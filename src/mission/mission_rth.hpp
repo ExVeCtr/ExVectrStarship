@@ -10,6 +10,8 @@
 #include "ExVectrCore/timestamped.hpp"
 #include "ExVectrCore/topic.hpp"
 #include "ExVectrCore/topic_subscribers.hpp"
+#include "../safety/landing_detector.hpp"
+#include "../safety/rth_altitude.hpp"
 #include "mission_abstract.hpp"
 
 namespace VCTR {
@@ -47,21 +49,14 @@ private:
 
   Math::Vector<float, 3> homePosition_ = {
       0, 0, 1}; // The home position of the vehicle in reference frame.
+  float returnAltitude_ = 3; // z of the return point of this run (Safety::rthReturnAltitude, set at the start)
   float translationVelocity_ =
       2; // The translation velocity of the vehicle in m/s.
 
   int64_t hoverModeLastUpdate_ = 0;
 
-  float landingThresholdDistance_ =
-      0.2; // If the vehicle set position is further down than this for a
-           // certain time, it will be considered as landed and the mission
-           // will be finished.
-  int64_t landingThresholdTime_ =
-      2 * Core::SECONDS;    // How long the vehicle has to be below the landing
-                            // threshold distance to be considered as landed.
   float descentRate_ = 0.2; // How fast the vehicle should go down in m/s.
-  int64_t landingThresMetTime_ =
-      0; // When the vehicle is below the landing threshold distance.
+  Safety::LandingDetector landingDetector_;
   int64_t descentModeTimestamp_ = 0; // When the vehicle is in descent mode.
 
 public:
@@ -136,8 +131,9 @@ public:
     positionSetpoint_(0) = 0; // Set the velocity setpoint to 0
     positionSetpoint_(1) = 0;
     positionSetpoint_(2) = 0;
-    LOG_MSG("Started mission ReturnToHome. Hot starting the mission "
-            "immedietly\n"); // Log the mission start
+    returnAltitude_ = Safety::rthReturnAltitude(positionSetpoint_(5), true, homePosition_(2));
+    LOG_MSG("Started mission ReturnToHome (return altitude %.2f m). Hot starting the mission "
+            "immedietly\n", double(returnAltitude_)); // Log the mission start
     missionStartup();
   };
 
@@ -286,8 +282,9 @@ private:
     case RunningState::RunningState_Translation:
 
     {
+      const Math::Vector<float, 3> returnPoint = {homePosition_(0), homePosition_(1), returnAltitude_};
       auto travelDistance =
-          homePosition_ -
+          returnPoint -
           positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the
                                             // home position in reference frame
       auto travelDistanceMag =
@@ -328,7 +325,7 @@ private:
       // flapSettings_.brAngle = 90;
 
       auto distance =
-          homePosition_ -
+          returnPoint -
           positionIs_.block<3, 1>(
               3); // Get the distance to the home position in reference frame
 
@@ -392,7 +389,7 @@ private:
             groundCov); // Log the ground distance and covariance
 
     if (positionIs_(5) - positionSetpoint_(5) <
-        landingThresholdDistance_ *
+        0.2f *
             1.5) { // We keep updateting the threshold time. We stop when the
                    // vehicle is above the threshold distance. This triggers
                    // the start of the timer.
@@ -401,32 +398,20 @@ private:
           dTime *
           descentRate_; // Update the setpoint position in the reference frame
     }
-    if (positionIs_(5) - positionSetpoint_(5) <
-        landingThresholdDistance_) { // We keep updateting the threshold time.
-                                     // We stop when the vehicle is above the
-                                     // threshold distance. This triggers the
-                                     // start of the timer.
-      landingThresMetTime_ =
-          Core::NowNs(); // Set the time when the landing threshold was met
-    }
-
-    if (Core::NowNs() - landingThresMetTime_ >
-        landingThresholdTime_) { // If the vehicle is below the landing
-                                 // threshold distance for a certain time, we
-                                 // consider it as landed.
-      missionState_.missionMode =
-          MissionMode::MissionMode_Finished; // Go to landed mode
-    }
-
-    if (groundDistance < 0.04 && groundDistance > -0.02 && groundCov < 7 &&
-        Core::NowNs() - groundLastUpdate <
-            100 * Core::MILLISECONDS) // If the ground distance is less than 4
-                                      // cm and is confident, we consider it as
-                                      // landed.
-    {
-      missionState_.missionMode =
-          MissionMode::MissionMode_Finished; // Go to landed mode
-    }
+    // Landing (Safety::LandingDetector): never above 1.5 m / a valid range above 1.0 m, then range contact
+    // (< 0.10 m) or the held-above-setpoint cue, both low and slow. Replaces the old any-altitude tracking trigger.
+    const bool rangeValid = groundCov < 7 && groundDistance > -0.02f && groundSubr_.getItem().timestamp != 0 &&
+                            Core::NowNs() - groundLastUpdate < 100 * Core::MILLISECONDS;
+    Safety::LandingInput li;
+    li.altitudeM = positionIs_(5);
+    li.verticalSpeed = positionIs_(2);
+    li.speed = sqrtf(positionIs_(0) * positionIs_(0) + positionIs_(1) * positionIs_(1) + positionIs_(2) * positionIs_(2));
+    li.trackingErrorM = positionIs_(5) - positionSetpoint_(5);
+    li.rangeValid = rangeValid;
+    li.rangeM = groundDistance;
+    li.nowNs = Core::NowNs();
+    if (landingDetector_.update(li))
+      missionState_.missionMode = MissionMode::MissionMode_Finished; // Go to landed mode (motors off in missionLanded)
 
     // LOG_MSG("Descent mode. Position: (%f, %f, %f)\n", positionSetpoint_(3),
     // positionSetpoint_(4), positionSetpoint_(5)); // Log the mission start

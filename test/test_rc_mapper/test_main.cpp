@@ -321,9 +321,7 @@ static void test_go_refusal_reasons() {
   TEST_ASSERT_TRUE(refusalFor([](RcPollInput &i) { i.simulationApplied = false; }) == GoRefusal::ScMismatch);
   // vehicle_mode REAL while the applied mode is simulation
   TEST_ASSERT_TRUE(refusalFor([](RcPollInput &) {}, HI, MID) == GoRefusal::ScMismatch);
-  // profiles 0 and 1 are not implemented (D9)
-  TEST_ASSERT_TRUE(refusalFor([](RcPollInput &) {}, LO) == GoRefusal::SbProfile);
-  TEST_ASSERT_TRUE(refusalFor([](RcPollInput &) {}, MID) == GoRefusal::SbProfile);
+  // profiles 0, 1 and 2 are all accepted since the test missions (test_mission_profile covers values above 2)
 }
 
 static void test_go_needs_sa_still_at_go_when_evaluated() {
