@@ -42,6 +42,7 @@
 #include "safety/mission_abort.hpp"
 #include "safety/motor_interlock.hpp"
 #include "safety/rc_command.hpp"
+#include "safety/descent_target.hpp"
 #include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
 #include "subsystems.hpp"
@@ -61,6 +62,13 @@
 // #define DO_FLAP_TEST_STARTUP
 
 #define EXTEND_FLAPS_ASCENT false
+
+// Descent flap law selection (compile-time, one release, docs/descent-control-design.md decision 8): 0 (default) =
+// the new Descent mode (position funnel, neutral 30/78 deg, FlapDescentLaw); 1 = the legacy Stabilize law
+// (azimuth/pitch from the 10 Hz observer, neutral 50/40 deg). Select with -DDESCENT_LEGACY_STABILIZE=1.
+#ifndef DESCENT_LEGACY_STABILIZE
+#define DESCENT_LEGACY_STABILIZE 0
+#endif
 // USB Serial carries only ExVectrNetwork stream frames (src/comms/vehicle_comms.hpp): never print to Serial
 // directly. Console text (Core print, LOG_MSG) leaves as LOG_TEXT packets on USB.
 
@@ -254,6 +262,7 @@ extern Comms::VehicleComms vehicleComms;
 Core::Topic<CTRL::ControlAttitudeFlapSetting> flapSettingTopic;
 Core::Topic<CTRL::ControlAttitudeFlapSetting> trueFlapSettingTopic;
 Core::Topic<CTRL::ControlAttitudeBellyFlopSetting> bellyFlopControlTopic;
+Core::Topic<CTRL::descent::DescentTarget> descentTargetTopic; // observer (10 Hz) -> ControlAttitudeFlaps (50 Hz)
 
 CTRL::ControlPositionStandard controlPositionStandard;
 CTRL::ControlMappingAccToAtt controlMappingAccToAtt;
@@ -1918,6 +1927,8 @@ private:
 
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>>
       posEstSubr; // Subscriber for the position estimator
+  Core::Simple_Subscriber<Core::Timestamped<SNSR::GNSSData>> gnssSubr; // GNSS fix validity (real mode)
+  Safety::DescentGnssHysteresis gnssHysteresis;
 
 public:
   FlapModeObserverTask()
@@ -1930,6 +1941,7 @@ public:
     posEstSubr.subscribe(
         positionTopicSwitch
             .getTopic()); // Subscribe to the position estimator topic
+    gnssSubr.subscribe(gnss.getGNSSTopic());
   }
 
   void taskThread() override {
@@ -1941,12 +1953,29 @@ public:
     auto velEst = posEstSubr.getItem().data.block<3, 1>(
         0, 0); // Get the velocity estimate
 
+    bool descentActive = false;
     if (vehicleMode == VehicleMode::VehicleMode_Running &&
         mission->getMissionState().missionMode ==
             MissionMode::MissionMode_Running) {
       // Bellyflop controller set (flap attitude control) in freefall and after the bellyflop kick: the phase table
       // of VehicleSafetyAndControlTask (src/safety/control_phase.hpp). Before 2026-11-20 freefall only.
       if (vehicleSafetyAndControlTask.bellyflopFlapsActive()) {
+#if !DESCENT_LEGACY_STABILIZE
+        // New descent law (S3): the guidance runs in the 50 Hz flap task from the DescentTarget below; this task only
+        // selects the mode. Heading and split are not set here (ControlAttitudeFlaps fills them).
+        // ONE place for the observer/Descent interplay (default build): Descent replaces the legacy steering above 100 m
+        // (steer towards home), the hold below 100 m AND the final 30 deg tilt-back hold (stage start:
+        // Safety::freefallTiltBackStage, stop trigger altitude + 20 m). The tilt-back pitch has no equivalent in the
+        // split-based law; the Descent funnel ends at the stop trigger altitude (DescentTarget.endAltitude =
+        // getStopAltitude()), as validated closed loop in test_descent_guidance, so Descent flies through that stage.
+        // The motor enable at entry to that stage is independent of this task (VehicleSafetyAndControlTask,
+        // Safety::MotorEnableLatch, safety/motor_enable.hpp) and is unchanged. The legacy build (#else) keeps the old
+        // steering and tilt-back hold bit-identical.
+        starshipFlopSetting.bellyFlopMode =
+            CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
+                BellyFlopMode_Descent;
+        descentActive = true;
+#else
         starshipFlopSetting.bellyFlopMode =
             CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
                 BellyFlopMode_Stabilize;
@@ -1967,6 +1996,7 @@ public:
         } else if (Safety::freefallTiltBackStage(posEst(2), missionFreefallTask.getStopAltitude())) {
           starshipFlopSetting.pitchAngle_Rad = 30 * DEGREES;
         }
+#endif
       } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
         starshipFlopSetting.bellyFlopMode =
             CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
@@ -1983,6 +2013,25 @@ public:
                 BellyFlopMode_Acsent; // Disable the belly flop mode
         starshipFlopSetting.extentFlapsOnAscent = false;
       }
+    }
+
+    // Descent target every tick (valid only while the Descent mode is selected): home XY, stop altitude. A GNSS that is
+    // not valid (or silent) makes it invalid: zero-glide fall (docs/descent-control-design.md, failure table).
+    {
+      const bool posFinite = std::isfinite(posEst(0)) && std::isfinite(posEst(1)) && std::isfinite(posEst(2)) &&
+                             std::isfinite(velEst(0)) && std::isfinite(velEst(1)) && std::isfinite(velEst(2));
+      const auto &g = gnssSubr.getItem();
+      Safety::DescentTargetInputs ti;
+      ti.descentActive = descentActive;
+      // Real mode: the GNSS part goes through the hysteresis (dropout hold 0.3 s, resume 0.5 s); finite is immediate.
+      const int64_t nowNs = Core::NowNs();
+      const bool gnssRaw = Safety::descentPositionUsable(false, g.data.positionValid, nowNs - g.timestamp,
+                                                         500 * Core::MILLISECONDS, true);
+      const bool gnssFiltered = gnssHysteresis.update(nowNs, gnssRaw);
+      ti.positionUsable = Safety::descentPositionUsable(vehicleSafetyAndControlTask.simulationModeEnabled(),
+                                                        gnssFiltered, 0, 0, posFinite);
+      ti.stopAltitude_m = missionFreefallTask.getStopAltitude();
+      descentTargetTopic.publish(Safety::makeDescentTarget(ti));
     }
 
     bellyFlopControlTopic.publish(
@@ -2073,11 +2122,14 @@ public:
       Comms::AttitudeSetpointInputs in;
       in.tvcEnabled = vt.tvcControlActive();
       const auto &flop = flopSettingSubr_.getItem();
-      in.flapsStabilize =
-          vt.bellyflopFlapsActive() &&
-          flop.bellyFlopMode == CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::BellyFlopMode_Stabilize;
-      in.flapAzimuth = flop.azimuthAngle_Rad;
-      in.flapPitch = flop.pitchAngle_Rad;
+      using FlopMode = CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode;
+      const auto sp = Safety::flapSetpointAngles(
+          vt.bellyflopFlapsActive(), flop.bellyFlopMode == FlopMode::BellyFlopMode_Stabilize,
+          flop.bellyFlopMode == FlopMode::BellyFlopMode_Descent, flop.azimuthAngle_Rad, flop.pitchAngle_Rad,
+          controlAttitudeFlaps.getDescentStatus().headingSp_rad);
+      in.flapsStabilize = sp.flapsActive; // (name kept: flap attitude control active, Stabilize or Descent)
+      in.flapAzimuth = sp.azimuth;
+      in.flapPitch = sp.pitch;
       const auto &tq = tvcAttSetpointSubr_.getItem();
       for (int i = 0; i < 4; i++) {
         in.tvcQ[i] = tq(3 + i);
@@ -2537,7 +2589,7 @@ void initialiseHardware() {
                                5 * DEG_TO_RAD);
 }
 
-void initialiseMemory() {
+FLASHMEM void initialiseMemory() { // boot only: runs from flash, keeps ITCM (RAM1 code) small
   // Initialise the memory and read the EEPROM into the internal memory
   EEPROM.begin();
   internalMemory.transferFrom(eeprom);
@@ -2757,6 +2809,7 @@ void initialiseTopicConnections() {
       attitudeTopicSwitch.getTopic());
   controlAttitudeFlaps.subscribePositionMeasurement(
       positionTopicSwitch.getTopic());
+  controlAttitudeFlaps.subscribeDescentTarget(descentTargetTopic);
   controlAttitudeFlaps.subscribeFlapSettingOutputTopic(flapSettingTopic);
 
   starshipTVC.setTVCInputTopic(controlAttitudeTvc.getTvcTopic());
