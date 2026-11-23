@@ -18,14 +18,15 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 
 | Port | Packet | Set | Rate on the vehicle | Content (SI) |
 |---|---|---|---|---|
-| 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags (incl. `UART_PEER_SEEN`, node 3 heard on the UART within 3 s, information only; `ZEROING`, estimator zeroing window active; the byte is now full), failure bits, sensor states, `home_epoch`, T9b fields (`ctrl_flags`, `go_refusal`, `degraded_bits`, `mission_profile`, `rc_rejected`; sent as "none" values until T9b-1..8; 36 B), `calib_state` (30 B) |
+| 0x20 | `VehicleStatus` | USB + radio | 20 Hz USB, 5 Hz UART | time, mode, mission mode/phase, flags (incl. `UART_PEER_SEEN`, node 3 heard on the UART within 3 s, information only; `ZEROING`, estimator zeroing window active; the byte is now full), failure bits, sensor states, `home_epoch`, T9b fields (`ctrl_flags`, `go_refusal`, `degraded_bits`, `mission_profile`, `rc_rejected`) and `cmd_session` (low 16 bits of the latched GS session; GS-control cutover; 38 B), `calib_state` (30 B) |
 | 0x21 | `AirPose` | radio | 25 Hz UART (schema `kAirRateHz`) | q (i16), position (i32, 1 mm), velocity (i16, 0.01 m/s), fixed point, 30 B |
 | 0x22 | `AirActuators` | radio | 25 Hz UART, 2 samples each (50 samples/s) | newest and previous (about 20 ms older, `prev_age`) actuator sample: TVC deflection, roll torque, thrust, flaps; i16/u16 fixed point, 38 B |
 | 0x23 | `AirMission` | radio | 5 Hz UART | mission time (i32 ms), mission mode, phase, index, waypoint, position setpoint (i32 1 mm), velocity setpoint (i16 0.01 m/s), attitude setpoint `setpoint_q` (i16, as `AirPose.q`; all 0 = none), 38 B |
 | 0x24 | `AirGnss` | radio | 10 Hz UART | lat/lon (i32 1e-7 deg, decoded as radians f64), altitude (i32 mm), NWU velocity (i16 0.01 m/s), 22 B |
 | 0x25 | `AirGnssInfo` | radio | 1 Hz UART | real u-blox fix type, satellites, h/v accuracy (u16 cm, 65535 = unknown), 10 B |
 | 0x03 | `HandsetTelem` | USB + radio | 2 Hz each | display values for the Pocket (dst 0xFF) |
-| 0x84 | `RcApplied` | USB | not sent yet (T9b-1), 10 Hz in the schema | decoded SA..SE switch positions, detector safe-seen bits, both control-source ages, RC_STATE reject counters (18 B) |
+| 0x84 | `CmdApplied` | USB | 10 Hz | last accepted `CMD_STATE` fields, info flags, detector safe-seen bits, session, state/USB/UART ages, reject counters (26 B; replaces `RcApplied`) |
+| 0x13 | `CmdState` | up (node 0 -> vehicle) | 25 Hz + on change | the ground station's command state (14 B, strict fields; vehicle decodes it per link, `src/comms/cmd_ingress_tap.*`) |
 | 0x80 | `Pose` | USB | 100 Hz | omega, q, velocity, position (f32) |
 | 0x81 | `Actuators` | USB | 50 Hz | flaps, TVC deflection, thrust, ground distance, roll torque (40 B) |
 | 0x82 | `Mission` | USB | 20 Hz | setpoint, mission time (s), index, phase, attitude setpoint `setpoint_q` (f32 [w,x,y,z] body -> world; all 0 = none), `mission_mode`, `waypoint`, 52 B |
