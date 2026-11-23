@@ -11,6 +11,7 @@
 
 #include "../starship_flaps.hpp"
 #include "../telemetry.hpp"
+#include "../safety/motor_enable.hpp"
 
 namespace VCTR
 {
@@ -38,6 +39,10 @@ protected:
     MissionAbstract* nextMission_ = nullptr; // The next mission to run after this one is finished.
 
     bool actuatorsEnabled_ = false;
+
+    /// Mission output: request for the motor software-control enable (Safety::motorEnableFor applies it). Default
+    /// Unchanged = the behaviour from before this output existed. Only MissionFreefall requests Enable (pre-spin).
+    Safety::MotorsRequest motorsRequest_ = Safety::MotorsRequest::Unchanged;
 
     //If true, then safety measures for leaving out of bound for position and attitude are disabled. This should only be used by missions that are highly dynamic and ran in safe areas.
     bool disableKinematicSafety_ = false;
@@ -94,6 +99,10 @@ public:
 
     bool getActuatorsEnabled() {
         return actuatorsEnabled_;
+    }
+
+    Safety::MotorsRequest getMotorsRequest() const {
+        return motorsRequest_;
     }
 
     bool getDisableKinematicSafety() {

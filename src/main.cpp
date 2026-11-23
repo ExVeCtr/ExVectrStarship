@@ -38,6 +38,7 @@
 #include "starship_tvc.hpp"
 #include "safety/estimator_zeroing.hpp"
 #include "safety/control_phase.hpp"
+#include "safety/motor_enable.hpp"
 #include "safety/mission_abort.hpp"
 #include "safety/motor_interlock.hpp"
 #include "safety/rc_command.hpp"
@@ -1840,22 +1841,23 @@ public:
     return false;
   }
 
+  /// Applies the one pure mapping Safety::motorEnableFor (safety/motor_enable.hpp): the mission's actuator enable and
+  /// motors request, the shutdown, and the freefall flap rule. The interlock is never an input (the hard gate in
+  /// StarshipTVC ANDs it).
   void vehicleShutdownControl(bool shutdown) {
-    if (shutdown) {
-      starshipTVC.enableActuators(false);
-      starshipFlaps.enableActuators(false);
-      bodySimulator.enableTVC(false);
-      return;
-    }
-
-    if (mission_ == &missionFreefallTask) {
-      starshipFlaps.enableActuators(true);
-    } else
-      starshipFlaps.enableActuators(mission_->getActuatorsEnabled());
-
-    starshipTVC.enableActuators(mission_->getActuatorsEnabled());
-    bodySimulator.enableTVC(mission_->getActuatorsEnabled());
-    bodySimulator.enableFlaps(starshipFlaps.actuatorsEnabled());
+    Safety::MotorEnableInput in;
+    in.shutdown = shutdown;
+    in.missionActuatorsEnabled = mission_->getActuatorsEnabled();
+    in.freefallActive = mission_ == &missionFreefallTask;
+    in.request = mission_->getMotorsRequest();
+    in.motorsEnabledNow = starshipTVC.isMotorsEnabled();
+    const Safety::MotorEnableOutput out = Safety::motorEnableFor(in);
+    starshipTVC.enableMotors(out.enableMotors);
+    starshipTVC.enableActuators(out.tvcActuators);
+    starshipFlaps.enableActuators(out.flapActuators);
+    bodySimulator.enableTVC(out.simTvc);
+    if (!shutdown)
+      bodySimulator.enableFlaps(starshipFlaps.actuatorsEnabled());
   }
 
   /// Any latched failure flag (a failsafe: mode Failure, cleared only by clearFailures() through the SE reset).
