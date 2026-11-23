@@ -88,6 +88,7 @@ Maps the attitude controller's force/torque demand to four exhaust vanes (XP, XN
    Opposite vanes are mirrored, so a common `twist` produces roll torque. PWM value = `cmd·0.5 + 0.5` (`.cpp:255-258`), neutral 1.5 ms. Offsets plus twist plus full deflection can exceed ±1 and are then clipped by PWM_Output.
 5. Fin trim offsets, set in main.cpp:1771-1772: **XP +5°, XN −2°, YP 0°, YN +5°**. The way they enter the formulas above means every offset is added to that vane's normalised command with a positive sign.
 6. Motors: `cmd = |F|/14 · motorPowerLimit`, capped at `motorPowerLimit`, then `+ 0.04` idle (`.cpp:200-205`, `:272-274`). Both motors get the same value, so there is no differential yaw from the motors. The full range is 0.04 … 1.04, clipped to 1.0.
+   - **Enabled motor at zero thrust (verified 2026-11-23):** `motorPowerLimit` is 1.0 (`main.cpp`), so the output is `0.04 + |F|/14`. A zero thrust command gives 0.04, which the `STANDARD` protocol (400 Hz, `pulse = 1 ms + value · 1 ms`) turns into a 1040 us pulse (idle), and the disabled-controller neutral command 0.1 N gives about 1047 us. Disabled (gate closed) = pulse 0. The first time the motors are enabled after boot the output is 0.0 for 2 s (`firstMotorEnable_`, ESC arming), afterwards the idle floor starts at once. Whether the motors actually spin at that pulse is up to the ESC (not verified on hardware). Used by the freefall pre-spin (missions.md section 4).
 
 **Gating:**
 
