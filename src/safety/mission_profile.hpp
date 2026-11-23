@@ -16,6 +16,8 @@
 
 #include <stdint.h>
 
+#include "safety/mission_params.hpp"
+
 namespace VCTR {
 namespace Safety {
 
@@ -47,7 +49,11 @@ struct MissionProfileDesc {
 bool isKnownProfile(uint8_t profile);
 
 /// Description of a profile: the waypoint list of a test profile, `flight` for 2, `!valid` for anything else.
-MissionProfileDesc missionProfileFor(uint8_t profile);
+MissionProfileDesc missionProfileFor(uint8_t profile, const MissionParamSet &params = MissionParamSet());
+
+/// The apogee waypoint of the flight list (profile 2, last waypoint): altitude and climb speed from the parameters,
+/// loiter 5 s. timeLimitS is 0: the waypoint task computes the limit as for the hard-coded list.
+ProfileWaypoint flightApogeeWaypoint(const MissionParamSet &params = MissionParamSet());
 
 /// Short name for logs and the ground station ("hover test", "waypoint test", "flight").
 const char *profileName(uint8_t profile);

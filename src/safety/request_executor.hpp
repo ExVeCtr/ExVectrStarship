@@ -30,6 +30,8 @@
  *    21 slow factor 0.05..1 (Safety::decideSimFault).
  *  - 23 GET_HOME_POSITION: DONE and RequestResult::sendHome (the caller sends the HOME_POSITION packet after the ACK);
  *    no position reference yet -> REJECTED_STATE 4 and no packet.
+ *  - 24 SET_MISSION_PARAM: arg_i = id 1..6, arg_f = value; on the ground (else REJECTED_STATE 1), unknown id or
+ *    non-finite / out-of-range value REJECTED_INVALID 1 (Safety::missionParamValid), idempotent, not stored.
  *  Everything else (reset, link actions) is not implemented on the vehicle: REJECTED_INVALID detail 3.
  * The executor never touches vehicle state itself: the actions go through RequestActionsI.
  */
@@ -82,6 +84,8 @@ public:
   virtual bool zeroEstimators(float windowS) = 0;
   /// Applies an already validated stop altitude.
   virtual void setStopAltitude(float metres) = 0;
+  /// Applies an already validated mission parameter (id 1..6, see mission_params.hpp).
+  virtual void setMissionParam(uint8_t id, float value) = 0;
   /// Calibration (same code as the former telecommands). False = refused (logged by the implementation).
   virtual bool calibApply(uint8_t subsystem) = 0;
   virtual bool saveConfig() = 0;
@@ -105,7 +109,7 @@ public:
   static constexpr uint8_t kActionCalibApply = 7, kActionSaveConfig = 8, kActionCalibControl = 14;
   static constexpr uint8_t kActionSimWindSpeed = 15, kActionSimWindDirection = 16, kActionSimGustStrength = 17,
                            kActionSimGustPeriod = 18, kActionSimGustSeed = 19, kActionSimFlapStuck = 20,
-                           kActionSimFlapSlow = 21, kActionSimFaultClear = 22, kActionGetHomePosition = 23;
+                           kActionSimFlapSlow = 21, kActionSimFaultClear = 22, kActionGetHomePosition = 23, kActionSetMissionParam = 24;
   static constexpr uint8_t kStatusDone = 0, kStatusRejectedState = 2, kStatusRejectedInvalid = 3;
   // REJECTED_STATE details
   static constexpr uint8_t kDetailNotOnGround = 1, kDetailZeroingRefused = 2, kDetailSession = 3,

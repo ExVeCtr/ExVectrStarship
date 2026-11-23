@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include "mission_params.hpp"
 #include "stop_altitude.hpp"
 
 #ifndef FLASHMEM // cold code runs from flash and keeps ITCM (RAM1 code) small; empty on the host
@@ -47,7 +48,7 @@ FLASHMEM void RequestExecutor::remember(const RequestMsg &m, const RequestResult
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-static bool knownAction(uint8_t a) { return a == 7 || a == 8 || (a >= 12 && a <= 23); }
+static bool knownAction(uint8_t a) { return a == 7 || a == 8 || (a >= 12 && a <= 24); }
 
 FLASHMEM RequestResult RequestExecutor::decide(const RequestMsg &m, const RequestContext &ctx, RequestActionsI &actions) {
   RequestResult r;
@@ -62,10 +63,14 @@ FLASHMEM RequestResult RequestExecutor::decide(const RequestMsg &m, const Reques
     return fail(kStatusRejectedState, kDetailSession);
 
   const uint8_t act = m.action;
-  if (act == kActionZeroEstimators || act == kActionSetStopAltitude) {
+  if (act == kActionZeroEstimators || act == kActionSetStopAltitude || act == kActionSetMissionParam) {
     if (ctx.committed || ctx.interlockOpen) return fail(kStatusRejectedState, kDetailNotOnGround);
     if (act == kActionZeroEstimators) {
       if (!actions.zeroEstimators(m.argF)) return fail(kStatusRejectedState, kDetailZeroingRefused);
+    } else if (act == kActionSetMissionParam) {
+      if (m.argI < 1 || m.argI > kMissionParamCount || !missionParamValid(static_cast<uint8_t>(m.argI), m.argF))
+        return fail(kStatusRejectedInvalid, kDetailArgRange);
+      actions.setMissionParam(static_cast<uint8_t>(m.argI), m.argF);
     } else {
       StopAltContext sc;
       sc.interlockOpen = ctx.interlockOpen;

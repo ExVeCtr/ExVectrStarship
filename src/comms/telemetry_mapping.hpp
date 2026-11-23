@@ -19,6 +19,7 @@
 #include "ExVectrPackets/gen/all.hpp"
 
 #include "safety/command_ingress.hpp"
+#include "safety/mission_params.hpp"
 #include "safety/rc_mapper.hpp"
 #include "telemetry.hpp"
 
@@ -40,6 +41,7 @@ struct SensorCalibration {
 /// Everything the telemetry sets need, sampled once per telemetry tick.
 struct TelemetrySnapshot {
   int64_t t_ns = 0; ///< vehicle time NowNs()
+  Safety::MissionParamSet missionParams; ///< runtime mission parameters (MISSION_PARAMS)
 
   // Vehicle and mission state (VehicleSafetyAndControlTask)
   VehicleMode mode = VehicleMode::VehicleMode_Startup;
@@ -202,6 +204,9 @@ Packets::Estimator makeEstimator(const TelemetrySnapshot &s);
 /// raw_frame SENSOR; offsets and matrices copied, the mag offset converted gauss -> T (x 1e-4); the matrices are
 /// unit-free, so the ground station gets cal = M * (raw - offset) in SI from the IMU_RAW values.
 Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
+
+/// MISSION_PARAMS (0x26): the six runtime mission parameters from the store, SI.
+Packets::MissionParams makeMissionParams(const TelemetrySnapshot &s);
 /// CMD_APPLIED (0x84, USB only, 10 Hz) from snapshot.cmdApplied.
 Packets::CmdApplied makeCmdApplied(const TelemetrySnapshot &s);
 /// Fills snapshot.ctrlSource, rcAgeS, ctrlFlags, cmdSession, rcRejected and cmdApplied from the command ingress

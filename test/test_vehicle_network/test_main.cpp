@@ -352,6 +352,8 @@ void test_telemetry_sets_and_rates() {
   TEST_ASSERT_EQUAL_UINT32(0, rig->gsUart.counter.n[Packets::CmdApplied::kPort]);
   TEST_ASSERT_EQUAL_UINT32(1, usb.n[Packets::Calibration::kPort]); // 0.5 Hz: tick 17 of the first 2 s
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Calibration::kPort]);
+  TEST_ASSERT_EQUAL_UINT32(1, usb.n[Packets::MissionParams::kPort]); // 1 Hz on USB
+  TEST_ASSERT_EQUAL_UINT32(1, uart.n[Packets::MissionParams::kPort]); // 0.5 Hz on the radio: tick 21 of the first 2 s
   TEST_ASSERT_EQUAL_UINT8(0xFF, usb.lastDst[Packets::HandsetTelem::kPort]);
   TEST_ASSERT_EQUAL_UINT8(0, usb.lastDst[Packets::Pose::kPort]);
   // Radio set on the UART (air rates), nothing from the USB-only range
@@ -373,7 +375,7 @@ void test_telemetry_sets_and_rates() {
     if (p >= 0x80) usbOnly += uart.n[p];
   }
   TEST_ASSERT_EQUAL_UINT32(0, usbOnly);
-  TEST_ASSERT_EQUAL_UINT32(73, uartTotal); // 5 + 25 + 25 + 5 + 2 + 10 + 1
+  TEST_ASSERT_EQUAL_UINT32(74, uartTotal); // 5 + 25 + 25 + 5 + 2 + 10 + 1 + 1 (MISSION_PARAMS, first 2 s)
   // Vehicle heartbeat on both links
   const NodeEntry *hu = rig->gsUsb.node.entry(1);
   const NodeEntry *hr = rig->gsUart.node.entry(1);

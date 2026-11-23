@@ -20,7 +20,7 @@ constexpr float kClimbLimitS = 10.0f; // as the flight hover check
 
 bool isKnownProfile(uint8_t profile) { return profile <= kProfileFlight; }
 
-FLASHMEM MissionProfileDesc missionProfileFor(uint8_t profile) {
+FLASHMEM MissionProfileDesc missionProfileFor(uint8_t profile, const MissionParamSet &p) {
   MissionProfileDesc d;
   switch (profile) {
   case kProfileFlight:
@@ -31,20 +31,24 @@ FLASHMEM MissionProfileDesc missionProfileFor(uint8_t profile) {
     d.valid = true;
     d.count = 2;
     d.wp[0] = kPad;
-    d.wp[1] = {0, 0, 1, kV, 3, 1, kThr, 30, kClimbLimitS};
+    d.wp[1] = {0, 0, 1, kV, 3, 1, kThr, p.hoverHoldS, kClimbLimitS};
     break;
   case kProfileWaypointTest:
     d.valid = true;
     d.count = 4;
     d.wp[0] = kPad;
-    d.wp[1] = {0, 0, 1, kV, 3, 1, kThr, 10, kClimbLimitS};
-    d.wp[2] = {2, 0, 1, kV, 3, 1, kThr, 15, kLegLimitS};
-    d.wp[3] = {2, 2, 1, kV, 3, 1, kThr, 15, kLegLimitS};
+    d.wp[1] = {0, 0, 1, kV, 3, 1, kThr, p.p1Hold1S, kClimbLimitS};
+    d.wp[2] = {2, 0, 1, kV, 3, 1, kThr, p.p1Hold2S, kLegLimitS};
+    d.wp[3] = {2, 2, 1, kV, 3, 1, kThr, p.p1Hold3S, kLegLimitS};
     break;
   default:
     break;
   }
   return d;
+}
+
+FLASHMEM ProfileWaypoint flightApogeeWaypoint(const MissionParamSet &p) {
+  return {0, 0, p.apogeeAltitude, p.ascentSpeed, 3, 2, 3, 5, 0};
 }
 
 FLASHMEM const char *profileName(uint8_t profile) {

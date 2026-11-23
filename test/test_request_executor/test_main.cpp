@@ -19,6 +19,14 @@ struct Actions : RequestActionsI {
     stopCalls++;
     stopArg = m;
   }
+  int mpCalls = 0;
+  uint8_t mpId = 0;
+  float mpVal = -1.0f;
+  void setMissionParam(uint8_t id, float v) override {
+    mpCalls++;
+    mpId = id;
+    mpVal = v;
+  }
   int calls = 0; // all other actions
   uint8_t sub = 99, code = 99;
   bool calibOk = true;
@@ -311,6 +319,47 @@ void test_sim_flap_faults() {
   expect(run(msg(14, 22)), 2, 5);
 }
 
+void test_set_mission_param() {
+  RequestResult r = run(msgI(1, 24, 2, 150.0f));
+  expect(r, 0, 0);
+  TEST_ASSERT_EQUAL_INT(1, act.mpCalls);
+  TEST_ASSERT_EQUAL_UINT8(2, act.mpId);
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, act.mpVal);
+  // idempotent: the same value again is accepted (new request id)
+  expect(run(msgI(2, 24, 2, 150.0f)), 0, 0);
+  // range edges
+  expect(run(msgI(3, 24, 1, 0.5f)), 0, 0);
+  expect(run(msgI(4, 24, 1, 10.0f)), 0, 0);
+  expect(run(msgI(5, 24, 6, 600.0f)), 0, 0);
+  expect(run(msgI(6, 24, 3, 0.0f)), 0, 0);
+  const int ok = act.mpCalls;
+  // invalid: unknown id, out of range, non-finite
+  expect(run(msgI(10, 24, 0, 5.0f)), 3, 1);
+  expect(run(msgI(11, 24, 7, 5.0f)), 3, 1);
+  expect(run(msgI(12, 24, -1, 5.0f)), 3, 1);
+  expect(run(msgI(13, 24, 1, 0.49f)), 3, 1);
+  expect(run(msgI(14, 24, 1, 10.1f)), 3, 1);
+  expect(run(msgI(15, 24, 2, 1.9f)), 3, 1);
+  expect(run(msgI(16, 24, 2, 1000.5f)), 3, 1);
+  expect(run(msgI(17, 24, 4, -0.1f)), 3, 1);
+  expect(run(msgI(18, 24, 5, 600.1f)), 3, 1);
+  expect(run(msgI(19, 24, 6, NAN)), 3, 1);
+  expect(run(msgI(20, 24, 1, INFINITY)), 3, 1);
+  TEST_ASSERT_EQUAL_INT(ok, act.mpCalls);
+  // ground only: committed or interlock open
+  ctx.committed = true;
+  expect(run(msgI(30, 24, 2, 100.0f)), 2, 1);
+  ctx.committed = false;
+  ctx.interlockOpen = true;
+  expect(run(msgI(31, 24, 2, 100.0f)), 2, 1);
+  ctx.interlockOpen = false;
+  // session
+  RequestMsg m = msgI(32, 24, 2, 100.0f);
+  m.session = kSess + 1;
+  expect(run(m), 2, 3);
+  TEST_ASSERT_EQUAL_INT(ok, act.mpCalls);
+}
+
 void test_get_home_position() {
   RequestResult r = run(msg(1, 23));
   expect(r, 0, 0);
@@ -383,6 +432,7 @@ int main() {
   RUN_TEST(test_sim_actions_only_in_simulation);
   RUN_TEST(test_sim_wind_gust_clamping);
   RUN_TEST(test_sim_flap_faults);
+  RUN_TEST(test_set_mission_param);
   RUN_TEST(test_get_home_position);
   RUN_TEST(test_new_actions_need_session_and_dedupe);
   RUN_TEST(test_counters_and_inbox);

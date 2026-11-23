@@ -152,6 +152,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::Estimator::kUsbRateHz, 4)) sendOn(usbNode_, gs, makeEstimator(s));
   if (due(t, Packets::Gnss::kUsbRateHz, 3)) sendOn(usbNode_, gs, makeGnss(s));
   if (due(t, Packets::HandsetTelem::kUsbRateHz, 7)) sendOn(usbNode_, bc, makeHandsetTelem(s));
+  if (due(t, Packets::MissionParams::kUsbRateHz, 19)) sendOn(usbNode_, gs, makeMissionParams(s)); // 1 Hz
   if (calibrationDue(t)) sendOn(usbNode_, gs, makeCalibration(s)); // USB only (port 0x93), 0.5 Hz
   if (due(t, Packets::CmdApplied::kUsbRateHz, kCmdAppliedPhase)) sendOn(usbNode_, gs, makeCmdApplied(s)); // USB only (0x84)
 
@@ -163,6 +164,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::AirMission::kAirRateHz, 9)) sendOn(uartNode_, gs, makeAirMission(s));
   if (due(t, Packets::HandsetTelem::kAirRateHz, 7)) sendOn(uartNode_, bc, makeHandsetTelem(s));
   if (due(t, Packets::AirGnss::kAirRateHz, kAirGnssPhase)) sendOn(uartNode_, gs, makeAirGnss(s));
+  if ((t % kMissionParamsAirPeriodTicks) == 21) sendOn(uartNode_, gs, makeMissionParams(s)); // 0.5 Hz
   if (due(t, Packets::AirGnssInfo::kAirRateHz, kAirGnssInfoPhase)) sendOn(uartNode_, gs, makeAirGnssInfo(s));
 }
 

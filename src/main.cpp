@@ -409,6 +409,7 @@ private:
   bool countdownGyroRun_ = false; ///< the active automatic gyro run closes the mission countdown
   char lastCalibAbortReason_[96] = ""; ///< reason text of the last countdown abort for bad calibration (log only)
 
+  Safety::MissionParamSet missionParams_; // runtime mission parameters (SET_MISSION_PARAM), RAM only
   size_t missionSelection_ = 0; // The index of the currently selected mission.
   Core::ListArray<MissionAbstract *> missionList_;
 
@@ -799,26 +800,7 @@ public:
    * test missions: the test waypoints (all with the cancel flag), then straight to the default mission (RTH, landing):
    * no kick, no freefall. Only called while the waypoint mission is not running (boot, go).
    */
-  FLASHMEM void configureWaypointChain(uint8_t profile) { // cold: boot and go only
-    missionWaypointTask.clearWaypoints();
-    const Safety::MissionProfileDesc d = Safety::missionProfileFor(profile);
-    if (d.valid && !d.flight) {
-      for (uint8_t i = 0; i < d.count; i++) {
-        const Safety::ProfileWaypoint &w = d.wp[i];
-        missionWaypointTask.addWaypoint({w.x, w.y, w.z}, w.velocity, w.startAccel, w.stopAccel, w.thresholdM,
-                                        int64_t(w.loiterS * float(Core::SECONDS)),
-                                        int64_t(w.timeLimitS * float(Core::SECONDS)), true);
-      }
-      missionWaypointTask.setNextMission(&defaultMission_);
-      return;
-    }
-    missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
-    missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
-    missionWaypointTask.addWaypoint({0, 0, 120}, 7, 3, 2, 3, 5 * Core::SECONDS);
-    missionWaypointTask.setNextMission(&missionBellyflop);
-    missionBellyflop.setNextMission(&missionFreefallTask);
-    missionFreefallTask.setNextMission(&defaultMission_);
-  }
+  void configureWaypointChain(uint8_t profile); // cold: boot and go only (defined after the class, FLASHMEM)
 
   /// Go accepted by RcCommandLogic (Ready, no latch, no zeroing, SC = applied mode, SB profile 0, 1 or 2, no request in
   /// progress, observed SA edge). The calibration gates stay as they were for MissionBegin: all three calibrations
@@ -1549,6 +1531,14 @@ public:
     return false;
   }
 
+  const Safety::MissionParamSet &missionParams() const { return missionParams_; }
+
+  /// SET_MISSION_PARAM action (id and value validated by the executor; ground only).
+  void setMissionParam(uint8_t id, float value) override {
+    if (Safety::missionParamApply(missionParams_, id, value))
+      LOG_MSG("Mission parameter %u set to %.2f\n", unsigned(id), double(value));
+  }
+
   /// SET_STOP_ALTITUDE action (value already validated by the executor).
   void setStopAltitude(float metres) override {
     missionFreefallTask.setStopTargetAltitude(metres);
@@ -1905,6 +1895,31 @@ public:
     allSystemsInitialised_ = false; // Reset the system initialisation flag
   }
 };
+FLASHMEM void VehicleSafetyAndControlTask::configureWaypointChain(uint8_t profile) {
+  missionWaypointTask.clearWaypoints();
+  const Safety::MissionProfileDesc d = Safety::missionProfileFor(profile, missionParams_);
+  if (d.valid && !d.flight) {
+    for (uint8_t i = 0; i < d.count; i++) {
+      const Safety::ProfileWaypoint &w = d.wp[i];
+      missionWaypointTask.addWaypoint({w.x, w.y, w.z}, w.velocity, w.startAccel, w.stopAccel, w.thresholdM,
+                                      int64_t(w.loiterS * float(Core::SECONDS)),
+                                      int64_t(w.timeLimitS * float(Core::SECONDS)), true);
+    }
+    missionWaypointTask.setNextMission(&defaultMission_);
+    return;
+  }
+  missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
+  missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
+  const Safety::ProfileWaypoint apogee = Safety::flightApogeeWaypoint(missionParams_); // defaults: 120 m, 7 m/s
+  missionWaypointTask.addWaypoint({apogee.x, apogee.y, apogee.z}, apogee.velocity, apogee.startAccel,
+                                  apogee.stopAccel, apogee.thresholdM, 5 * Core::SECONDS);
+  if (missionParams_.apogeeAltitude < Safety::kApogeeNoFlipBelowM)
+    LOG_MSG("apogee below 90 m: no bellyflop, the flight ends in RTH\n");
+  missionWaypointTask.setNextMission(&missionBellyflop);
+  missionBellyflop.setNextMission(&missionFreefallTask);
+  missionFreefallTask.setNextMission(&defaultMission_);
+}
+
 VehicleSafetyAndControlTask vehicleSafetyAndControlTask;
 
 class FlapModeObserverTask : public Core::Task_Periodic {
@@ -2102,6 +2117,7 @@ public:
                           ? static_cast<uint8_t>(missionWaypointTask.currentWaypointIndex())
                           : uint8_t(0xFF);
     s.stopAltitudeM = missionFreefallTask.getStopTargetAltitude();
+    s.missionParams = vt.missionParams();
     s.flipStartAltitudeM = Safety::flipStartAltitude(vt.getCurrentMission() == &missionFreefallTask &&
                                                          missionFreefallTask.flipPhaseActive(),
                                                      missionFreefallTask.getStopAltitude());

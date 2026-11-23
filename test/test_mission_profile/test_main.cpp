@@ -80,6 +80,67 @@ static void test_waypoint_test() {
   TEST_ASSERT_TRUE(d.wp[3].timeLimitS > 2.0f / d.wp[3].velocity * 1.5f);
 }
 
+static void sameWp(const ProfileWaypoint &a, const ProfileWaypoint &b) {
+  TEST_ASSERT_EQUAL_MEMORY(&a, &b, sizeof(ProfileWaypoint)); // bit-identical (all members are floats, no padding)
+}
+
+static void test_defaults_reproduce_the_hard_coded_lists() {
+  const MissionParamSet p; // defaults
+  const MissionProfileDesc h = missionProfileFor(kProfileHoverTest, p);
+  const MissionProfileDesc w = missionProfileFor(kProfileWaypointTest, p);
+  const ProfileWaypoint pad = {0, 0, 0.3f, 0, 3, 1, 5, 0, 10};
+  sameWp(h.wp[0], pad);
+  sameWp(h.wp[1], {0, 0, 1, 0.5f, 3, 1, 0.5f, 30, 10});
+  sameWp(w.wp[0], pad);
+  sameWp(w.wp[1], {0, 0, 1, 0.5f, 3, 1, 0.5f, 10, 10});
+  sameWp(w.wp[2], {2, 0, 1, 0.5f, 3, 1, 0.5f, 15, 12});
+  sameWp(w.wp[3], {2, 2, 1, 0.5f, 3, 1, 0.5f, 15, 12});
+  // the flight apogee waypoint: {0, 0, 120} 7 m/s, accel 3 / 2, threshold 3 m, hold 5 s (main.cpp, as before)
+  sameWp(flightApogeeWaypoint(p), {0, 0, 120, 7, 3, 2, 3, 5, 0});
+  sameWp(flightApogeeWaypoint(), {0, 0, 120, 7, 3, 2, 3, 5, 0});
+  // the default-argument form equals the explicit defaults
+  sameWp(missionProfileFor(kProfileHoverTest).wp[1], h.wp[1]);
+}
+
+static void test_parameters_change_the_lists() {
+  MissionParamSet p;
+  TEST_ASSERT_TRUE(missionParamApply(p, 1, 4.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 2, 30.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 3, 5.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 4, 1.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 5, 2.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 6, 0.0f));
+  const ProfileWaypoint a = flightApogeeWaypoint(p);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, a.z);
+  TEST_ASSERT_EQUAL_FLOAT(4.0f, a.velocity);
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, missionProfileFor(kProfileHoverTest, p).wp[1].loiterS);
+  const MissionProfileDesc w = missionProfileFor(kProfileWaypointTest, p);
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, w.wp[1].loiterS);
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, w.wp[2].loiterS);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, w.wp[3].loiterS);
+  TEST_ASSERT_TRUE(a.z < kApogeeNoFlipBelowM);
+}
+
+static void test_param_validation() {
+  MissionParamSet p;
+  TEST_ASSERT_FALSE(missionParamApply(p, 0, 1.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 7, 1.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 1, 0.4f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 1, 10.5f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 2, 1.5f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 2, 1001.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 3, -1.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 4, 601.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 5, NAN));
+  TEST_ASSERT_FALSE(missionParamApply(p, 6, INFINITY));
+  TEST_ASSERT_EQUAL_FLOAT(7.0f, p.ascentSpeed); // nothing changed
+  TEST_ASSERT_EQUAL_FLOAT(120.0f, p.apogeeAltitude);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, p.hoverHoldS);
+  TEST_ASSERT_TRUE(missionParamApply(p, 2, 1000.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 2, 2.0f));
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, p.apogeeAltitude);
+}
+
 static GoContext okContext(uint8_t profile) {
   GoContext c;
   c.modeReady = true;
@@ -116,6 +177,9 @@ int main(int, char **) {
   RUN_TEST(test_known_profiles);
   RUN_TEST(test_flight_profile_is_not_described);
   RUN_TEST(test_hover_test);
+  RUN_TEST(test_defaults_reproduce_the_hard_coded_lists);
+  RUN_TEST(test_parameters_change_the_lists);
+  RUN_TEST(test_param_validation);
   RUN_TEST(test_waypoint_test);
   RUN_TEST(test_decide_go_profiles);
   return UNITY_END();
