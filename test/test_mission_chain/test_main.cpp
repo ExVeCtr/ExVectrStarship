@@ -865,6 +865,40 @@ static void test_hover_check_failure_goes_to_rth() {
   TEST_ASSERT_FALSE(v.anyActuator());
 }
 
+/// Test profiles 0 and 1 (src/safety/mission_profile.hpp): waypoint -> RTH directly, no kick, no freefall, at the
+/// low altitude of the test waypoints (below kMinKickAltitudeM).
+static void test_test_profile_chain_goes_straight_to_rth() {
+  Vehicle v;
+  v.wp.next = &v.rth; // main.cpp configureWaypointChain(0 or 1): setNextMission(&defaultMission_)
+  v.altitude = 1.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(200 * S);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_EQUAL(0, v.ff.begins);
+  TEST_ASSERT_EQUAL(1, v.rth.begins);
+  TEST_ASSERT_EQUAL(ChainRedirect::None, v.lastRedirect);
+  TEST_ASSERT_TRUE(v.active == &v.rth);
+  TEST_ASSERT_TRUE(v.rth.mode == Mode::Finished);
+  TEST_ASSERT_FALSE(v.chain.pending());
+  TEST_ASSERT_FALSE(v.anyActuator());
+}
+
+static void test_test_profile_abort_and_reset() {
+  Vehicle v;
+  v.wp.next = &v.rth;
+  v.altitude = 1.0f;
+  v.runFor(2 * S);
+  v.missionBegin(-15 * S);
+  v.runFor(20 * S); // Running (hover)
+  v.systemReset();
+  v.runFor(60 * S);
+  TEST_ASSERT_EQUAL(0, v.bf.begins);
+  TEST_ASSERT_EQUAL(0, v.rth.begins);
+  TEST_ASSERT_FALSE(v.chain.pending());
+  TEST_ASSERT_FALSE(v.anyActuator());
+}
+
 static void test_ascent_timeout_low_goes_to_rth() {
   // The waypoint mission ends without the cancel flag (ascent waypoint time limit) at 50 m: no kick, RTH.
   Vehicle v;
@@ -939,6 +973,8 @@ int main(int, char **) {
   RUN_TEST(test_kick_gate_step_rules);
   RUN_TEST(test_hover_check_failure_goes_to_rth);
   RUN_TEST(test_ascent_timeout_low_goes_to_rth);
+  RUN_TEST(test_test_profile_chain_goes_straight_to_rth);
+  RUN_TEST(test_test_profile_abort_and_reset);
   RUN_TEST(test_ascent_end_at_apogee_goes_to_bellyflop);
   RUN_TEST(test_abort_low_unchanged_by_kick_gate);
   RUN_TEST(test_sa_level_countdown_resets_once_and_nothing_follows);

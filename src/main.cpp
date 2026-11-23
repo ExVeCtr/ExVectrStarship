@@ -46,6 +46,7 @@
 #include "safety/descent_target.hpp"
 #include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
+#include "safety/mission_profile.hpp"
 #include "subsystems.hpp"
 #include "telecommand.hpp"
 #include "safety/stop_altitude.hpp"
@@ -783,7 +784,34 @@ public:
     LOG_MSG("SA released: %s (alt %.2f m, speed %.2f m/s)\n", Safety::toString(action), double(pos(5)), double(speed));
   }
 
-  /// Go accepted by RcCommandLogic (Ready, no latch, no zeroing, SC = applied mode, SB profile 2, no request in
+  /**
+   * Waypoint list and chain of the SB profile (Safety::missionProfileFor), set at the go edge and at boot.
+   * Profile 2 is the flight exactly as before (waypoint list, bellyflop, freefall, RTH). Profiles 0 and 1 are the
+   * test missions: the test waypoints (all with the cancel flag), then straight to the default mission (RTH, landing):
+   * no kick, no freefall. Only called while the waypoint mission is not running (boot, go).
+   */
+  FLASHMEM void configureWaypointChain(uint8_t profile) { // cold: boot and go only
+    missionWaypointTask.clearWaypoints();
+    const Safety::MissionProfileDesc d = Safety::missionProfileFor(profile);
+    if (d.valid && !d.flight) {
+      for (uint8_t i = 0; i < d.count; i++) {
+        const Safety::ProfileWaypoint &w = d.wp[i];
+        missionWaypointTask.addWaypoint({w.x, w.y, w.z}, w.velocity, w.startAccel, w.stopAccel, w.thresholdM,
+                                        int64_t(w.loiterS * float(Core::SECONDS)),
+                                        int64_t(w.timeLimitS * float(Core::SECONDS)), true);
+      }
+      missionWaypointTask.setNextMission(&defaultMission_);
+      return;
+    }
+    missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
+    missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
+    missionWaypointTask.addWaypoint({0, 0, 120}, 7, 3, 2, 3, 5 * Core::SECONDS);
+    missionWaypointTask.setNextMission(&missionBellyflop);
+    missionBellyflop.setNextMission(&missionFreefallTask);
+    missionFreefallTask.setNextMission(&defaultMission_);
+  }
+
+  /// Go accepted by RcCommandLogic (Ready, no latch, no zeroing, SC = applied mode, SB profile 0, 1 or 2, no request in
   /// progress, observed SA edge). The calibration gates stay as they were for MissionBegin: all three calibrations
   /// good and the countdown gyro run started. The interlock is NOT a precondition (owner 2026-11-21); the motors
   /// are enabled for the mission exactly as in flight, the simulation flag is not looked at.
@@ -798,12 +826,14 @@ public:
     }
     const int64_t startTime = int64_t(Safety::kGoCountdownParamInt) * Core::SECONDS;
     missionSelection_ = 1;
+    configureWaypointChain(profile);
     switchMissionTo(&missionWaypointTask, startTime);
     missionChain_.begin(); // the configured chain may advance from now on
     vehicleMode_ = VehicleMode::VehicleMode_Running;
     missionProfile_ = profile;
     starshipTVC.enableMotors(true); // same in simulation and real mode (safety.md rule 9)
-    LOG_MSG("GO: mission begin, profile %u, countdown %d s\n", unsigned(profile), -int(Safety::kGoCountdownParamInt));
+    LOG_MSG("GO: mission begin, profile %u (%s), countdown %d s\n", unsigned(profile), Safety::profileName(profile),
+            -int(Safety::kGoCountdownParamInt));
   }
 
   /// SE short press on the ground with the interlock closed: the system reset (user decision 2026-11-20): the mission
@@ -1009,13 +1039,7 @@ public:
     missionList_.append(&defaultMission_);
     missionList_.append(&missionWaypointTask);
 
-    missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 * Core::SECONDS);
-    missionWaypointTask.addWaypoint(
-        {0, 0, 1}, 0.5, 3, 1, 0.5, 5 * Core::SECONDS, 10 * Core::SECONDS, true);
-    missionWaypointTask.addWaypoint({0, 0, 120}, 7, 3, 2, 3, 5 * Core::SECONDS);
-    missionWaypointTask.setNextMission(&missionBellyflop);
-    missionBellyflop.setNextMission(&missionFreefallTask);
-    missionFreefallTask.setNextMission(&defaultMission_);
+    configureWaypointChain(Safety::kProfileFlight); // the flight chain until a go selects another profile
 
     // missionWaypointTask.addWaypoint({0, 0, 0.3}, 0, 3, 1, 5, 0 *
     // Core::SECONDS); missionWaypointTask.addWaypoint({0, 0, 1}, 0.5, 3, 1,

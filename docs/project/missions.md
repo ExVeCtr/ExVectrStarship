@@ -323,11 +323,11 @@ Other ways a mission gets switched:
 
 | Source | Condition | Action |
 |---|---|---|
-| SA go edge (T9b-4, `applyRcCommands` -> `beginMissionFromGo`; was `Telecommand_MissionBegin`) | observed NOT_GO -> GO (`CMD_STATE.go`, SA through the ground station) of the latched session, vehicle mode `Ready`, no latched failsafe, no zeroing window and a valid zero, `vehicle_mode` equal to the applied mode, profile 2 (the only implemented profile), no calibration session or gyro run, then all three calibrations valid (real and simulation alike, [calibration.md](calibration.md)); the interlock is **not** a precondition | `switchMissionTo(&missionWaypointTask, -15 s)` (fixed countdown, `Safety::kGoCountdownParamInt`), vehicle mode → `Running`, `enableMotors(true)` **in simulation and real mode alike**. Init lasts until −10 s, Startup until 0 s. |
+| SA go edge (T9b-4, `applyRcCommands` -> `beginMissionFromGo`; was `Telecommand_MissionBegin`) | observed NOT_GO -> GO (`CMD_STATE.go`, SA through the ground station) of the latched session, vehicle mode `Ready`, no latched failsafe, no zeroing window and a valid zero, `vehicle_mode` equal to the applied mode, profile 0, 1 or 2 (`Safety::isKnownProfile`), no calibration session or gyro run, then all three calibrations valid (real and simulation alike, [calibration.md](calibration.md)); the interlock is **not** a precondition | `switchMissionTo(&missionWaypointTask, -15 s)` (fixed countdown, `Safety::kGoCountdownParamInt`), vehicle mode → `Running`, `enableMotors(true)` **in simulation and real mode alike**. Init lasts until −10 s, Startup until 0 s. |
 | SA released (T9b-4; was `Telecommand_MissionAbort`) | chain pending or vehicle mode `Running` | In flight: RTH hot start from any phase; on the ground: reset and stop (table above); every tick, idempotent. |
 | SE short press (T9b-4; was `Telecommand_SystemReset`) | on the ground, interlock closed (D12) | `resetMissionsToBootState()` plus the system state reset (overview.md), latches cleared. |
 | Mag data older than 2.5 s | vehicle mode `Running` and mission mode `Running` | switch to RTH (the phase table enables and resets the TVC set; unchanged trigger, not yet the abort decision) |
-| SB (T9b-4; was `Telecommand_MissionSelect`, a no-op) | read at the go edge | profile 2 starts the configured chain; SB 0 and 1 refuse the go until T9b-8. |
+| SB (T9b-4; was `Telecommand_MissionSelect`, a no-op) | read at the go edge | the profile selects the waypoint list and chain (`configureWaypointChain`, section 7a): 2 the flight, 0 hover test, 1 waypoint test; other values refuse the go (`go_refusal` 5). |
 
 `missionSelection_` is written into a **local copy** of `MissionState` at `:619` that is then discarded, so the telemetry `missionIndex` never carries it. The latched SB profile is reported in `VEHICLE_STATUS.mission_profile` (T9b-4).
 
@@ -379,6 +379,27 @@ Nominal timeline (MissionBegin with `paramInt = P < −10`):
 If `P > −10`, Init is skipped, and if `P ≥ 0`, Startup lasts one tick. The 10 Hz safety task can then miss those edges, so zeroing or the actuator test is skipped, or the 4 s TVC test (motors gated off) overlaps take-off.
 
 ---
+
+## 7a. Test missions (SB profiles 0 and 1, `feature/test-missions`, 2026-11-23)
+
+For continual testing of the control algorithms at low altitude with the existing machinery. The profile is the SB position **read at the go edge** and is reported in `VEHICLE_STATUS.mission_profile`. One small pure function, `Safety::missionProfileFor(profile)` (`src/safety/mission_profile.*`, host-tested in `test/test_mission_profile`), describes the waypoint list; `VehicleSafetyAndControlTask::configureWaypointChain(profile)` (main.cpp, FLASHMEM, called from `taskInit` with profile 2 and from `beginMissionFromGo` with the go's profile) loads it into `missionWaypointTask` (`clearWaypoints()`, `addWaypoint(...)`, `setNextMission`). **Profile 2 is the flight exactly as before** (the same three `addWaypoint` calls and the bellyflop, freefall, RTH next-chain, moved unchanged into `configureWaypointChain`).
+
+| SB | GS name | Waypoints (NWU: +X north, +Y west, Z up, origin = home, the position reference) | Then |
+|---|---|---|---|
+| 2 | flight | as section 7 | bellyflop, freefall, RTH |
+| 0 | hover test | pad (0,0,0.3), then (0,0,1) at 0.5 m/s, threshold 0.5 m, **hold 30 s** | RTH |
+| 1 | waypoint test | pad; (0,0,1) **hold 10 s**; (2,0,1) **hold 15 s**; (2,2,1) **hold 15 s** (all at 0.5 m/s, threshold 0.5 m, accelerations 3 / 1 m/s^2 as the flight hover waypoint) | RTH |
+
+- The test chains go **straight to the default mission (RTH)**: no kick, no freefall. RTH is the existing end of mission (stabilise, translation to its home point, descent at 0.2 m/s, landing detector, motors off, the interlock needs a new toggle). The landing logic is unchanged.
+- Every test waypoint has the **cancel flag** and an explicit time limit (10 s for the climb, 12 s for each 2 m leg; the pad point is passed at once as in the flight list): a waypoint not reached in time ends the test into RTH (`EndReason::Cancelled`, chain redirect `CancelledWaypoint`) instead of skipping to the next waypoint. The hold time counts from entering the 0.5 m threshold sphere (the existing waypoint semantics: the timer restarts whenever the vehicle leaves the sphere).
+- Everything else is as for the flight: the 15 s countdown (Initialisation with the estimator zero and gyro run, Startup with the TVC actuator test), calibration gates, interlock, failure latches, committed logic, the control failsafe, abort (SA down in flight = RTH, on the ground reset and stop), the ground ABORT. The go refusals are unchanged; `go_refusal` 5 now only means a profile other than 0, 1, 2.
+- `MissionPhase` is `Hover` while the waypoint index is 0 or 1 and `Ascent` from index 2 on (the flight's mapping), so profile 1 shows `Ascent` during its x/y legs. Cosmetic.
+
+**Owner bench procedure (simulation, motors electrically disconnected and no props; interlock may be armed, the simulation does not hold the motors off).** Vehicle in simulation mode (SC), Ready after the boot zero, SD armed, then per profile (SA down -> up, SB set first, SE short press to reset between runs):
+1. **SB 0:** log `GO: mission begin, profile 0 (hover test)`, `mission_profile` 0. After the 15 s countdown the simulated body climbs to 1 m, `waypoint_index` 1; hold 30 s at (0,0,1) within the 0.5 m sphere; then `Mission ended. Switching to default mission`, RTH, descent at home, `Landing` and motors off. Check: altitude does not exceed about 1 m before RTH starts (RTH then flies to its own 3 m home point, see Known issues), x and y stay near 0, no failure bit.
+2. **SB 1:** profile 1 in the log. Climb to 1 m, hold 10 s; setpoint x to 2 m (the pose x goes +2, NWU north), hold 15 s; then y to +2 (west), hold 15 s; then RTH to (0,0) and landing. `waypoint_index` runs 1, 2, 3. Check the signs of x and y in the pose telemetry and the position setpoint, the hold durations, no failure bit.
+3. **Abort:** SA down during a hold: RTH at once from the current setpoint; SA down during the countdown: reset and stop.
+4. **Unknown profile:** a CMD_STATE with profile 3 (or more) is rejected by the ingress decode; profile values above 2 can only reach decideGo from a test, which refuses with `go_refusal` 5.
 
 ## 8. `FlapModeObserverTask` (`main.cpp:1258-1335`)
 
@@ -467,3 +488,5 @@ Owner simulation bench check: run an RTH in simulation and let the body come to 
 In simulation mode the ground distance topic is fed by `SimLidar` (`src/sim_lidar.hpp`) instead of the VL53L0X path; only the source is switched (`groundTopicSwitch` in main.cpp), consumers have no simulation checks. The body simulator's height above flat ground (position reference) is republished as the measured distance only below `kSimLidarMaxRangeM` = 1.0 m; at 1.0 m or more nothing is published, the topic goes stale and the landing detector (range valid needs < 100 ms) and telemetry (`ground_distance` = NaN when older than 100 ms) see no reading, like the real sensor out of range. No noise. The covariance still comes from the real estimator topic. The GS shows it as "Ground distance".
 
 Owner simulation bench check: in simulation, hover at 0.8 m: ground distance reads 0.8 in the GS. At 1.5 m the field shows none. A tilted landing ends with motors off and mode on the ground.
+
+- **Test missions at low altitude: items the code does not have (2026-11-23, reported, nothing invented).** (1) RTH of the test chains goes to its home point (0,0,3): from the 1 m hold it flies up to 3 m (the translation setpoint moves to z = 3 at up to 2 m/s) before the 0.2 m/s descent; `homePosition_` is 3 m, not the hold altitude. (2) No take-off thrust ramp or ground-effect handling: the first waypoint is a 0.3 m pad point passed at once, so the setpoint steps to 0.3 m, then climbs at 0.5 m/s. (3) Waypoint mission with an invalid or stale position estimate: it uses the last received `positionIs_` and never checks validity or age itself; protection is only the general failure detection and the control failsafe. (4) No geofence or maximum-distance check for the x/y legs beyond the existing failure checks. (5) The hover check time limit (10 s) is measured from the start of the waypoint, not from the end of the previous hold. (6) Position-hold gains and the tip/ground behaviour at 1 m were not retuned for the test hovers.
