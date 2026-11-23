@@ -17,9 +17,12 @@
  * - isUartPeerSeen(): any valid frame from node 3 on the UART within kUartPeerTimeoutNs (3 s), the
  *   VEHICLE_STATUS UART_PEER_SEEN flag. Information only.
  * - isGroundStationPresent(): any valid frame from node 0 on either link within kGsTimeoutNs (2 s). Information
- *   only: the ground station is never a failure condition.
- * - controlSourceLost(): the ONE control failsafe rule (T9b-3): committed and the accepted RC_STATE of the latched
- *   source is older than 2 s. General link health (any valid frame, isRadioPacketRecent) is information only.
+ *   only (general link health, never a failure).
+ * - Command input (GS-control cutover, docs/gs-control-design.md): the ONLY control source is the ground station,
+ *   node 0, CMD_STATE (0x13) on USB and UART (CmdIngressTap, Safety::CommandIngress). Handset RC_STATE is not
+ *   interpreted.
+ * - controlSourceLost(): the ONE control failsafe rule (T9b-3): committed and the accepted CMD_STATE of the latched
+ *   session is older than 2 s. General link health (any valid frame, isRadioPacketRecent) is information only.
  * - TEMPORARY (removed in T9b): the legacy Telecommand on port LegacyTelecommandPacket::kPort, from node 0 only,
  *   is handed unchanged to the TelecommandSinkI (main.cpp publishes it on the existing telecommand topic).
  */
@@ -33,8 +36,8 @@
 #include "ExVectrNetwork/transport/PacketPort.hpp"
 #include "ExVectrNetwork/transport/PortMux.hpp"
 
-#include "rc_ingress_tap.hpp"
-#include "safety/control_source.hpp"
+#include "cmd_ingress_tap.hpp"
+#include "safety/command_ingress.hpp"
 #include "safety/motor_interlock.hpp"
 #include "safety/rc_mapper.hpp"
 #include "telemetry_mapping.hpp"
@@ -112,35 +115,40 @@ public:
   /// A radio packet (see isRadioPacketRecent) has arrived since boot.
   bool radioPacketSeen() const { return radioTap_.seen; }
   /// The control failsafe condition (T9b-3, the ONE rule): `committed` (interlock open, mission pending or Running,
-  /// computed by the caller at the moment of the check) and the latched control source is NONE or its last accepted
-  /// RC_STATE is older than 2 s. Not committed: false (D2-B). Reads a seqlock snapshot of the table, so it is safe
-  /// from the safety task. Only accepted RC_STATE refreshes the source: heartbeats, LINK_STATS, REQUESTs and
-  /// telecommands never do.
+  /// computed by the caller at the moment of the check) and the latched session has no accepted CMD_STATE within
+  /// 2 s. Not committed: false (D2-B). Reads a seqlock snapshot, so it is safe from the safety task. Only accepted
+  /// CMD_STATE refreshes it: heartbeats, LINK_STATS, REQUESTs and telecommands never do.
   bool controlSourceLost(bool committed) const;
+  /// The last accepted CMD_STATE of the latched session carried failsafe = 1 (GS failsafe request, bit 14). Safe
+  /// from the safety task (seqlock snapshot); false if there is none.
+  bool gsFailsafeRequested() const;
   /// A valid frame from the ship node (node 3) arrived on the UART (not USB) within kUartPeerTimeoutNs. Read from
   /// the UART node's node table (last frame time per source), so no raw byte polling. Information only: the
   /// NetworkStatus the ground station gets over USB reflects the USB node, so a dead UART is invisible there;
   /// VEHICLE_STATUS.flags UART_PEER_SEEN carries this. Vehicle behaviour never depends on it (safety.md 4.1).
   bool isUartPeerSeen() const;
-  /// T9b-1 control sources (observe only): RC_STATE of (2, UART) = RADIO and (0, USB) = BENCH, see
-  /// rc_ingress_tap.hpp and safety/control_source.hpp. pollNodes() runs the arbitration each tick.
-  const Safety::ControlSourceTable &controlSources() const { return controlSources_; }
+  /// The command ingress (session latch, per-link freshness, counters) and the mapper of its accepted states.
+  const Safety::CommandIngress &commandIngress() const { return ingress_; }
   const Safety::RcCommandMapper &rcMapper() const { return rcMapper_; }
-  /// T9b-4: the safety task consumes the mapper's edge events (takeEvents) and reads the decoded switches.
+  /// The safety task consumes the mapper's edge events (takeEvents) and reads the decoded fields.
   Safety::RcCommandMapper &rcMapper() { return rcMapper_; }
-  /// The active source (None allowed) and whether its last accepted state is at most `maxAgeNs` old (seqlock snapshot).
-  bool activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const;
-  /// The hard motor interlock (T9b-2). Fed by the RC taps and pollNodes(); read by the TVC and its watchdog.
+  /// A session is latched and its last accepted state is at most `maxAgeNs` old (seqlock snapshot).
+  bool sourceFresh(int64_t nowNs, int64_t maxAgeNs) const;
+  /// The hard motor interlock (T9b-2). Fed by the command taps; read by the TVC and its watchdog.
   Safety::MotorInterlock &motorInterlock() { return motorInterlock_; }
   const Safety::MotorInterlock &motorInterlock() const { return motorInterlock_; }
-  /// Input of the source latch: interlock open, mission pending or Running. Set by the safety task every run (T9b-2).
-  void setCommitted(bool committed) { committed_ = committed; }
-  /// True once after each change of the active source; `newActive` receives the new source (for the log line).
-  bool takeSourceChange(Safety::ControlSourceId &newActive);
-  /// Fills the RC fields of the snapshot (ctrl_source, rc_age, ctrl_flags, rc_rejected, RC_APPLIED).
-  void fillRcTelemetry(TelemetrySnapshot &s);
-  /// RC_APPLIED rate: 10 Hz on USB only (schema rate_usb), tick phase 5.
-  static constexpr uint32_t kRcAppliedPhase = 5;
+  /// Input of the session takeover rule: interlock open, mission pending or Running. Set by the safety task every
+  /// run (T9b-2). `modeFailure`: vehicle mode Failure (a restarted ground station may then take the session).
+  void setCommitted(bool committed, bool modeFailure) {
+    committed_ = committed;
+    modeFailure_ = modeFailure;
+  }
+  /// True once after each new session; `session` receives it (for the log line).
+  bool takeSessionChange(uint32_t &session) { return ingress_.takeSessionChange(session); }
+  /// Fills the command fields of the snapshot (ctrl_source, rc_age, ctrl_flags, rc_rejected, cmd_session, CMD_APPLIED).
+  void fillCmdTelemetry(TelemetrySnapshot &s);
+  /// CMD_APPLIED rate: 10 Hz on USB only (schema rate_usb), tick phase 5.
+  static constexpr uint32_t kCmdAppliedPhase = 5;
   /// A present node reported another network version or schema hash than ours.
   bool anyIncompatiblePeer() const;
 
@@ -182,12 +190,12 @@ private:
     void onFrame(const network::FrameView &f, uint8_t linkIndex) override;
   };
   RadioTap radioTap_;
-  Safety::ControlSourceTable controlSources_;
+  Safety::CommandIngress ingress_;
   Safety::RcCommandMapper rcMapper_;
   Safety::MotorInterlock motorInterlock_;
-  RcIngressTap usbRcTap_, uartRcTap_; ///< per-link RC_STATE decoding (T9b-1)
+  CmdIngressTap usbCmdTap_, uartCmdTap_; ///< per-link CMD_STATE decoding
   bool committed_ = false;
-  bool sourceChangePending_ = false;
+  bool modeFailure_ = false;
   uint32_t telecommandsAccepted_ = 0, telecommandsRejected_ = 0;
   ActuatorHistory actuatorHistory_; ///< AIR_ACTUATORS samples, one every kActuatorSampleTicks
 };

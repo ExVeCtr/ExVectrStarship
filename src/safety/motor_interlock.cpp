@@ -9,8 +9,8 @@ void MotorInterlock::clearTransition() {
   enabledValid_ = false;
 }
 
-void MotorInterlock::onRcState(ControlSourceId source, bool sdEnabled, int64_t rxNs) {
-  if (active_ == ControlSourceId::None || source != active_) return;
+void MotorInterlock::onCmdState(bool sdEnabled, int64_t rxNs) {
+  if (!haveSession_) return;
   if (haveLast_) {
     if (rxNs < lastRxNs_) return; // out of order: never counts
     if (rxNs - lastRxNs_ > kReconnectGapNs) {
@@ -38,14 +38,14 @@ void MotorInterlock::onRcState(ControlSourceId source, bool sdEnabled, int64_t r
   lastRxNs_ = rxNs;
 }
 
-void MotorInterlock::update(int64_t nowNs, ControlSourceId active) {
-  if (active != active_) {
-    active_ = active;
-    clearTransition();
-    haveLast_ = false;
-    return;
-  }
-  if (active_ != ControlSourceId::None && haveLast_ && nowNs - lastRxNs_ > kReconnectGapNs) {
+void MotorInterlock::onSessionChanged() {
+  haveSession_ = true;
+  clearTransition();
+  haveLast_ = false;
+}
+
+void MotorInterlock::update(int64_t nowNs) {
+  if (haveSession_ && haveLast_ && nowNs - lastRxNs_ > kReconnectGapNs) {
     clearTransition();
     haveLast_ = false;
   }
@@ -58,20 +58,20 @@ void MotorInterlock::requireRearm(RearmReason why) {
 }
 
 bool MotorInterlock::open(int64_t nowNs) const {
-  if (active_ == ControlSourceId::None || !transitionSeen_ || !enabledValid_) return false;
+  if (!haveSession_ || !transitionSeen_ || !enabledValid_) return false;
   const int64_t age = nowNs - lastEnabledNs_;
   return age >= 0 && age <= kEnableTimeoutNs; // a negative age (clock anomaly) fails closed
 }
 
 bool MotorInterlock::needToggle(int64_t nowNs) const {
-  if (active_ == ControlSourceId::None || !haveLast_ || !lastSdEnabled_ || transitionSeen_) return false;
+  if (!haveSession_ || !haveLast_ || !lastSdEnabled_ || transitionSeen_) return false;
   const int64_t age = nowNs - lastRxNs_;
   return age >= 0 && age <= kEnableTimeoutNs;
 }
 
 MotorInterlock::CloseReason MotorInterlock::closeReason(int64_t nowNs) const {
   if (open(nowNs)) return CloseReason::None;
-  if (active_ == ControlSourceId::None) return CloseReason::NoSource;
+  if (!haveSession_) return CloseReason::NoSource;
   if (needToggle(nowNs)) return CloseReason::NeedToggle;
   if (haveLast_ && !lastSdEnabled_) return CloseReason::SdDisabled;
   return CloseReason::Stale;

@@ -17,7 +17,7 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── starship_flaps.*      Flap actuator layer (4 flap servos) + ControlAttitudeFlaps settings types
 │   ├── comms/                ExVectrNetwork links (USB + UART to the RX module), telemetry task, packet mapping, radio link rule
 │   ├── calibration/          Sensor calibration: CalibrationService (session engine, pure, host-tested), validity and command rules (pure), CalibrationTask (feeds the raw sensor topics)
-│   ├── safety/               Pure safety decision logic (control-source table, RC command mapper with the edge events and SE classifier (`rc_mapper.*`) and the command-intent layer (`rc_command.*`: go preconditions, SC and SE decisions, D12 "on the ground") (T9b-1, T9b-4), hard motor interlock `MotorInterlock` with the motor-gate AND and the watchdog staleness rule (T9b-2), estimator zeroing window with the SE hold API (T9b-4), "valid zero since boot" rule, mission chain switching, controller phase table, bellyflop kick constants and triggers, MissionAbort decision), host-tested
+│   ├── safety/               Pure safety decision logic (`CommandIngress` (`command_ingress.*`: the one control source, the GS `CMD_STATE` session latch and freshness, GS-control cutover), command mapper with the edge events and SE classifier (`rc_mapper.*`, name historical) and the command-intent layer (`rc_command.*`: go preconditions, SC and SE decisions, D12 "on the ground") (T9b-1, T9b-4), hard motor interlock `MotorInterlock` with the motor-gate AND and the watchdog staleness rule (T9b-2), estimator zeroing window with the SE hold API (T9b-4), "valid zero since boot" rule, mission chain switching, controller phase table, bellyflop kick constants and triggers, MissionAbort decision), host-tested
 │   ├── ublox_gnss.*          u-blox NEO-M8Q GNSS driver → SNSR::GNSS topic
 │   ├── gnss_config_sequencer.*  Pure, host-tested non-blocking u-blox configuration sequence used by ublox_gnss
 │   ├── vl53l0x/              VL53L0X ToF rangefinder driver → SNSR::RangeFinder topic
@@ -117,21 +117,23 @@ ExVectrNetwork (workspace `docs/network-design.md`, [libs/ExVectrNetwork.md](lib
 | 0x23 | `AIR_MISSION` | down | – | 5 Hz |
 | 0x24 | `AIR_GNSS` | down | – | 10 Hz |
 | 0x25 | `AIR_GNSS_INFO` | down | – | 1 Hz |
-| 0x10 | `RC_STATE` (decoded by the per-link `RcIngressTap`, not on the PortMux; accepted only from node 2 on the UART = RADIO and node 0 on USB = BENCH; accepted states also feed the motor interlock (SD channel, T9b-2) and, since T9b-4, the RC command mapper: SA go/abort, SB, SC, SE reset/hold; see hardware-and-drivers.md section 5 "RC command path") | up | yes (bench) | yes (Pocket) |
+| 0x10 | `RC_STATE` (handset channels). **Not interpreted by the vehicle** (owner decision 2026-11-23): the Router sends it to the ground station only; the per-link `CmdIngressTap` only counts it | up (to the GS) | – | – |
+| 0x11 | `REQUEST` (event). A vehicle-directed request (target 1) is acted on only if its `session` equals the latched `CMD_STATE` session (design Q5); the vehicle has no executor until T9b-5 (the tap counts accepted and refused) | up | yes | yes |
+| 0x13 | `CMD_STATE` (14 B, control, latest-wins): the ground station's complete command state (go, profile, vehicle_mode, motors, reset_button, failsafe, session), 25 Hz plus on change, accepted **only from node 0**, on USB and UART as one stream (per-link `CmdIngressTap`, not on the PortMux; `Safety::CommandIngress`: session latch, sequence, strict fields). Feeds the command mapper and the motor interlock; see hardware-and-drivers.md section 5 "Command ingress" | up | yes (bench) | yes (GS via Router) |
 | 0x7F | legacy `Telecommand`, **TEMPORARY until T9b-5**, from node 0 only; **T9b-4: the safety types (Arm, SimulationMode, MissionBegin, MissionSelect, MissionAbort, SystemReset) are ignored**, only calibration, `ZeroEstimators` and the simulation-only types still act | up | yes | yes |
 | 0x80 | `POSE` | down | 100 Hz | – |
 | 0x81 | `ACTUATORS` | down | 50 Hz | – |
 | 0x82 | `MISSION` | down | 20 Hz | – |
 | 0x83 | `GNSS` | down | 10 Hz | – |
-| 0x84 | `RC_APPLIED` (decoded switches, control-source ages, reject counters; T9b-1) | down | 10 Hz | – |
+| 0x84 | `CMD_APPLIED` (last accepted `CMD_STATE` fields, safe-seen bits, session, state/USB/UART ages, reject counters; replaces `RC_APPLIED`) | down | 10 Hz | – |
 | 0x90 | `IMU_RAW` | down | 100 Hz | – |
 | 0x91 | `ESTIMATOR` | down | 20 Hz | – |
 | 0x92 | `TASK_TIMING` | down | 5 Hz | – |
 | 0x93 | `CALIBRATION` (applied sensor calibration) | down | 0.5 Hz | – |
 
-Packet layouts: ExVectrPackets schema (hash 0x414DE27A), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
+Packet layouts: ExVectrPackets schema (hash 0xF1941A87), [libs/ExVectrPackets.md](libs/ExVectrPackets.md). The old ports 10/11/12/50/51/100/1000 are retired. Ports >= 0x80 never leave on the UART.
 
-Control failsafe (T9b-3, replaces `radioConnectionLoss`): while committed (interlock open, mission chain pending or mode Running), the accepted `RC_STATE` of the latched control source older than 2 s -> failure bit 5 `CONTROL_SOURCE_LOST`, mode Failure. General link health (any valid frame, `VehicleNetwork::isRadioPacketRecent`) and ground-station presence are information only; there is no boot grace ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
+Control failsafe (T9b-3, replaces `radioConnectionLoss`): while committed (`Safety::committed`: interlock open, mission chain pending, or mode Running and not landed), the accepted `CMD_STATE` of the latched ground-station session older than 2 s -> failure bit 5 `CONTROL_SOURCE_LOST`, mode Failure; a `failsafe = 1` request in `CMD_STATE` latches failure bit 14 `GS_FAILSAFE` in any state. General link health (any valid frame, `VehicleNetwork::isRadioPacketRecent`) and ground-station presence are information only; there is no boot grace ([project/hardware-and-drivers.md](project/hardware-and-drivers.md#5-exvectrnetwork-links-srccomms)).
 
 ## Build
 

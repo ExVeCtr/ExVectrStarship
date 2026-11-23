@@ -64,6 +64,8 @@ namespace VCTR
 
         bool interlockWatchdog; // T9b-2: the 100 Hz motor-interlock watchdog did not run for 100 ms (bit 13)
 
+        bool gsFailsafe; // GS-control: an accepted CMD_STATE carried failsafe = 1 (bit 14)
+
     } __attribute__((packed));
 
     /**

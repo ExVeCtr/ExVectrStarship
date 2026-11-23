@@ -125,15 +125,16 @@ public:
   void onTelecommand(const Telecommand &tc) override { telecommandTopic_.publish(tc); }
 
   const VehicleNetwork &network() const { return net_; }
-  /// The hard motor interlock (owned by the network, fed by the RC taps).
+  /// The hard motor interlock (owned by the network, fed by the command taps).
   Safety::MotorInterlock &motorInterlock() { return net_.motorInterlock(); }
-  /// RC command mapper (T9b-4): edge events and decoded switches of the active source.
+  /// Command mapper (T9b-4): edge events and decoded fields of the latched GS session's accepted CMD_STATE.
   Safety::RcCommandMapper &rcMapper() { return net_.rcMapper(); }
-  bool activeSourceFresh(int64_t nowNs, int64_t maxAgeNs, Safety::ControlSourceId &id) const {
-    return net_.activeSourceFresh(nowNs, maxAgeNs, id);
-  }
-  /// Input of the control-source latch (interlock open, mission pending or Running), set by the safety task.
-  void setCommitted(bool committed) { net_.setCommitted(committed); }
+  /// A session is latched and its last accepted CMD_STATE is at most `maxAgeNs` old.
+  bool sourceFresh(int64_t nowNs, int64_t maxAgeNs) const { return net_.sourceFresh(nowNs, maxAgeNs); }
+  /// The GS failsafe request (failsafe = 1) of the last accepted CMD_STATE.
+  bool gsFailsafeRequested() const { return net_.gsFailsafeRequested(); }
+  /// Inputs of the session takeover rule (committed, mode Failure), set by the safety task.
+  void setCommitted(bool committed, bool modeFailure) { net_.setCommitted(committed, modeFailure); }
   const LogTextQueue &logQueue() const { return log_; }
 
 private:
