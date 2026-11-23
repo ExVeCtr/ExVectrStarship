@@ -41,6 +41,7 @@ ScAction decideSc(uint8_t edgeTo, const ScContext &c) {
 bool onGround(const GroundContext &g) {
   if (g.interlockOpen || g.motorsEnabled) return false;
   if (g.modeFailure) return true;
+  if (g.stationaryOnGround && !g.chainPending) return true;
   if (!g.missionIdleOrFinished) return false;
   if (g.modeGround) return true;
   return g.modeRunning && !g.chainPending;

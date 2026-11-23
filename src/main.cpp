@@ -38,6 +38,7 @@
 #include "starship_hardware.h"
 #include "starship_tvc.hpp"
 #include "safety/estimator_zeroing.hpp"
+#include "safety/ground_rest.hpp"
 #include "safety/request_executor.hpp"
 #include "safety/control_phase.hpp"
 #include "safety/motor_enable.hpp"
@@ -284,12 +285,13 @@ Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 7>>>
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 6>>>
     positionTopicSwitch;
 Core::Topic_Switch<Core::Timestamped<Math::Vector<float, 2>>> groundTopicSwitch;
+Core::Topic_Switch<Core::Timestamped<Math::Matrix<float, 2, 2>>> groundCovTopicSwitch; // real / simulated ground covariance
 SimLidar simLidar; // simulated ground distance source (only below kSimLidarMaxRangeM)
 
 
 MissionRTH defaultMission_(
     attitudeTopicSwitch.getTopic(), positionTopicSwitch.getTopic(),
-    groundTopicSwitch.getTopic(), posEstTask.getGroundDistanceCovTopic(),
+    groundTopicSwitch.getTopic(), groundCovTopicSwitch.getTopic(),
     {0, 0, 3}); // The default mission is the return to home mission.
 MissionWaypoint missionWaypointTask(attitudeTopicSwitch.getTopic(),
                                     positionTopicSwitch.getTopic());
@@ -357,6 +359,8 @@ private:
   Core::Simple_Subscriber<Core::Timestamped<DSP::ValueCov<float, 1>>> baroSubr;
 
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 6>>> posEstSubr;
+  Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 2>>> groundRestSubr_; // range for GroundRest
+  Safety::GroundRest groundRest_;
   Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> attEstSubr;
 
 
@@ -748,6 +752,14 @@ public:
     g.chainPending = missionChain_.pending();
     const MissionMode mm = mission_->getMissionState().missionMode;
     g.missionIdleOrFinished = mm == MissionMode::MissionMode_Idle || mm == MissionMode::MissionMode_Finished;
+    {
+      const auto &pe = posEstSubr.getItem();
+      const auto &gr = groundRestSubr_.getItem();
+      const bool posFresh = pe.timestamp != 0 && now - pe.timestamp < 500 * Core::MILLISECONDS;
+      const bool rangeFresh = gr.timestamp != 0 && now - gr.timestamp < 100 * Core::MILLISECONDS;
+      const float sp = sqrtf(pe.data(0) * pe.data(0) + pe.data(1) * pe.data(1) + pe.data(2) * pe.data(2));
+      g.stationaryOnGround = groundRest_.update(posFresh ? pe.data(5) : NAN, rangeFresh, gr.data(1), posFresh ? sp : NAN, now);
+    }
     return g;
   }
   bool onGroundNow(int64_t now) { return Safety::onGround(groundContext(now)); }
@@ -889,6 +901,7 @@ public:
       attitudeTopicSwitch.subscribe(bodySimulator.getAttitudeEstTopic());   // body simulator attitude
       simLidar.subscribe(bodySimulator.getGroundTopic());                   // simulated lidar from the body simulator height
       groundTopicSwitch.subscribe(simLidar.topic());                        // valid only below kSimLidarMaxRangeM
+      groundCovTopicSwitch.subscribe(simLidar.covTopic());                  // with its simulated covariance
       bodySimulator.resetToStartPose(); // upright, at the origin, at rest
       bodySimulator.clearWind();        // every simulation starts without wind and gusts (SimWind*/SimGust* set them)
       bodySimulator.setPaused(false);   // Unpause the body simulator to start the simulation
@@ -896,6 +909,7 @@ public:
       positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
       attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
       groundTopicSwitch.subscribe(posEstTask.getGroundDistanceEstTopic());
+      groundCovTopicSwitch.subscribe(posEstTask.getGroundDistanceCovTopic());
       bodySimulator.setPaused(true);
       bodySimulator.clearWind();
 
@@ -1027,6 +1041,7 @@ public:
     magSubr.subscribe(magTransformTopic.getOutputTopic());
     baroSubr.subscribe(bme.getBaroTopic());
     posEstSubr.subscribe(positionTopicSwitch.getTopic());
+    groundRestSubr_.subscribe(groundTopicSwitch.getTopic());
     attEstSubr.subscribe(attitudeTopicSwitch.getTopic());
 
 
@@ -2806,6 +2821,7 @@ void initialiseTopicConnections() {
   positionTopicSwitch.subscribe(posEstTask.getStateEstTopic());
   attitudeTopicSwitch.subscribe(imuTask.getAttitudeEstTopic());
   groundTopicSwitch.subscribe(posEstTask.getGroundDistanceEstTopic()); // landing detector range cue (was missing at boot)
+  groundCovTopicSwitch.subscribe(posEstTask.getGroundDistanceCovTopic());
 
   Math::Quat<float> accTiltX({1, 0, 0}, 0 * DEG_TO_RAD);
   Math::Quat<float> accTiltY({0, 1, 0}, 0 * DEG_TO_RAD);

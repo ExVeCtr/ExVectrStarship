@@ -18,6 +18,7 @@
 namespace VCTR {
 
 constexpr float kSimLidarMaxRangeM = 1.0f;
+constexpr float kSimLidarCovariance = 0.01f; ///< small constant: a published simulated reading is always confident
 
 /// True and the reading in outM when the simulated sensor has a valid reading at this height.
 inline bool simLidarReading(float heightM, float &outM) {
@@ -31,6 +32,8 @@ inline bool simLidarReading(float heightM, float &outM) {
 class SimLidar : public Core::Subscriber<Core::Timestamped<Math::Vector<float, 2>>> {
 public:
   Core::Topic<Core::Timestamped<Math::Vector<float, 2>>> &topic() { return out_; }
+  /// Covariance topic the landing detector reads (same layout as the estimator's): published with every valid reading.
+  Core::Topic<Core::Timestamped<Math::Matrix<float, 2, 2>>> &covTopic() { return cov_; }
 
   void receive(const Core::Timestamped<Math::Vector<float, 2>> &item,
                const Core::Topic<Core::Timestamped<Math::Vector<float, 2>>> *) override {
@@ -40,10 +43,16 @@ public:
     Core::Timestamped<Math::Vector<float, 2>> o = item;
     o.data(1) = d;
     out_.publish(o);
+    Core::Timestamped<Math::Matrix<float, 2, 2>> c;
+    c.timestamp = item.timestamp;
+    c.data(0, 0) = kSimLidarCovariance;
+    c.data(1, 1) = kSimLidarCovariance;
+    cov_.publish(c);
   }
 
 private:
   Core::Topic<Core::Timestamped<Math::Vector<float, 2>>> out_;
+  Core::Topic<Core::Timestamped<Math::Matrix<float, 2, 2>>> cov_;
 };
 
 } // namespace VCTR

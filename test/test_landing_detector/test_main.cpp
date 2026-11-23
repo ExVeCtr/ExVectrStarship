@@ -135,6 +135,40 @@ void test_sim_tilted_rest_lands_with_sim_lidar() {
   TEST_ASSERT_TRUE(run(d, in, 0, 500 * kMs));
 }
 
+void test_ground_below_setpoint_lands_without_range() {
+  LandingDetector d;
+  LandingInput in; // on the ground, setpoint 0.5 m ABOVE the vehicle (tracking error -0.5), no range
+  in.altitudeM = 0.0f; in.trackingErrorM = -0.5f;
+  TEST_ASSERT_FALSE(run(d, in, 0, 1500 * kMs));
+  TEST_ASSERT_TRUE(run(d, in, 1600 * kMs, 1000 * kMs));
+}
+
+void test_ground_cue_needs_rest() {
+  LandingDetector d;
+  LandingInput in;
+  in.altitudeM = 0.2f; in.verticalSpeed = 0.5f; in.speed = 0.5f; in.trackingErrorM = -0.5f; // still moving
+  TEST_ASSERT_FALSE(run(d, in, 0, 10000 * kMs));
+  in.altitudeM = 0.5f; in.verticalSpeed = 0; in.speed = 0; // hovering at 0.5 m below the setpoint: not ground
+  TEST_ASSERT_FALSE(run(d, in, 20000 * kMs, 10000 * kMs));
+}
+
+void test_sim_lidar_publishes_small_covariance() {
+  VCTR::SimLidar lidar;
+  VCTR::Core::Topic<VCTR::Core::Timestamped<VCTR::Math::Vector<float, 2>>> src;
+  VCTR::Core::Simple_Subscriber<VCTR::Core::Timestamped<VCTR::Math::Matrix<float, 2, 2>>> cov;
+  lidar.subscribe(src);
+  cov.subscribe(lidar.covTopic());
+  VCTR::Core::Timestamped<VCTR::Math::Vector<float, 2>> in;
+  in.timestamp = 5;
+  in.data = {0.0f, 1.5f};
+  src.publish(in);
+  TEST_ASSERT_EQUAL_INT64(0, cov.getItem().timestamp); // no reading, no covariance
+  in.data = {0.0f, 0.0f};
+  src.publish(in);
+  TEST_ASSERT_TRUE(cov.getItem().timestamp != 0);
+  TEST_ASSERT_TRUE(cov.getItem().data(1, 1) < 7.0f); // below the detector's validity limit
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_air_hover_never_landed);
@@ -148,5 +182,8 @@ int main() {
   RUN_TEST(test_sim_lidar_validity);
   RUN_TEST(test_sim_lidar_topic_publishes_only_below_range);
   RUN_TEST(test_sim_tilted_rest_lands_with_sim_lidar);
+  RUN_TEST(test_ground_below_setpoint_lands_without_range);
+  RUN_TEST(test_ground_cue_needs_rest);
+  RUN_TEST(test_sim_lidar_publishes_small_covariance);
   return UNITY_END();
 }

@@ -14,8 +14,9 @@ static void test_values() {
   TEST_ASSERT_EQUAL_FLOAT(2.9f, rthReturnAltitude(2.9f, true, 3.0f));
   TEST_ASSERT_EQUAL_FLOAT(3.0f, rthReturnAltitude(3.0f, true, 3.0f));
   TEST_ASSERT_EQUAL_FLOAT(3.0f, rthReturnAltitude(84.0f, true, 3.0f)); // abort from the descent: cap, as before
-  TEST_ASSERT_EQUAL_FLOAT(0.5f, rthReturnAltitude(0.2f, true, 3.0f));  // floor
-  TEST_ASSERT_EQUAL_FLOAT(0.5f, rthReturnAltitude(-1.0f, true, 3.0f));
+  TEST_ASSERT_EQUAL_FLOAT(0.2f, rthReturnAltitude(0.2f, true, 3.0f));  // low: never above the vehicle
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, rthReturnAltitude(0.0f, true, 3.0f));  // on the ground: immediate landing
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, rthReturnAltitude(-1.0f, true, 3.0f));
 }
 
 static void test_invalid() {
