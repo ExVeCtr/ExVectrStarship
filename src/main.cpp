@@ -1964,7 +1964,7 @@ public:
             angle = -40;
           starshipFlopSetting.azimuthAngle_Rad = -azimuthTowardsZero;
           starshipFlopSetting.pitchAngle_Rad = (angle + 20) * DEGREES;
-        } else if (posEst(2) < missionFreefallTask.getStopAltitude() + 20) {
+        } else if (Safety::freefallTiltBackStage(posEst(2), missionFreefallTask.getStopAltitude())) {
           starshipFlopSetting.pitchAngle_Rad = 30 * DEGREES;
         }
       } else if (mission == &defaultMission_ && defaultMission_.stabilising()) {
@@ -2765,7 +2765,7 @@ void initialiseTopicConnections() {
   starshipFlaps.setSimulationFlag(vehicleSafetyAndControlTask.simulationFlag()); // gate of the sim-only flap faults
 
   bodySimulator.setPaused(true);
-  bodySimulator.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(),
+  bodySimulator.setTVCInputTopic(starshipTVC.getTVCSimThrustTopic(),
                                  Math::Vector<float, 3>({0, 0, -0.35}),
                                  TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N);
   bodySimulator.setFlapSettingInputTopic(trueFlapSettingTopic);

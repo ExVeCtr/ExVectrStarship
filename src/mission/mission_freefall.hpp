@@ -27,7 +27,7 @@ private:
   float vehicleMass_kg_ = 1;    // Mass of the vehicle in kg.
   float tvcThrustLimit_N_ = 15; // Maximum thrust in Newtons.
   float stopAlt_ = 0; // How much above the ground to fully stop the vehicle.
-  Safety::FreefallSpinup spinup_; // motors idle shortly before the stop trigger (motorsRequest_)
+  Safety::FreefallSpinup spinup_; // motors idle from the tilt-back stage on (motorsRequest_)
 
 public:
   MissionFreefall(
@@ -130,22 +130,16 @@ public:
         tvcThrustLimit_N_, vehicleMass_kg_,
         positionIs_); // Calculate the stopping distance
 
-    // Pre-spin: request the motors enabled (zero thrust command, they idle) from kMotorSpinupLeadS before the stop
-    // trigger below. The TVC controllers stay off and the thrust command stays the neutral command until the next
-    // mission (RTH) takes over after the trigger.
+    // Pre-spin: request the motors enabled (zero thrust command, they idle) on entry to the tilt-back stage (the stage
+    // where the flap observer stops steering to home and pitches back, same condition, safety/motor_enable.hpp). The
+    // TVC controllers stay off and the thrust command stays neutral until the next mission (RTH) takes over.
     {
-      Safety::FreefallSpinupInput si;
-      si.running = missionState_.missionMode == MissionMode::MissionMode_Running && !missionEnd_;
-      si.altitudeM = positionIs_(5);
-      si.vzMps = positionIs_(2);
-      si.stopTargetM = stopAlt_;
-      si.thrustLimitN = tvcThrustLimit_N_;
-      si.massKg = vehicleMass_kg_;
       const bool was = spinup_.latched();
-      motorsRequest_ = spinup_.update(si);
+      motorsRequest_ = spinup_.update(missionState_.missionMode == MissionMode::MissionMode_Running && !missionEnd_,
+                                      positionIs_(5), getStopAltitude());
       if (!was && spinup_.latched())
-        LOG_MSG("Freefall: motor pre-spin requested (alt %.1f m, vz %.1f m/s)\n", double(si.altitudeM),
-                double(si.vzMps));
+        LOG_MSG("Freefall: tilt-back stage, motor pre-spin requested (alt %.1f m, vz %.1f m/s)\n",
+                double(positionIs_(5)), double(positionIs_(2)));
     }
 
     if (positionIs_(5) < stoppingDistance + stopAlt_ && missionEnd_ == false) {

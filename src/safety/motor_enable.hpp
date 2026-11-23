@@ -12,7 +12,7 @@
  *
  * A mission publishes a MotorsRequest. The default is Unchanged: the mapping then reproduces exactly what
  * VehicleSafetyAndControlTask::vehicleShutdownControl did before this feature (test_motor_enable keeps the old truth
- * table as a reference). Only MissionFreefall requests Enable (the pre-spin, kMotorSpinupLeadS before its stop trigger).
+ * table as a reference). Only MissionFreefall requests Enable (the pre-spin, on entry to the tilt-back stage).
  * The controller phase table (control_phase.hpp) is independent of the request.
  */
 
@@ -47,38 +47,26 @@ struct MotorEnableOutput {
 /// gate then closes through enableActuators) and leaves enableMotors as it is, exactly as before this feature.
 MotorEnableOutput motorEnableFor(const MotorEnableInput &in);
 
-// ---- Freefall pre-spin (motors idle shortly before the stop trigger and the upright flip) ----
+// ---- Freefall pre-spin (motors idle when the tilt-back stage starts, before the stop trigger and the upright flip) ----
 
-/// Request Enable when the predicted time to the stop trigger is at most this (proposal, owner to confirm on bench).
-constexpr float kMotorSpinupLeadS = 1.5f;
-/// Fallback when the vertical speed is not usable (non-finite, or no braking margin): request Enable this far above
-/// the stop altitude target. An unusable altitude never enables.
-constexpr float kMotorSpinupMarginM = 10.0f;
+/// The freefall tilt-back stage starts this far above the stop trigger altitude (stopDist + stopTarget). From there the
+/// flap observer commands the 30 deg tilt-back pitch and no longer steers towards the home position (main.cpp
+/// FlapModeObserverTask). The same constant and function decide the pre-spin, so the two cannot drift apart.
+constexpr float kFreefallTiltBackMarginM = 20.0f;
 
-struct FreefallSpinupInput {
-  bool running = false;     ///< mission Running and not ended
-  float altitudeM = 0;      ///< P(5), the quantity of the stop logic
-  float vzMps = 0;          ///< V(2), the quantity of the stop logic
-  float stopTargetM = 0;    ///< MissionFreefall::getStopTargetAltitude()
-  float thrustLimitN = 0;   ///< stop logic thrust
-  float massKg = 1;         ///< stop logic mass
-};
+/// True from the tilt-back stage on: altitude < stop trigger altitude + kFreefallTiltBackMarginM. A non-finite value
+/// never counts (false).
+inline bool freefallTiltBackStage(float altitudeM, float stopTriggerAltitudeM) {
+  return altitudeM < stopTriggerAltitudeM + kFreefallTiltBackMarginM;
+}
 
-/// The stop trigger of MissionFreefall: alt < v^2 / (2 (T/m - g)) + stopTarget (same expression).
-bool freefallStopTriggered(float altitudeM, float vzMps, float stopTargetM, float thrustLimitN, float massKg);
-
-/// True if the stop trigger holds now or is predicted to hold within kMotorSpinupLeadS (ballistic prediction, no drag:
-/// drag only delays the trigger, so the pre-spin comes early, never late). Fallback margin as above.
-bool freefallSpinupDue(const FreefallSpinupInput &in);
-
-/// Latch: Enable once inside the lead (never before, never twice) until reset() (mission begin / reset).
+/// Latch: Enable once on entry to the tilt-back stage (never before, never twice) until reset() (mission begin / reset).
 class FreefallSpinup {
 public:
   void reset() { latched_ = false; }
-  MotorsRequest update(const FreefallSpinupInput &in) {
-    if (!in.running)
-      return latched_ ? MotorsRequest::Enable : MotorsRequest::Unchanged;
-    if (!latched_ && freefallSpinupDue(in))
+  /// running = mission Running and not ended.
+  MotorsRequest update(bool running, float altitudeM, float stopTriggerAltitudeM) {
+    if (running && !latched_ && freefallTiltBackStage(altitudeM, stopTriggerAltitudeM))
       latched_ = true;
     return latched_ ? MotorsRequest::Enable : MotorsRequest::Unchanged;
   }
@@ -87,6 +75,14 @@ public:
 private:
   bool latched_ = false;
 };
+
+/// Simulation only (owner decision 2026-11-23): the modelled thrust [X,Y,Z,T] that the body simulator receives is zero
+/// while the motor gate output is closed (motors that get no pulses give no thrust and no vane force). gateOpen is
+/// MotorGateResult::outputsEnabled, never the simulation flag. Open: unchanged.
+inline void gateSimulatedThrust(const float in[4], bool gateOpen, float out[4]) {
+  for (int i = 0; i < 4; i++)
+    out[i] = gateOpen ? in[i] : 0.0f;
+}
 
 } // namespace Safety
 } // namespace VCTR

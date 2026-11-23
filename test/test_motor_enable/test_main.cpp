@@ -2,7 +2,7 @@
 //
 // (1) The mapping with request Unchanged is bit-identical to the old vehicleShutdownControl behaviour for every input
 // combination (the reference below is the old code, copied before the change). (2) Request semantics. (3) The
-// freefall pre-spin timing: Enable once inside the lead, never before, never twice, off on shutdown, no thrust command.
+// freefall pre-spin: Enable once on entry to the tilt-back stage, never before, never twice, off on shutdown, no thrust command.
 #include <math.h>
 #include <unity.h>
 
@@ -76,65 +76,52 @@ static void test_request_semantics() {
   TEST_ASSERT_TRUE(o.tvcActuators); // Disable does not touch the actuators
 }
 
-// ---- pre-spin timing ----
-static const float kThrust = 14.0f, kMass = 1.1f, kStop = 20.0f; // vehicle constants of main.cpp
-static const float kA = kThrust / kMass - 9.81f;
+// ---- pre-spin on entry to the tilt-back stage ----
+static const float kStopTrigger = 46.0f; // example: stopDist 6 m (6 m/s belly-flop fall) + stop target 20 m
 
-static FreefallSpinupInput inp(float alt, float vz, bool running = true) {
-  FreefallSpinupInput i;
-  i.running = running; i.altitudeM = alt; i.vzMps = vz; i.stopTargetM = kStop; i.thrustLimitN = kThrust;
-  i.massKg = kMass;
-  return i;
-}
-
-static void test_prespin_timing_in_ballistic_fall() {
+static void test_enable_once_on_tilt_back_entry_never_before() {
   FreefallSpinup sp;
-  float alt = 150.0f, vz = 0.0f;
-  const float dt = 0.01f;
-  float tEnable = -1, tStop = -1, t = 0;
+  // belly-flop fall at terminal speed from 150 m: the trigger altitude is constant, the stage starts 20 m above it
+  const float entry = kStopTrigger + kFreefallTiltBackMarginM;
   int enables = 0;
   bool prev = false;
-  while (alt > 0) {
-    const MotorsRequest r = sp.update(inp(alt, vz));
-    const bool en = r == MotorsRequest::Enable;
-    if (en && !prev) { enables++; tEnable = t; }
-    if (prev) TEST_ASSERT_TRUE(en); // never off again
+  for (float alt = 150.0f; alt > 5.0f; alt -= 0.06f) { // 6 m/s at 100 Hz
+    const bool en = sp.update(true, alt, kStopTrigger) == MotorsRequest::Enable;
+    if (alt >= entry) TEST_ASSERT_FALSE(en); // never earlier in the fall
+    if (en && !prev) enables++;
+    if (prev) TEST_ASSERT_TRUE(en);
     prev = en;
-    if (tStop < 0 && freefallStopTriggered(alt, vz, kStop, kThrust, kMass)) { tStop = t; break; }
-    vz -= 9.81f * dt; alt += vz * dt; t += dt;
   }
   TEST_ASSERT_EQUAL(1, enables);
-  TEST_ASSERT_TRUE(tStop > 0 && tEnable > 0);
-  TEST_ASSERT_FLOAT_WITHIN(0.1f, kMotorSpinupLeadS, tStop - tEnable);
-  TEST_ASSERT_TRUE(tStop - tEnable >= kMotorSpinupLeadS - 0.1f);
+  TEST_ASSERT_TRUE(prev);
 }
 
-static void test_never_before_the_lead() {
-  // Far outside the lead (trigger altitude at 20 m/s down is about 88 m, 225 m two seconds later at 35 m/s).
-  TEST_ASSERT_FALSE(freefallSpinupDue(inp(300.0f, -20.0f)));
-  TEST_ASSERT_FALSE(freefallSpinupDue(inp(150.0f, 0.0f)));
+static void test_tilt_back_stage_condition() {
+  TEST_ASSERT_FALSE(freefallTiltBackStage(150.0f, kStopTrigger));
+  TEST_ASSERT_FALSE(freefallTiltBackStage(kStopTrigger + kFreefallTiltBackMarginM, kStopTrigger));
+  TEST_ASSERT_TRUE(freefallTiltBackStage(kStopTrigger + kFreefallTiltBackMarginM - 0.1f, kStopTrigger));
+  TEST_ASSERT_FALSE(freefallTiltBackStage(NAN, kStopTrigger)); // no altitude: never
+  TEST_ASSERT_FALSE(freefallTiltBackStage(30.0f, NAN));
   FreefallSpinup sp;
-  TEST_ASSERT_EQUAL(MotorsRequest::Unchanged, sp.update(inp(300.0f, -20.0f)));
-  TEST_ASSERT_EQUAL(MotorsRequest::Unchanged, sp.update(inp(150.0f, -5.0f, false))); // not running
+  TEST_ASSERT_EQUAL(MotorsRequest::Unchanged, sp.update(false, 10.0f, kStopTrigger)); // not running
 }
 
 static void test_latched_and_reset() {
   FreefallSpinup sp;
-  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(inp(30.0f, -25.0f)));
-  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(inp(300.0f, 0.0f))); // estimator jump: stays, not toggled
-  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(inp(30.0f, -25.0f, false))); // ended: holds
+  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(true, 30.0f, kStopTrigger));
+  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(true, 300.0f, kStopTrigger)); // estimator jump: stays
+  TEST_ASSERT_EQUAL(MotorsRequest::Enable, sp.update(false, 30.0f, kStopTrigger)); // ended: holds
   sp.reset();
-  TEST_ASSERT_EQUAL(MotorsRequest::Unchanged, sp.update(inp(300.0f, 0.0f)));
+  TEST_ASSERT_EQUAL(MotorsRequest::Unchanged, sp.update(true, 300.0f, kStopTrigger));
 }
 
-static void test_invalid_estimates_use_margin() {
-  TEST_ASSERT_FALSE(freefallSpinupDue(inp(NAN, -20.0f)));              // no altitude: never
-  TEST_ASSERT_FALSE(freefallSpinupDue(inp(kStop + kMotorSpinupMarginM + 1, NAN)));
-  TEST_ASSERT_TRUE(freefallSpinupDue(inp(kStop + kMotorSpinupMarginM - 1, NAN)));
-  FreefallSpinupInput weak = inp(kStop + 5, -5); weak.thrustLimitN = 5.0f; // T/m < g: no stop logic margin
-  TEST_ASSERT_TRUE(freefallSpinupDue(weak));
-  weak.altitudeM = kStop + kMotorSpinupMarginM + 1;
-  TEST_ASSERT_FALSE(freefallSpinupDue(weak));
+static void test_sim_thrust_zero_when_gate_closed() {
+  const float in[4] = {0.5f, -0.3f, 9.0f, 0.02f};
+  float out[4];
+  gateSimulatedThrust(in, false, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, out[i]);
+  gateSimulatedThrust(in, true, out);
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(in[i], out[i]); // open: bit-identical
 }
 
 static void test_request_goes_off_on_abort_and_failure() {
@@ -142,7 +129,7 @@ static void test_request_goes_off_on_abort_and_failure() {
   FreefallSpinup sp;
   MotorEnableInput in;
   in.freefallActive = true; in.motorsEnabledNow = true; in.shutdown = false;
-  in.request = sp.update(inp(30.0f, -25.0f));
+  in.request = sp.update(true, 30.0f, kStopTrigger);
   TEST_ASSERT_TRUE(motorEnableFor(in).tvcActuators); // pre-spin active
   in.shutdown = true;                                 // failure
   TEST_ASSERT_FALSE(motorEnableFor(in).tvcActuators); // motors gated off
@@ -156,10 +143,10 @@ int main(int, char **) {
   RUN_TEST(test_unchanged_bit_identical_to_old);
   RUN_TEST(test_shutdown_ignores_every_request);
   RUN_TEST(test_request_semantics);
-  RUN_TEST(test_prespin_timing_in_ballistic_fall);
-  RUN_TEST(test_never_before_the_lead);
+  RUN_TEST(test_enable_once_on_tilt_back_entry_never_before);
+  RUN_TEST(test_tilt_back_stage_condition);
   RUN_TEST(test_latched_and_reset);
-  RUN_TEST(test_invalid_estimates_use_margin);
+  RUN_TEST(test_sim_thrust_zero_when_gate_closed);
   RUN_TEST(test_request_goes_off_on_abort_and_failure);
   return UNITY_END();
 }
