@@ -18,7 +18,7 @@
 
 #include "ExVectrPackets/gen/all.hpp"
 
-#include "safety/control_source.hpp"
+#include "safety/command_ingress.hpp"
 #include "safety/rc_mapper.hpp"
 #include "telecommand.hpp"
 #include "telemetry.hpp"
@@ -106,24 +106,27 @@ struct TelemetrySnapshot {
   float velStd[3] = {0, 0, 0}; ///< m/s
   float posStd[3] = {0, 0, 0}; ///< m
 
-  // Control sources (T9b-1, observe only; filled by fillRcTelemetry from the comms task)
-  uint8_t ctrlSource = 0;                ///< VehicleStatus.ctrl_source: 0 NONE, 1 RADIO, 2 USB (bench)
-  float rcAgeS = __builtin_nanf("");     ///< age of the last accepted RC_STATE of the active source, s, NaN = none
-  uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (INTERLOCK_NEED_TOGGLE, RADIO_FRESH, BENCH_FRESH, SOURCE_LATCHED)
+  // Control source (GS-control cutover; filled by fillCmdTelemetry from the comms task)
+  uint8_t ctrlSource = 0;                ///< VehicleStatus.ctrl_source: 0 NONE, 1 GS (latched session, state at most 2 s old)
+  float rcAgeS = __builtin_nanf("");     ///< age of the last accepted CMD_STATE, s, NaN = none (VehicleStatus.rc_age)
+  uint16_t ctrlFlags = 0;                ///< VehicleStatus.ctrl_flags (INTERLOCK_NEED_TOGGLE, USB_FRESH, UART_FRESH, SOURCE_LATCHED, MULTI_MASTER, GS_FAILSAFE_REQ)
+  uint16_t cmdSession = 0;               ///< VehicleStatus.cmd_session: low 16 bits of the latched session, 0 = none
   // Command-path state of the vehicle (T9b-4, filled by the safety task through fillSnapshot): ctrl_flags bits that
   // only the vehicle logic knows (SC_MISMATCH, SE_HOLD_ZEROING, SE_REFUSED, FAILSAFE_LATCHED), OR-ed with ctrlFlags.
   uint16_t cmdFlags = 0;
   uint8_t goRefusal = 0;                 ///< VehicleStatus.go_refusal (0 none)
   uint8_t missionProfile = 255;          ///< VehicleStatus.mission_profile: SB latched at the last go, 255 = none
-  uint8_t rcRejected = 0;                ///< wrapping count of rejected RC_STATE frames
+  uint8_t rcRejected = 0;                ///< wrapping count of rejected CMD_STATE frames (all reasons, both links)
   uint8_t degradedBits = 0;              ///< VehicleStatus.degraded_bits (T9b-3: UART_HEARTBEAT_LOST only; information, never latched)
-  /// RC_APPLIED content (USB only)
-  struct RcAppliedView {
-    uint8_t sa = 0, sb = 255, sc = 255, sd = 0, se = 0; ///< decoded; SA/SD/SE invalid -> 0, SB/SC invalid -> 255
+  /// CMD_APPLIED content (USB only): the last accepted CMD_STATE fields (safe values if none)
+  struct CmdAppliedView {
+    uint8_t go = 0, profile = 0, vehicleMode = 0, motors = 0, resetButton = 0, failsafe = 0;
+    uint8_t flags = 0;    ///< CMD_APPLIED.flags (POCKET_LIVE bit 0, INPUT_VIRTUAL bit 1)
     uint8_t safeSeen = 0;
-    float radioAgeS = __builtin_nanf(""), benchAgeS = __builtin_nanf("");
+    uint32_t session = 0;
+    float ageS = __builtin_nanf(""), usbAgeS = __builtin_nanf(""), uartAgeS = __builtin_nanf("");
     uint8_t rejects[4] = {0, 0, 0, 0};
-  } rcApplied;
+  } cmdApplied;
 };
 
 // ---- flight-software owned bit fields and helpers ----
@@ -198,13 +201,13 @@ Packets::Estimator makeEstimator(const TelemetrySnapshot &s);
 /// raw_frame SENSOR; offsets and matrices copied, the mag offset converted gauss -> T (x 1e-4); the matrices are
 /// unit-free, so the ground station gets cal = M * (raw - offset) in SI from the IMU_RAW values.
 Packets::Calibration makeCalibration(const TelemetrySnapshot &s);
-/// RC_APPLIED (0x84, USB only, 10 Hz) from snapshot.rcApplied.
-Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s);
-/// Fills snapshot.ctrlSource, rcAgeS, ctrlFlags, rcRejected and rcApplied from the control-source state and the
-/// mapper's decode (T9b-1). Ages come from `nowNs` and the records' receive times. `interlockNeedToggle` sets
-/// ctrl_flags INTERLOCK_NEED_TOGGLE (T9b-2: MotorInterlock::needToggle).
-void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
-                     int64_t nowNs, bool interlockNeedToggle = false);
+/// CMD_APPLIED (0x84, USB only, 10 Hz) from snapshot.cmdApplied.
+Packets::CmdApplied makeCmdApplied(const TelemetrySnapshot &s);
+/// Fills snapshot.ctrlSource, rcAgeS, ctrlFlags, cmdSession, rcRejected and cmdApplied from the command ingress
+/// state and the mapper's safe-seen bits. Ages come from `nowNs` and the receive times. `interlockNeedToggle` sets
+/// ctrl_flags INTERLOCK_NEED_TOGGLE (MotorInterlock::needToggle).
+void fillCmdTelemetry(TelemetrySnapshot &s, const Safety::CmdIngressSnapshot &cs, const Safety::RcCommandMapper &m,
+                      int64_t nowNs, bool interlockNeedToggle = false);
 
 // ---- AIR_ACTUATORS: two samples per packet ----
 

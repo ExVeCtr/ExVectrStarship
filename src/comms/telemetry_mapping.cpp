@@ -29,6 +29,7 @@ uint32_t packFailureBits(const FailureState &f) {
   if (f.attitudeOutOfBounds) b |= 1u << 4;
   if (f.controlSourceLost) b |= 1u << 5;
   if (f.interlockWatchdog) b |= 1u << 13;
+  if (f.gsFailsafe) b |= 1u << 14;
   return b;
 }
 
@@ -121,9 +122,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.mode = static_cast<uint8_t>(s.mode);
   p.mission_mode = static_cast<uint8_t>(s.missionMode);
   p.mission_phase = static_cast<uint8_t>(s.missionPhase);
-  p.ctrl_source = s.ctrlSource == 1   ? Packets::ControlSource::kRadio
-                  : s.ctrlSource == 2 ? Packets::ControlSource::kUsb
-                                      : Packets::ControlSource::kNone;
+  p.ctrl_source = s.ctrlSource == 1 ? Packets::ControlSource::kGs : Packets::ControlSource::kNone;
   uint8_t f = 0;
   if (s.armed) f |= Packets::VehicleStatus::kFlagsArmed;
   if (s.simulation) f |= Packets::VehicleStatus::kFlagsSimulation;
@@ -148,54 +147,66 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.degraded_bits = s.degradedBits;
   p.mission_profile = s.missionProfile;
   p.rc_rejected = s.rcRejected;
+  p.cmd_session = s.cmdSession;
   return p;
 }
 
-Packets::RcApplied makeRcApplied(const TelemetrySnapshot &s) {
-  Packets::RcApplied p;
+Packets::CmdApplied makeCmdApplied(const TelemetrySnapshot &s) {
+  Packets::CmdApplied p;
   p.t_us = timeUs(s.t_ns);
-  p.sa = s.rcApplied.sa;
-  p.sb = s.rcApplied.sb;
-  p.sc = s.rcApplied.sc;
-  p.sd = s.rcApplied.sd;
-  p.se = s.rcApplied.se;
-  p.safe_seen = s.rcApplied.safeSeen;
-  p.radio_age = s.rcApplied.radioAgeS;
-  p.bench_age = s.rcApplied.benchAgeS;
-  for (int i = 0; i < 4; i++) p.rejects[i] = s.rcApplied.rejects[i];
+  const auto &a = s.cmdApplied;
+  p.go = static_cast<Packets::CmdGo>(a.go);
+  p.profile = a.profile;
+  p.vehicle_mode = static_cast<Packets::CmdVehicleMode>(a.vehicleMode);
+  p.motors = static_cast<Packets::CmdMotors>(a.motors);
+  p.reset_button = static_cast<Packets::CmdButton>(a.resetButton);
+  p.failsafe = static_cast<Packets::CmdFailsafe>(a.failsafe);
+  p.flags = a.flags;
+  p.safe_seen = a.safeSeen;
+  p.session = a.session;
+  p.age = a.ageS;
+  p.usb_age = a.usbAgeS;
+  p.uart_age = a.uartAgeS;
+  for (int i = 0; i < 4; i++) p.rejects[i] = a.rejects[i];
   return p;
 }
 
-void fillRcTelemetry(TelemetrySnapshot &s, const Safety::ControlSourceSnapshot &cs, const Safety::RcCommandMapper &m,
-                     int64_t nowNs, bool interlockNeedToggle) {
-  using Safety::ControlSourceId;
-  using Safety::ControlSourceTable;
-  const auto ageS = [&](ControlSourceId id) {
-    const int64_t a = cs.ageNs(id, nowNs);
-    return a < 0 ? nanf_() : static_cast<float>(static_cast<double>(a) * 1e-9);
-  };
-  s.ctrlSource = static_cast<uint8_t>(cs.active);
-  s.rcAgeS = ageS(cs.active);
+void fillCmdTelemetry(TelemetrySnapshot &s, const Safety::CmdIngressSnapshot &cs, const Safety::RcCommandMapper &m,
+                      int64_t nowNs, bool interlockNeedToggle) {
+  using Safety::CmdLink;
+  using Safety::CommandIngress;
+  const auto toS = [](int64_t a) { return a < 0 ? nanf_() : static_cast<float>(static_cast<double>(a) * 1e-9); };
+  const bool fresh = cs.fresh(nowNs, CommandIngress::kCtrlTimeoutNs);
+  s.ctrlSource = fresh ? 1 : 0;
+  s.rcAgeS = toS(cs.ageNs(nowNs));
+  s.cmdSession = static_cast<uint16_t>(cs.latched ? (cs.session & 0xFFFFu) : 0u);
   uint16_t f = 0;
-  if (cs.fresh(ControlSourceId::Radio, nowNs, ControlSourceTable::kCtrlTimeoutNs))
-    f |= Packets::VehicleStatus::kCtrlFlagsRadioFresh;
-  if (cs.fresh(ControlSourceId::Bench, nowNs, ControlSourceTable::kCtrlTimeoutNs))
-    f |= Packets::VehicleStatus::kCtrlFlagsBenchFresh;
-  if (cs.latched) f |= Packets::VehicleStatus::kCtrlFlagsSourceLatched;
+  if (cs.linkFresh(CmdLink::Usb, nowNs, CommandIngress::kCtrlTimeoutNs)) f |= Packets::VehicleStatus::kCtrlFlagsUsbFresh;
+  if (cs.linkFresh(CmdLink::Uart, nowNs, CommandIngress::kCtrlTimeoutNs)) f |= Packets::VehicleStatus::kCtrlFlagsUartFresh;
+  if (cs.commitLatched) f |= Packets::VehicleStatus::kCtrlFlagsSourceLatched;
+  if (cs.multiMaster(nowNs, CommandIngress::kMultiMasterShowNs)) f |= Packets::VehicleStatus::kCtrlFlagsMultiMaster;
+  if (cs.latched && cs.seen && cs.frame.failsafe == 1) f |= Packets::VehicleStatus::kCtrlFlagsGsFailsafeReq;
   if (interlockNeedToggle) f |= Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle;
   s.ctrlFlags = f;
   s.rcRejected = cs.rejectedTotal;
 
-  const Safety::RcDecoded d = m.decoded(cs.active); // None -> all invalid -> safe values
-  s.rcApplied.sa = d.saSafe();
-  s.rcApplied.sb = d.sb;
-  s.rcApplied.sc = d.sc;
-  s.rcApplied.sd = d.sdSafe();
-  s.rcApplied.se = d.seSafe();
-  s.rcApplied.safeSeen = m.safeSeen(cs.active);
-  s.rcApplied.radioAgeS = ageS(ControlSourceId::Radio);
-  s.rcApplied.benchAgeS = ageS(ControlSourceId::Bench);
-  for (int i = 0; i < 4; i++) s.rcApplied.rejects[i] = cs.rejects[i];
+  // Last accepted fields (safe values if none yet).
+  auto &a = s.cmdApplied;
+  const Safety::CmdFrame fr = (cs.latched && cs.seen) ? cs.frame : Safety::CmdFrame();
+  a.go = fr.go;
+  a.profile = fr.profile;
+  a.vehicleMode = fr.vehicleMode;
+  a.motors = fr.motors;
+  a.resetButton = fr.resetButton;
+  a.failsafe = fr.failsafe;
+  a.flags = static_cast<uint8_t>(((fr.flags & Safety::CmdFrame::kFlagPocketLive) ? 1u : 0u) |
+                                 ((fr.flags & Safety::CmdFrame::kFlagInputVirtual) ? 2u : 0u));
+  a.safeSeen = m.safeSeen();
+  a.session = cs.latched ? cs.session : 0;
+  a.ageS = toS(cs.ageNs(nowNs));
+  a.usbAgeS = toS(cs.linkAgeNs(CmdLink::Usb, nowNs));
+  a.uartAgeS = toS(cs.linkAgeNs(CmdLink::Uart, nowNs));
+  for (int i = 0; i < 4; i++) a.rejects[i] = cs.rejects[i];
 }
 
 uint8_t packCalibState(bool gyroValid, bool accelValid, bool magValid, bool sessionActive, bool readyToArm) {

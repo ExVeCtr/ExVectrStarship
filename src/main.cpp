@@ -354,7 +354,7 @@ private:
 
   MissionMode lastMissionMode_ = MissionMode::MissionMode_Idle;
 
-  // RC command path (T9b-4): the pure intent layer, its telemetry cache and the removed-telecommand counter.
+  // Command path (T9b-4, input CMD_STATE since the GS-control cutover): the pure intent layer, its telemetry cache and the removed-telecommand counter.
   Safety::RcCommandLogic rcLogic_;
   uint16_t cmdFlags_ = 0;          ///< VEHICLE_STATUS ctrl_flags bits owned by the vehicle logic
   uint8_t missionProfile_ = 255;   ///< SB position latched at the last go, 255 = none
@@ -431,6 +431,7 @@ public:
     failureState_.attitudeOutOfBounds = false;
     failureState_.controlSourceLost = false;
     failureState_.interlockWatchdog = false;
+    failureState_.gsFailsafe = false;
 
     mission_ = &defaultMission_; // Set the mission to the default mission
 
@@ -723,7 +724,7 @@ public:
   }
 
 
-  // ---- RC command path (T9b-4, docs/t9b-design.md 3.2, 3.3; the decisions are the pure Safety::RcCommandLogic) ----
+  // ---- Command path (T9b-4; input = the GS CMD_STATE, docs/gs-control-design.md; the decisions are the pure Safety::RcCommandLogic) ----
 
   /// D12 "on the ground" (SE reset, SC change): see Safety::onGround.
   Safety::GroundContext groundContext(int64_t now) {
@@ -867,19 +868,17 @@ public:
     LOG_MSG("Simulation mode %s (SC)\n", simulationMode_ ? "ON" : "OFF");
   }
 
-  /// RC command step (T9b-4), every 10 Hz tick before anything else: consumes the edge events of the active source
+  /// Command step (T9b-4), every 10 Hz tick before anything else: consumes the edge events of the latched GS session
   /// (RcCommandMapper), lets Safety::RcCommandLogic decide and applies the intents. Safe direction first (abort,
   /// hold abort), then the unsafe ones. The safety commands are no longer telecommands.
   void applyRcCommands() {
     const int64_t now = Core::NowNs();
     auto &mapper = vehicleComms.rcMapper();
-    Safety::ControlSourceId src = Safety::ControlSourceId::None;
     Safety::RcPollInput in;
     in.nowNs = now;
-    in.haveSource = vehicleComms.activeSourceFresh(now, Safety::RcCommandMapper::kEdgeMaxAgeNs, src) &&
-                    src == mapper.active();
+    in.haveSource = vehicleComms.sourceFresh(now, Safety::RcCommandMapper::kEdgeMaxAgeNs);
     if (in.haveSource)
-      in.decoded = mapper.decoded(src);
+      in.decoded = mapper.decoded();
     in.chainPendingOrRunning = missionChain_.pending() || vehicleMode_ == VehicleMode::VehicleMode_Running;
     in.interlockOpen = vehicleComms.motorInterlock().open(now);
     in.committed = isCommitted(now);
@@ -922,7 +921,7 @@ public:
     if (out.se == Safety::SeAction::Reset) {
       systemResetFromSe();
     } else if (out.se == Safety::SeAction::Refused && seRefusedLog_.due(now)) {
-      LOG_MSG("SE reset refused: only on the ground with the interlock closed\n");
+      LOG_MSG("SE reset refused: only on the ground with the interlock closed and the GS failsafe request cleared\n");
     }
 
     switch (out.hold) {
@@ -956,7 +955,7 @@ public:
 
     // Telemetry cache (VEHICLE_STATUS ctrl_flags bits owned by the vehicle logic).
     uint16_t f = 0;
-    if (Safety::RcCommandLogic::scMismatch(in.haveSource, in.decoded.sc, simulationMode_))
+    if (Safety::RcCommandLogic::scMismatch(in.haveSource, in.decoded.mode, simulationMode_))
       f |= Packets::VehicleStatus::kCtrlFlagsScMismatch;
     if (zeroing_.holdActive())
       f |= Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing;
@@ -1026,17 +1025,17 @@ public:
   void superviseMotorInterlock() {
     const int64_t now = Core::NowNs();
     auto &il = vehicleComms.motorInterlock();
-    vehicleComms.setCommitted(isCommitted(now));
+    vehicleComms.setCommitted(isCommitted(now), vehicleMode_ == VehicleMode::VehicleMode_Failure);
     const bool open = il.open(now);
     if (vehicleMode_ == VehicleMode::VehicleMode_Failure)
       il.requireRearm(Safety::MotorInterlock::RearmReason::Failure); // D4-A: a failsafe needs a new toggle
     if (open != interlockOpenLogged_) {
       interlockOpenLogged_ = open;
       if (open) {
-        LOG_MSG("Motor interlock OPEN (SD enabled, transition observed)\n");
+        LOG_MSG("Motor interlock OPEN (motors armed, transition observed)\n");
       } else {
-        static const char *const why[] = {"open", "no control source", "SD enabled but needs a toggle (off, then on)",
-                                          "SD disabled", "no valid enabled state within 1 s"};
+        static const char *const why[] = {"open", "no GS session", "motors armed but needs a toggle (disarm, then arm)",
+                                          "motors disarmed", "no valid armed state within 1 s"};
         LOG_MSG("Motor interlock CLOSED: %s\n", why[static_cast<uint8_t>(il.closeReason(now))]);
       }
     }
@@ -1525,12 +1524,12 @@ public:
     case TelecommandType::Telecommand_MissionBegin:
     case TelecommandType::Telecommand_MissionSelect:
     case TelecommandType::Telecommand_MissionAbort:
-      // T9b-4: the safety commands are RC state now (SA go/abort, SB profile, SC simulation/real, SD interlock, SE
+      // T9b-4: the safety commands are command state now (go, profile, vehicle_mode, motors, reset_button of the GS CMD_STATE; SE
       // reset/zero). The telecommands are no longer handled; they are ignored and counted, the log line is rate
       // limited. The port itself goes in T9b-5.
       removedTelecommands_++;
       if (removedTelecommandLog_.due(Core::NowNs()))
-        LOG_MSG("Telecommand %d ignored: removed in T9b-4, use the RC switches (%lu ignored since boot)\n",
+        LOG_MSG("Telecommand %d ignored: removed in T9b-4, use the GS command state (%lu ignored since boot)\n",
                 int(telecommand.type), (unsigned long)removedTelecommands_);
       break;
 
@@ -1675,15 +1674,24 @@ public:
 
   void checkForFailures() {
     // Control failsafe (T9b-3, the ONE rule, safety.md 4.1): while committed (interlock open, mission pending or
-    // Running and not landed) the accepted RC_STATE of the latched control source is older than 2 s (or there is no source) =>
+    // Running and not landed) the accepted CMD_STATE of the latched GS session is older than 2 s (or there is none) =>
     // failsafe, latched in mode Failure until SystemReset. Not committed (on the ground, disarmed, nothing pending)
     // losing every source only sets ctrl_source NONE (D2-B). General link health, heartbeats, GS REQUESTs and
     // telecommands never keep it alive and never trigger it; the ground station on USB is never a failure
     // condition. No simulation dependence.
     if (vehicleComms.controlSourceLost(isCommitted(Core::NowNs()))) {
-      if (!failureState_.controlSourceLost) LOG_MSG("Failsafe: control source lost (no accepted RC_STATE for 2 s)\n");
+      if (!failureState_.controlSourceLost) LOG_MSG("Failsafe: control source lost (no accepted CMD_STATE for 2 s)\n");
       vehicleMode_ = VehicleMode::VehicleMode_Failure;
       failureState_.controlSourceLost = true;
+    }
+
+    // GS failsafe request (GS-control design D-GS6): failsafe = 1 in the last accepted CMD_STATE latches a failsafe
+    // (bit 14) in ANY state, within one safety tick. Re-latches after an SE reset only if the request is set again:
+    // the SE reset itself is refused while the request is 1 (owner Q6, RcCommandLogic). No simulation dependence.
+    if (vehicleComms.gsFailsafeRequested()) {
+      if (!failureState_.gsFailsafe) LOG_MSG("Failsafe: GS failsafe requested (CMD_STATE failsafe = 1)\n");
+      vehicleMode_ = VehicleMode::VehicleMode_Failure;
+      failureState_.gsFailsafe = true;
     }
 
     // Motor-interlock watchdog (T9b-2): the 100 Hz task that closes the motor outputs has not run for 100 ms.
@@ -1854,7 +1862,7 @@ public:
   bool anyFailureLatched() const {
     return failureState_.sensorFailure || failureState_.attitudeFailure || failureState_.positionFailure ||
            failureState_.positionOutOfBounds || failureState_.attitudeOutOfBounds || failureState_.controlSourceLost ||
-           failureState_.interlockWatchdog;
+           failureState_.interlockWatchdog || failureState_.gsFailsafe;
   }
 
   void clearFailures() {
@@ -1865,6 +1873,7 @@ public:
     failureState_.attitudeOutOfBounds = false;
     failureState_.controlSourceLost = false;
     failureState_.interlockWatchdog = false;
+    failureState_.gsFailsafe = false;
     reinitialiseSensorStates();
   }
 

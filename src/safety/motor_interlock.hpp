@@ -6,23 +6,24 @@
  * deterministic: no Arduino, no ExVectrCore, no heap, no clock of its own (every method takes the time), and NO
  * dependence on the simulation flag. Host-tested (test/test_motor_interlock).
  *
- * The interlock is a pure GATE: it only ever answers "may the motors run now". It is enabled solely by the SD
- * switch state of the ACTIVE control source (Pocket SD, or the ground station's virtual SD on the bench source):
+ * The interlock is a pure GATE: it only ever answers "may the motors run now". It is enabled solely by the motors
+ * field (SD, "motors armed / disarmed") of the accepted CMD_STATE of the latched ground-station session:
  *
- *   open(now) = transitionSeen && an accepted ENABLED state of the active source is at most kEnableTimeoutNs old
+ *   open(now) = transitionSeen && an accepted ENABLED state of the latched session is at most kEnableTimeoutNs old
  *
- * A DISABLED (or invalid) SD closes it at once. Enabling needs an OBSERVED transition: two consecutive accepted
- * states of the active source, DISABLED then ENABLED, at most kEnableTimeoutNs apart, after the last clear. The
- * observed-transition memory (transitionSeen, seenDisabled) is cleared by: boot, an active-source change
- * (update), a gap of more than kReconnectGapNs between two accepted states of the source (D3-B: a gap of 1 to 2 s
+ * A DISABLED motors field closes it at once. Enabling needs an OBSERVED transition: two consecutive accepted
+ * states, DISABLED then ENABLED, at most kEnableTimeoutNs apart, after the last clear. The
+ * observed-transition memory (transitionSeen, seenDisabled) is cleared by: boot, a new session
+ * (onSessionChanged), a gap of more than kReconnectGapNs between two accepted states (D3-B: a gap of 1 to 2 s
  * only closes the gate, a fresh ENABLED reopens it without a toggle), and the re-arm triggers of D4-A
  * (requireRearm: mission end, failure/latched abort, system reset, simulation/real change).
  *
- * Inputs: onRcState() for every ACCEPTED RC_STATE (the control-source table already rejected unknown sources,
- * stale sequences and SOURCE_OK = 0, so those never count as data and the gate closes by the 1 s age), update()
- * once per comms tick with the table's active source, requireRearm() from the safety task.
+ * Inputs: onCmdState() for every ACCEPTED CMD_STATE (the command ingress already rejected other sources, foreign
+ * sessions and stale sequences, so those never count as data and the gate closes by the 1 s age),
+ * onSessionChanged() when the ingress latches a new session (before its first state), update() once per comms
+ * tick, requireRearm() from the safety task.
  *
- * Threading: single-core cooperative scheduler (as control_source.hpp). onRcState()/update() run in the comms
+ * Threading: single-core cooperative scheduler (as control_source.hpp). onCmdState()/update() run in the comms
  * task, requireRearm() in the safety task, open()/needToggle() in the TVC task and the 100 Hz watchdog task. No
  * method yields and no interrupt touches the object, so a reader never sees a half-written field. An unset
  * interlock pointer in the reader must be treated as closed (fail safe).
@@ -30,7 +31,6 @@
 
 #include <stdint.h>
 
-#include "control_source.hpp"
 
 namespace VCTR {
 namespace Safety {
@@ -43,41 +43,42 @@ public:
   /// Why the gate is closed (open = None). Priority order as listed.
   enum class CloseReason : uint8_t {
     None = 0,      ///< open
-    NoSource = 1,  ///< no active control source
-    NeedToggle = 2, ///< SD shows ENABLED but no off -> on transition was observed (INTERLOCK_NEED_TOGGLE)
-    SdDisabled = 3, ///< the last state shows DISABLED (or the SD channel is invalid)
+    NoSource = 1,  ///< no ground-station session latched
+    NeedToggle = 2, ///< the motors field shows ENABLED but no off -> on transition was observed (INTERLOCK_NEED_TOGGLE)
+    SdDisabled = 3, ///< the last state shows DISABLED
     Stale = 4,     ///< no accepted state within 1 s, or no ENABLED state yet
   };
 
   /// D4-A re-arm triggers (information for the log and the tests).
   enum class RearmReason : uint8_t { MissionEnd = 1, Failure = 2, SystemReset = 3, ModeChange = 4, Abort = 5 };
 
-  /// One ACCEPTED RC_STATE. `source` must be the source the state came from; states of any source but the active
-  /// one are ignored. `sdEnabled` is true only for a valid ENABLED SD position (invalid decodes as false).
-  void onRcState(ControlSourceId source, bool sdEnabled, int64_t rxNs);
+  /// One ACCEPTED CMD_STATE of the latched session. `motorsEnabled` is the motors field (1 = ENABLED).
+  void onCmdState(bool motorsEnabled, int64_t rxNs);
 
-  /// Per comms tick: `active` is the control-source table's active source. A change clears everything; a silence
-  /// of more than kReconnectGapNs on the active source forgets the observed transition.
-  void update(int64_t nowNs, ControlSourceId active);
+  /// The ingress latched a new session: clears everything (the first state of the session is the baseline, so an
+  /// ENABLED field at the session start needs a DISABLED -> ENABLED transition) and marks the session present.
+  void onSessionChanged();
+
+  /// Per comms tick: a silence of more than kReconnectGapNs forgets the observed transition.
+  void update(int64_t nowNs);
 
   /// D4-A: the next opening needs a fresh observed DISABLED -> ENABLED transition. Closes the gate immediately.
   void requireRearm(RearmReason why);
 
   /// The gate. True only when the motors may run.
   bool open(int64_t nowNs) const;
-  /// SD shows ENABLED in a fresh state but no transition was observed: the pilot must toggle SD off and on.
+  /// The motors field shows ENABLED in a fresh state but no transition was observed: the operator must toggle SD off and on.
   bool needToggle(int64_t nowNs) const;
   CloseReason closeReason(int64_t nowNs) const;
 
-  ControlSourceId activeSource() const { return active_; }
   uint8_t rearmCount() const { return rearmCount_; }
   RearmReason lastRearmReason() const { return lastRearm_; }
 
 private:
   void clearTransition();
 
-  ControlSourceId active_ = ControlSourceId::None;
-  bool haveLast_ = false;        ///< an accepted state of the active source is recorded
+  bool haveSession_ = false;     ///< a ground-station session has been latched
+  bool haveLast_ = false;        ///< an accepted state is recorded
   bool lastSdEnabled_ = false;   ///< SD of that state
   int64_t lastRxNs_ = 0;         ///< its receive time
   bool seenDisabled_ = false;    ///< an accepted DISABLED state since the last clear

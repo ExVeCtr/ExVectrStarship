@@ -77,19 +77,22 @@ void test_failure_bits() {
   f = {};
   f.interlockWatchdog = true; // T9b-2: bit 13 (motor-interlock watchdog)
   TEST_ASSERT_EQUAL_HEX32(0x2000, packFailureBits(f));
+  f = {};
+  f.gsFailsafe = true; // GS control: bit 14 (GS_FAILSAFE)
+  TEST_ASSERT_EQUAL_HEX32(0x4000, packFailureBits(f));
 }
 
 void test_interlock_need_toggle_flag() {
-  VCTR::Safety::ControlSourceTable t;
+  VCTR::Safety::CommandIngress t;
   VCTR::Safety::RcCommandMapper m;
-  VCTR::Safety::ControlSourceSnapshot cs;
+  VCTR::Safety::CmdIngressSnapshot cs;
   t.snapshot(cs);
   TelemetrySnapshot s = sample();
-  fillRcTelemetry(s, cs, m, 5000000000LL, true);
+  fillCmdTelemetry(s, cs, m, 5000000000LL, true);
   auto p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_HEX16(Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle, p.ctrl_flags);
   s = sample();
-  fillRcTelemetry(s, cs, m, 5000000000LL, false);
+  fillCmdTelemetry(s, cs, m, 5000000000LL, false);
   p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_HEX16(0, p.ctrl_flags);
 }
@@ -413,7 +416,7 @@ void test_pack_calib_state() {
 void test_vehicle_status_home_and_calib() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeVehicleStatus(s));
-  TEST_ASSERT_EQUAL_UINT(36, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(38, Packets::VehicleStatus::kMaxSize); // +2: cmd_session (GS control)
   TEST_ASSERT_EQUAL_UINT8(0, p.home_epoch); // no position reference yet
   TEST_ASSERT_EQUAL_HEX8(0, p.calib_state);
   s.homeEpoch = 7;
@@ -430,55 +433,73 @@ void test_vehicle_status_home_and_calib() {
   TEST_ASSERT_EQUAL_HEX8(0x17, p.calib_state);
 }
 
-void test_rc_telemetry_fields_and_rc_applied() {
+void test_cmd_telemetry_fields_and_cmd_applied() {
   using namespace VCTR::Safety;
-  ControlSourceTable t;
+  CommandIngress t;
   RcCommandMapper m;
-  RcFrame f;
-  f.flags = RcFrame::kFlagSourceOk;
-  for (auto &c : f.ch) c = 0;
-  f.ch[4] = 1000; f.ch[5] = 1000; f.ch[6] = -1000; f.ch[7] = 1000; f.ch[8] = RcFrame::kChInvalid;
   const int64_t S = 1000000000LL;
-  ControlSourceId id;
-  TEST_ASSERT_TRUE(t.onRcFrame(0, RcLink::Usb, 1, f, 10 * S, &id));
-  m.onAccepted(id, f, 10 * S);
-  t.update(10 * S, false);
-  t.onRcFrame(1, RcLink::Usb, 1, f, 10 * S); // one reject
+  CmdFrame f;
+  f.flags = CmdFrame::kFlagPocketLive | CmdFrame::kFlagInputVirtual;
+  f.session = 0xDEADBEEFu;
+  f.go = 1;
+  f.profile = 2;
+  f.vehicleMode = 1;
+  f.motors = 1;
+  f.resetButton = 0;
+  f.failsafe = 1;
+  m.onSessionChanged();
+  const auto r = t.onFrame(0, CmdLink::Usb, 1, f, 10 * S);
+  TEST_ASSERT_TRUE(r.accepted);
+  m.onAccepted(f, 10 * S);
+  t.onFrame(0, CmdLink::Uart, 1, f, 10 * S + 5000000LL); // duplicate copy on the other link
+  t.onFrame(1, CmdLink::Usb, 1, f, 10 * S);               // one reject (source)
+  t.update(10 * S, true, false);
   TelemetrySnapshot s = sample();
-  ControlSourceSnapshot cs;
+  CmdIngressSnapshot cs;
   TEST_ASSERT_TRUE(t.snapshot(cs));
-  fillRcTelemetry(s, cs, m, 10 * S + 250000000LL);
+  fillCmdTelemetry(s, cs, m, 10 * S + 250000000LL);
   auto p = roundTrip(makeVehicleStatus(s));
-  TEST_ASSERT_EQUAL_UINT8(2, static_cast<uint8_t>(p.ctrl_source)); // USB
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(p.ctrl_source)); // GS
+  TEST_ASSERT_EQUAL_UINT16(0xBEEF, p.cmd_session);
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, p.rc_age);
-  TEST_ASSERT_EQUAL_HEX16(Packets::VehicleStatus::kCtrlFlagsBenchFresh, p.ctrl_flags);
-  TEST_ASSERT_EQUAL_UINT8(1, p.rc_rejected);
-  auto a = roundTrip(makeRcApplied(s));
-  TEST_ASSERT_EQUAL_UINT(18, Packets::RcApplied::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT8(0x84, Packets::RcApplied::kPort);
-  TEST_ASSERT_EQUAL_UINT8(1, a.sa);
-  TEST_ASSERT_EQUAL_UINT8(2, a.sb);
-  TEST_ASSERT_EQUAL_UINT8(0, a.sc);
-  TEST_ASSERT_EQUAL_UINT8(1, a.sd);
-  TEST_ASSERT_EQUAL_UINT8(0, a.se); // invalid decodes to RELEASED
-  TEST_ASSERT_EQUAL_HEX8(kSafeSeenScReal, a.safe_seen);
-  TEST_ASSERT_TRUE(isnan(a.radio_age));
-  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, a.bench_age);
+  const uint16_t want = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsUartFresh |
+                        Packets::VehicleStatus::kCtrlFlagsSourceLatched | Packets::VehicleStatus::kCtrlFlagsGsFailsafeReq;
+  TEST_ASSERT_EQUAL_HEX16(want, p.ctrl_flags);
+  TEST_ASSERT_EQUAL_UINT8(2, p.rc_rejected); // the source reject and the duplicate copy
+  auto a = roundTrip(makeCmdApplied(s));
+  TEST_ASSERT_EQUAL_UINT(26, Packets::CmdApplied::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT8(0x84, Packets::CmdApplied::kPort);
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(a.go));
+  TEST_ASSERT_EQUAL_UINT8(2, a.profile);
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(a.vehicle_mode));
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(a.motors));
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.reset_button));
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(a.failsafe));
+  TEST_ASSERT_EQUAL_HEX8(Packets::CmdApplied::kFlagsPocketLive | Packets::CmdApplied::kFlagsInputVirtual, a.flags);
+  TEST_ASSERT_EQUAL_HEX8(kSafeSeenSePress, a.safe_seen);
+  TEST_ASSERT_EQUAL_HEX32(0xDEADBEEFu, a.session);
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, a.age);
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, a.usb_age);
+  TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.245f, a.uart_age);
   TEST_ASSERT_EQUAL_UINT8(1, a.rejects[1]);
-  // no source: safe decode, NaN age, ctrl_source NONE
-  ControlSourceTable t2;
-  ControlSourceSnapshot c2;
+  TEST_ASSERT_EQUAL_UINT8(1, a.rejects[3]);
+  // no session: safe values, NaN ages, ctrl_source NONE, cmd_session 0
+  CommandIngress t2;
+  CmdIngressSnapshot c2;
   t2.snapshot(c2);
   RcCommandMapper m2;
   TelemetrySnapshot s2 = sample();
-  fillRcTelemetry(s2, c2, m2, 5 * S);
+  fillCmdTelemetry(s2, c2, m2, 5 * S);
   p = roundTrip(makeVehicleStatus(s2));
-  a = roundTrip(makeRcApplied(s2));
+  a = roundTrip(makeCmdApplied(s2));
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(p.ctrl_source));
   TEST_ASSERT_TRUE(isnan(p.rc_age));
-  TEST_ASSERT_EQUAL_UINT8(0, a.sa);
-  TEST_ASSERT_EQUAL_UINT8(255, a.sb);
-  TEST_ASSERT_EQUAL_UINT8(255, a.sc);
+  TEST_ASSERT_EQUAL_UINT16(0, p.cmd_session);
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.go));
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.motors));
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.vehicle_mode)); // REAL
+  TEST_ASSERT_EQUAL_UINT32(0, a.session);
+  TEST_ASSERT_TRUE(isnan(a.age) && isnan(a.usb_age) && isnan(a.uart_age));
 }
 
 void test_vehicle_status_t9b_none_values() {
@@ -495,14 +516,14 @@ void test_vehicle_status_t9b_none_values() {
 
 void test_vehicle_status_t9b4_command_path_fields() {
   TelemetrySnapshot s = sample();
-  s.ctrlFlags = Packets::VehicleStatus::kCtrlFlagsRadioFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle;
+  s.ctrlFlags = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle;
   s.cmdFlags = Packets::VehicleStatus::kCtrlFlagsScMismatch | Packets::VehicleStatus::kCtrlFlagsSeRefused |
                Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing | Packets::VehicleStatus::kCtrlFlagsFailsafeLatched;
   s.goRefusal = 4;
   s.missionProfile = 2;
   auto p = roundTrip(makeVehicleStatus(s));
   // the comms task's bits and the vehicle's bits are both carried
-  const uint16_t want = Packets::VehicleStatus::kCtrlFlagsRadioFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle |
+  const uint16_t want = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsInterlockNeedToggle |
                         Packets::VehicleStatus::kCtrlFlagsScMismatch | Packets::VehicleStatus::kCtrlFlagsSeRefused |
                         Packets::VehicleStatus::kCtrlFlagsSeHoldZeroing | Packets::VehicleStatus::kCtrlFlagsFailsafeLatched;
   TEST_ASSERT_EQUAL_HEX16(want, p.ctrl_flags);
@@ -889,7 +910,7 @@ void test_mission_setpoint_q_encoding() {
 
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
-  TEST_ASSERT_EQUAL_UINT(36, Packets::VehicleStatus::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(38, Packets::VehicleStatus::kMaxSize); // +2: cmd_session (GS control)
   TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
@@ -903,7 +924,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x65E4E6E3u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0xF1941A87u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -942,7 +963,7 @@ int main() {
   RUN_TEST(test_attitude_setpoint_sanitize);
   RUN_TEST(test_flap_pointing_setpoint);
   RUN_TEST(test_mission_setpoint_q_encoding);
-  RUN_TEST(test_rc_telemetry_fields_and_rc_applied);
+  RUN_TEST(test_cmd_telemetry_fields_and_cmd_applied);
   RUN_TEST(test_packet_sizes_fit_budget);
   return UNITY_END();
 }

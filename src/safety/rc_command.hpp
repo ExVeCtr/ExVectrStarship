@@ -2,27 +2,31 @@
 #define SAFETY_RC_COMMAND_HPP
 
 /**
- * RC command-intent layer (T9b-4, docs/t9b-design.md 3.2, 3.3, D7, D8, D10 to D12, owner decisions 1.3). Pure, no
+ * Command-intent layer (T9b-4, docs/t9b-design.md 3.2, 3.3, D7, D8, D10 to D12, owner decisions 1.3; input changed by
+ * the GS-control cutover, docs/gs-control-design.md: CMD_STATE fields instead of handset channels). Pure, no
  * heap, no clock of its own (every call takes the time), NO dependence on the simulation flag as a gate: the
  * simulation flag appears only as the "applied mode" that SC must match for a go (SC selects it, nothing is gated
  * by it). Host-tested (test/test_rc_mapper).
  *
- * RcCommandMapper (rc_mapper.hpp) turns the accepted RC_STATE of the active source into latched edge events. This
+ * RcCommandMapper (rc_mapper.hpp) turns the accepted CMD_STATE of the latched session into latched edge events. This
  * layer takes those events plus a description of the vehicle (RcPollInput, filled by VehicleSafetyAndControlTask
  * every 10 Hz tick) and returns what to do (RcIntents). main.cpp applies the intents with the existing vehicle
  * code; nothing here touches an actuator.
  *
- *  SA  NOT_GO while a mission chain is pending or the mode is Running: abortLevel EVERY tick (the caller feeds it to
+ *  SA  (go) NOT_GO while a mission chain is pending or the mode is Running: abortLevel EVERY tick (the caller feeds it to
  *      Safety::decideAbort, idempotent; ResetAndStop does not clear latches). SA GO edge: go if decideGo() says so,
  *      otherwise the refusal reason is kept for telemetry (go_refusal).
- *  SB  read at the GO edge only (profile 2 is the only implemented one, D9); later changes are never looked at.
- *  SC  an observed change 0 <-> 1 selects simulation / real while on the ground and not committed (decideSc); the
- *      vehicle boots in real mode, so an SC position at boot does nothing until the switch is cycled. Refused
+ *  SB  (profile) read at the GO edge only (profile 2 is the only implemented one, D9); later changes are never looked at.
+ *  SC  (vehicle_mode) an observed change of the field REAL (0) <-> SIMULATION (1) selects real / simulation while on
+ *      the ground and not committed (decideSc); the vehicle boots in real mode, so a field value at boot does
+ *      nothing until it is cycled. Refused
  *      while committed, in flight, or in mode Failure (a mode switch re-initialises the vehicle and would clear
  *      a latched failsafe; only SE clears it).
- *  SD  not handled here: the motor interlock (motor_interlock.hpp) is a pure gate on the SD state alone.
- *  SE  a short press = system reset only on the ground with the interlock closed (D12); a hold of 1 s zeroes the
- *      estimators while held (hold intents drive EstimatorZeroing's hold API, D11).
+ *  SD  (motors armed / disarmed) not handled here: the motor interlock (motor_interlock.hpp) is a pure gate on the
+ *      motors field alone.
+ *  SE  (reset_button) a short press = system reset only on the ground with the interlock closed (D12) AND the GS
+ *      failsafe request cleared (owner Q6); a hold of 1 s zeroes the estimators while held (hold intents drive
+ *      EstimatorZeroing's hold API, D11).
  */
 
 #include <stdint.h>
@@ -38,8 +42,8 @@ enum class GoRefusal : uint8_t {
   NotReady = 1,    ///< vehicle mode is not Ready (also: calibration invalid)
   Latched = 2,     ///< latched abort / failsafe (mode Failure)
   Zeroing = 3,     ///< estimator zeroing window active or no valid zero
-  ScMismatch = 4,  ///< SC invalid, reserved, or not equal to the applied mode
-  SbProfile = 5,   ///< SB invalid or its profile is not implemented
+  ScMismatch = 4,  ///< vehicle_mode field not equal to the applied mode
+  SbProfile = 5,   ///< the profile is not implemented
   Interlock = 6,   ///< reserved: the interlock is NOT a go precondition (owner decision 2026-11-21)
   RequestBusy = 7, ///< a calibration session or request is in progress
 };
@@ -61,9 +65,9 @@ struct GoContext {
   bool zeroingActive = false;
   bool zeroValid = false;      ///< a valid estimator zero exists since boot
   bool requestBusy = false;
-  uint8_t sc = RcDecoded::kInvalid; ///< SC position of the active source
+  uint8_t mode = 0;       ///< vehicle_mode field: 0 REAL, 1 SIMULATION
   bool simulationApplied = false;
-  uint8_t sb = RcDecoded::kInvalid; ///< SB position of the GO sample
+  uint8_t profile = 0;    ///< profile of the GO sample
 };
 
 /// D7 as finally decided: Ready, no latch, no zeroing, SC valid and equal to the applied mode, SB valid with an
@@ -78,7 +82,7 @@ struct ScContext {
   bool modeFailure = false;
   bool simulationApplied = false;
 };
-/// `edgeTo` = RcEvents::scEdgeTo. An edge to the applied mode changes nothing.
+/// `edgeTo` = RcEvents::scEdgeTo (0 REAL, 1 SIMULATION). An edge to the applied mode changes nothing.
 ScAction decideSc(uint8_t edgeTo, const ScContext &c);
 
 /// D12 "on the ground" (SE reset, SC change): interlock closed and motors not enabled and either the mode is
@@ -100,7 +104,7 @@ bool onGround(const GroundContext &g);
  * "Committed" (design 3.1.3, one definition for the control-source latch and the control failsafe): the interlock is
  * open, or a mission chain is pending, or the mode is Running and the vehicle is NOT on the ground (onGround above).
  * A landed vehicle (mode Running after an RTH, no chain pending, mission Idle or Finished, interlock closed, motors
- * not enabled) is not committed, so a radio gap on the ground only sets ctrl_source NONE (D2-B). Running with the
+ * not enabled) is not committed, so a command gap on the ground only sets ctrl_source NONE (D2-B). Running with the
  * mission active, motors enabled or the interlock open stays committed.
  */
 bool committed(const GroundContext &g);
@@ -111,22 +115,22 @@ enum class HoldAction : uint8_t { None = 0, Start, Refresh, Release, Abort };
 /// Everything the layer needs to know this tick.
 struct RcPollInput {
   int64_t nowNs = 0;
-  bool haveSource = false;        ///< an active source exists and its last state is fresh (at most 1 s old)
-  RcDecoded decoded;              ///< decoded switches of the active source
+  bool haveSource = false;        ///< a session is latched and its last state is fresh (at most 1 s old)
+  RcDecoded decoded;              ///< decoded fields of the last accepted state
   bool chainPendingOrRunning = false; ///< mission chain pending or vehicle mode Running
   bool onGround = false;          ///< D12
   bool committed = false;         ///< interlock open, chain pending or mode Running
   bool interlockOpen = false;
   bool simulationApplied = false;
   bool zeroingHoldActive = false; ///< EstimatorZeroing::holdActive()
-  GoContext go;                   ///< everything but sc, simulationApplied and sb, which the layer fills in
+  GoContext go;                   ///< everything but mode, simulationApplied and profile, which the layer fills in
   bool modeFailure = false;
 };
 
 struct RcIntents {
   bool abortLevel = false;        ///< SA NOT_GO with a chain pending or Running: decideAbort now
   bool go = false;                ///< begin the mission with `goProfile` and the kGoCountdownParamInt countdown
-  uint8_t goProfile = RcDecoded::kInvalid;
+  uint8_t goProfile = 0;
   GoRefusal goRefused = GoRefusal::None; ///< a GO edge was consumed and refused (logged by the caller)
   bool goEdgeSeen = false;
   ScAction sc = ScAction::None;
@@ -157,10 +161,10 @@ public:
   bool seRefusedActive(int64_t nowNs) const { return nowNs < seRefusedUntilNs_; }
   bool holdRunning() const { return holdRunning_; }
 
-  /// SC differs from the applied mode (or is invalid / reserved) while a source is active: ctrl_flags SC_MISMATCH.
-  static bool scMismatch(bool haveSource, uint8_t sc, bool simulationApplied) {
+  /// vehicle_mode differs from the applied mode while a session is fresh: ctrl_flags SC_MISMATCH.
+  static bool scMismatch(bool haveSource, uint8_t mode, bool simulationApplied) {
     if (!haveSource) return false;
-    return !((sc == 0 && simulationApplied) || (sc == 1 && !simulationApplied));
+    return (mode == 1) != simulationApplied;
   }
 
 private:

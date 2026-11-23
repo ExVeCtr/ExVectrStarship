@@ -114,12 +114,10 @@ void VehicleComms::taskThread() {
   snap_.gsPresent = net_.isGroundStationPresent();
   snap_.incompatible = net_.anyIncompatiblePeer();
   snap_.uartPeerSeen = net_.isUartPeerSeen();
-  net_.fillRcTelemetry(snap_);
-  Safety::ControlSourceId newSrc;
-  if (net_.takeSourceChange(newSrc))
-    Core::printM("Control source: %s\n", newSrc == Safety::ControlSourceId::Radio   ? "RADIO"
-                                          : newSrc == Safety::ControlSourceId::Bench ? "BENCH"
-                                                                                     : "NONE");
+  net_.fillCmdTelemetry(snap_);
+  uint32_t newSession = 0;
+  if (net_.takeSessionChange(newSession))
+    Core::printM("Control source: new GS session %08lx\n", static_cast<unsigned long>(newSession));
   net_.sendTelemetry(tick_, snap_);
   if (VehicleNetwork::taskTimingDue(tick_)) sendTaskTiming();
 
