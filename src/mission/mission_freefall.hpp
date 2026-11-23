@@ -11,6 +11,7 @@
 #include "ExVectrCore/topic.hpp"
 #include "ExVectrCore/topic_subscribers.hpp"
 #include "mission_abstract.hpp"
+#include "../safety/motor_enable.hpp"
 #include "telemetry.hpp"
 
 namespace VCTR {
@@ -26,6 +27,7 @@ private:
   float vehicleMass_kg_ = 1;    // Mass of the vehicle in kg.
   float tvcThrustLimit_N_ = 15; // Maximum thrust in Newtons.
   float stopAlt_ = 0; // How much above the ground to fully stop the vehicle.
+  Safety::FreefallSpinup spinup_; // motors idle shortly before the stop trigger (motorsRequest_)
 
 public:
   MissionFreefall(
@@ -69,6 +71,8 @@ public:
     missionTime_.setTime(startTime); // Set the mission time to the start time
     actuatorsEnabled_ = false;       // Disable actuators
     missionEnd_ = false;             // Set the mission end to false
+    spinup_.reset();
+    motorsRequest_ = Safety::MotorsRequest::Unchanged;
     LOG_MSG("Started mission freefall\n"); // Log the mission start
   };
 
@@ -76,6 +80,8 @@ public:
     clearMissionState();
     actuatorsEnabled_ = false;            // Disable actuators
     missionEnd_ = true;                   // Set the mission end to true
+    spinup_.reset();
+    motorsRequest_ = Safety::MotorsRequest::Unchanged;
     LOG_MSG("Reset mission freefall.\n"); // Log the mission reset
   }
 
@@ -115,6 +121,24 @@ public:
     float stoppingDistance = calculateStoppingDistance(
         tvcThrustLimit_N_, vehicleMass_kg_,
         positionIs_); // Calculate the stopping distance
+
+    // Pre-spin: request the motors enabled (zero thrust command, they idle) from kMotorSpinupLeadS before the stop
+    // trigger below. The TVC controllers stay off and the thrust command stays the neutral command until the next
+    // mission (RTH) takes over after the trigger.
+    {
+      Safety::FreefallSpinupInput si;
+      si.running = missionState_.missionMode == MissionMode::MissionMode_Running && !missionEnd_;
+      si.altitudeM = positionIs_(5);
+      si.vzMps = positionIs_(2);
+      si.stopTargetM = stopAlt_;
+      si.thrustLimitN = tvcThrustLimit_N_;
+      si.massKg = vehicleMass_kg_;
+      const bool was = spinup_.latched();
+      motorsRequest_ = spinup_.update(si);
+      if (!was && spinup_.latched())
+        LOG_MSG("Freefall: motor pre-spin requested (alt %.1f m, vz %.1f m/s)\n", double(si.altitudeM),
+                double(si.vzMps));
+    }
 
     if (positionIs_(5) < stoppingDistance + stopAlt_ && missionEnd_ == false) {
       missionState_.missionMode = MissionMode::MissionMode_Finished;
