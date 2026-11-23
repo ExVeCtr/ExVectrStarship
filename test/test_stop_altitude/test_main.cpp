@@ -11,24 +11,25 @@ void tearDown() {}
 
 void test_default_and_limits() {
   TEST_ASSERT_EQUAL_FLOAT(20.0f, kStopAltitudeDefaultM); // the stop trigger keeps its old constant by default
-  TEST_ASSERT_EQUAL_FLOAT(5.0f, kStopAltitudeMinM);
-  TEST_ASSERT_EQUAL_FLOAT(60.0f, kStopAltitudeMaxM);
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, kStopAltitudeMinM);
 }
 
 void test_accept_on_ground() {
   StopAltContext c;
   TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(20.0f, c));
-  TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(5.0f, c));
-  TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(60.0f, c));
+  TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(1.0f, c));
+  TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(100.0f, c));
+  TEST_ASSERT_EQUAL(StopAltResult::Accepted, decideSetStopAltitude(500.0f, c));
 }
 
 void test_value_limits() {
   StopAltContext c;
-  TEST_ASSERT_EQUAL(StopAltResult::OutOfRange, decideSetStopAltitude(4.99f, c));
-  TEST_ASSERT_EQUAL(StopAltResult::OutOfRange, decideSetStopAltitude(60.01f, c));
+  TEST_ASSERT_EQUAL(StopAltResult::OutOfRange, decideSetStopAltitude(0.99f, c));
+  TEST_ASSERT_EQUAL(StopAltResult::OutOfRange, decideSetStopAltitude(0.0f, c));
   TEST_ASSERT_EQUAL(StopAltResult::OutOfRange, decideSetStopAltitude(-20.0f, c));
   TEST_ASSERT_EQUAL(StopAltResult::NotFinite, decideSetStopAltitude(NAN, c));
   TEST_ASSERT_EQUAL(StopAltResult::NotFinite, decideSetStopAltitude(INFINITY, c));
+  TEST_ASSERT_EQUAL(StopAltResult::NotFinite, decideSetStopAltitude(-INFINITY, c));
 }
 
 void test_refused_off_ground() {
