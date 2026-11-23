@@ -1962,19 +1962,30 @@ public:
       if (vehicleSafetyAndControlTask.bellyflopFlapsActive()) {
 #if !DESCENT_LEGACY_STABILIZE
         // New descent law (S3): the guidance runs in the 50 Hz flap task from the DescentTarget below; this task only
-        // selects the mode. Heading and split are not set here (ControlAttitudeFlaps fills them).
-        // ONE place for the observer/Descent interplay (default build): Descent replaces the legacy steering above 100 m
-        // (steer towards home), the hold below 100 m AND the final 30 deg tilt-back hold (stage start:
-        // Safety::freefallTiltBackStage, stop trigger altitude + 20 m). The tilt-back pitch has no equivalent in the
-        // split-based law; the Descent funnel ends at the stop trigger altitude (DescentTarget.endAltitude =
-        // getStopAltitude()), as validated closed loop in test_descent_guidance, so Descent flies through that stage.
-        // The motor enable at entry to that stage is independent of this task (VehicleSafetyAndControlTask,
-        // Safety::MotorEnableLatch, safety/motor_enable.hpp) and is unchanged. The legacy build (#else) keeps the old
-        // steering and tilt-back hold bit-identical.
-        starshipFlopSetting.bellyFlopMode =
-            CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
-                BellyFlopMode_Descent;
-        descentActive = true;
+        // selects the mode. ONE place for the observer/Descent interplay (default build, owner decision 2026-11-23):
+        // Descent replaces the legacy steering above 100 m and the hold below 100 m, but the FINAL TILT-BACK is kept:
+        // from Safety::freefallTiltBackStage (stop trigger altitude + 20 m, the same condition as the motor pre-spin)
+        // the legacy Stabilize mode holds the 30 deg pitch exactly as the legacy build does, until the kick. Descent
+        // leaves (the flap task resets the guidance) when the stage starts and the DescentTarget goes invalid (no
+        // Descent output is used). Azimuth: the last Descent heading setpoint is held (the legacy build holds the last
+        // steered azimuth), written every Descent tick into the persistent setting. Flap step at the handover: the
+        // Descent neutral is 30/78 deg, the Stabilize neutral 50/40 deg (+ tilt terms), no extra state smooths it.
+        // The motor enable at the stage entry is independent of this task (Safety::MotorEnableLatch) and unchanged.
+        if (Safety::freefallFlapLaw(posEst(2), missionFreefallTask.getStopAltitude()) ==
+            Safety::FreefallFlapLaw::TiltBackStabilize) {
+          starshipFlopSetting.bellyFlopMode =
+              CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
+                  BellyFlopMode_Stabilize;
+          starshipFlopSetting.pitchAngle_Rad = 30 * DEGREES;
+        } else {
+          starshipFlopSetting.bellyFlopMode =
+              CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::
+                  BellyFlopMode_Descent;
+          descentActive = true;
+          const float hs = controlAttitudeFlaps.getDescentStatus().headingSp_rad;
+          if (std::isfinite(hs)) starshipFlopSetting.azimuthAngle_Rad = hs;
+          starshipFlopSetting.pitchAngle_Rad = 0;
+        }
 #else
         starshipFlopSetting.bellyFlopMode =
             CTRL::ControlAttitudeBellyFlopSetting::BellyFlopMode::

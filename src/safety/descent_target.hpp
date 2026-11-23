@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "ExVectrControl/starship/descent_guidance.hpp"
+#include "safety/motor_enable.hpp"
 
 namespace VCTR {
 namespace Safety {
@@ -81,6 +82,17 @@ class DescentGnssHysteresis {
   bool goodSinceValid_ = false, badSinceValid_ = false;
   int64_t goodSinceNs_ = 0, badSinceNs_ = 0;
 };
+
+/// Which flap law the observer selects in freefall (default build, owner decision 2026-11-23: keep the final tilt-back).
+/// Descent steers while NOT in the tilt-back stage; from the stage on (same condition as the motor pre-spin,
+/// Safety::freefallTiltBackStage) the legacy Stabilize mode holds the 30 deg tilt-back pitch until the kick. The
+/// guidance leaves Descent in the flap task (reset) when the mode changes. A non-finite altitude is never the tilt-back
+/// stage (Descent with its own invalid-input handling).
+enum class FreefallFlapLaw { Descent, TiltBackStabilize };
+inline FreefallFlapLaw freefallFlapLaw(float altitudeM, float stopTriggerAltitudeM) {
+  return freefallTiltBackStage(altitudeM, stopTriggerAltitudeM) ? FreefallFlapLaw::TiltBackStabilize
+                                                                : FreefallFlapLaw::Descent;
+}
 
 /// Telemetry attitude setpoint source for the flap controller: the heading setpoint and pitch of the nose direction.
 /// Descent: heading setpoint of the guidance with pitch 0 (the split is not representable as an attitude; the GS

@@ -211,6 +211,66 @@ static void test_entry_init_holds_heading_and_leaving_resets() {
   TEST_ASSERT_TRUE(c.ctrl.memory().elapsed_s < 0.05f);
 }
 
+// Final tilt-back kept (owner decision 2026-11-23): Descent above the stage, the legacy Stabilize 30 deg hold in it.
+static void test_tiltback_handover() {
+  const float stopTrig = 27.6f;
+  // The law selection is exactly the motor pre-spin stage condition, with the same non-finite behaviour.
+  for (float alt : {200.0f, 100.0f, 60.0f, 47.7f, 47.6f, 40.0f, 27.6f, 10.0f, NAN, -INFINITY}) {
+    const bool stage = Safety::freefallTiltBackStage(alt, stopTrig);
+    TEST_ASSERT_TRUE((Safety::freefallFlapLaw(alt, stopTrig) == Safety::FreefallFlapLaw::TiltBackStabilize) == stage);
+  }
+  TEST_ASSERT_TRUE(Safety::freefallFlapLaw(60.0f, stopTrig) == Safety::FreefallFlapLaw::Descent);
+  TEST_ASSERT_TRUE(Safety::freefallFlapLaw(47.0f, stopTrig) == Safety::FreefallFlapLaw::TiltBackStabilize);
+  TEST_ASSERT_TRUE(Safety::freefallFlapLaw(NAN, stopTrig) == Safety::FreefallFlapLaw::Descent);
+
+  // Run the flap-task path the way the observer drives it: Descent above, Stabilize (30 deg) in the stage.
+  D::DescentFlapController dc;
+  float att[7] = {0, 0, 0, 1, 0, 0, 0};
+  float azHeld = 0.0f;
+  auto observer = [&](float alt, const D::DescentStatus &st) {
+    ControlAttitudeBellyFlopSetting s;
+    s.azimuthAngle_Rad = azHeld;
+    if (Safety::freefallFlapLaw(alt, stopTrig) == Safety::FreefallFlapLaw::TiltBackStabilize) {
+      s.bellyFlopMode = Mode::BellyFlopMode_Stabilize;
+      s.pitchAngle_Rad = 30.0f * 3.14159265f / 180.0f;
+    } else {
+      s.bellyFlopMode = Mode::BellyFlopMode_Descent;
+      if (isfinite(st.headingSp_rad)) azHeld = s.azimuthAngle_Rad = st.headingSp_rad;
+      s.pitchAngle_Rad = 0;
+    }
+    return s;
+  };
+  float pos[6] = {0, 0, -6, 4, 3, 80};
+  D::DescentStatus st = dc.status();
+  ControlAttitudeBellyFlopSetting r;
+  for (int i = 0; i < 100; i++) {  // Descent above the stage
+    pos[5] = 80.0f - 0.01f * i;
+    r = dc.apply(observer(pos[5], st), homeTarget(true), pos, true, att, 0.02f);
+    st = dc.status();
+    TEST_ASSERT_TRUE(r.bellyFlopMode == Mode::BellyFlopMode_Descent);
+  }
+  TEST_ASSERT_TRUE(st.active);
+  // Stage starts: Descent leaves (reset), the output is the legacy Stabilize setting, no Descent split used.
+  pos[5] = 40.0f;
+  r = dc.apply(observer(pos[5], st), homeTarget(false), pos, true, att, 0.02f);
+  TEST_ASSERT_TRUE(r.bellyFlopMode == Mode::BellyFlopMode_Stabilize);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f * 3.14159265f / 180.0f, r.pitchAngle_Rad);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.pitchSplit_Rad);
+  TEST_ASSERT_TRUE(isfinite(r.azimuthAngle_Rad));
+  TEST_ASSERT_FALSE(dc.status().active);
+  for (int i = 0; i < 50; i++) {  // stays tilt-back, no Descent output
+    pos[5] = 40.0f - 0.01f * i;
+    r = dc.apply(observer(pos[5], dc.status()), homeTarget(false), pos, true, att, 0.02f);
+    TEST_ASSERT_TRUE(r.bellyFlopMode == Mode::BellyFlopMode_Stabilize);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, r.pitchSplit_Rad);
+  }
+  // Re-entry (e.g. altitude back above the stage): a fresh init, split starts from the entry hold, not stale state.
+  pos[5] = 90.0f;
+  r = dc.apply(observer(pos[5], dc.status()), homeTarget(true), pos, true, att, 0.02f);
+  TEST_ASSERT_TRUE(r.bellyFlopMode == Mode::BellyFlopMode_Descent);
+  TEST_ASSERT_TRUE(dc.status().active);
+}
+
 static void test_other_modes_pass_through() {
   D::DescentFlapController dc;
   ControlAttitudeBellyFlopSetting s;
@@ -516,6 +576,7 @@ int main(int, char **) {
   RUN_TEST(test_telemetry_setpoint_source);
   RUN_TEST(test_entry_init_holds_heading_and_leaving_resets);
   RUN_TEST(test_other_modes_pass_through);
+  RUN_TEST(test_tiltback_handover);
   RUN_TEST(test_invalid_position_falls_straight);
   RUN_TEST(test_recovery_after_invalid);
   RUN_TEST(test_nan_attitude_gives_neutral_flaps);
