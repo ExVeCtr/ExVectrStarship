@@ -17,15 +17,14 @@ namespace Safety {
 constexpr float kStopAltitudeDefaultM = 20.0f; ///< boot default (not persisted)
 constexpr float kStopAltitudeMinM = 1.0f; ///< no maximum (owner decision 2026-11-23); must be finite
 
-enum class StopAltResult : uint8_t { Accepted = 0, NotFinite, OutOfRange, InterlockOpen, MotorsEnabled, Committed };
+enum class StopAltResult : uint8_t { Accepted = 0, NotFinite, OutOfRange, InterlockOpen, Committed };
 
 struct StopAltContext {
   bool interlockOpen = false;
-  bool motorsEnabled = false;
   bool committed = false; ///< Safety::committed(): chain pending or mode Running not on the ground
 };
 
-/// SetStopAltitude (telecommand 19): accepted only on the ground (interlock closed, motors not enabled, not committed),
+/// SetStopAltitude (telecommand 19): accepted only on the ground (motor gate closed = interlock closed, not committed; the software enable flag is irrelevant),
 /// finite, at least kStopAltitudeMinM (no maximum). First failing rule wins.
 StopAltResult decideSetStopAltitude(float valueM, const StopAltContext &c);
 const char *toString(StopAltResult r);

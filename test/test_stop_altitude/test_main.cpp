@@ -40,8 +40,9 @@ void test_refused_off_ground() {
   c.interlockOpen = true;
   TEST_ASSERT_EQUAL(StopAltResult::InterlockOpen, decideSetStopAltitude(30.0f, c));
   c = StopAltContext();
-  c.motorsEnabled = true;
-  TEST_ASSERT_EQUAL(StopAltResult::MotorsEnabled, decideSetStopAltitude(30.0f, c));
+  c.interlockOpen = true;
+  c.committed = true;
+  TEST_ASSERT_EQUAL(StopAltResult::InterlockOpen, decideSetStopAltitude(30.0f, c));
 }
 
 void test_flip_start_gating() {

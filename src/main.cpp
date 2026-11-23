@@ -1535,7 +1535,6 @@ public:
       const int64_t now = Core::NowNs();
       Safety::StopAltContext sc;
       sc.interlockOpen = vehicleComms.motorInterlock().open(now);
-      sc.motorsEnabled = starshipTVC.isMotorsEnabled();
       sc.committed = isCommitted(now);
       const auto res = Safety::decideSetStopAltitude(telecommand.paramFloat, sc);
       if (res == Safety::StopAltResult::Accepted) {
