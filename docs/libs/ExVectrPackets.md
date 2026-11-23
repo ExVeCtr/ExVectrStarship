@@ -39,6 +39,8 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 
 How the vehicle fills each field: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#9-telemetry-generated-packets-srccommstelemetry_mappingcpp).
 
+Vehicle-directed `REQUEST` actions (hash 0x036F9C45, `feature/requests-all`, local Packets 0284392): 7, 8, 12..23 are executed by `Safety::RequestExecutor` (table: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#10-requests-the-legacy-telecommand-port-0x7f-is-deleted)); `GET_HOME_POSITION` is answered with `HOME_POSITION` (0x50).
+
 ## Usage
 ```cpp
 #include "ExVectrPackets/gen/all.hpp"
