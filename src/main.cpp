@@ -1915,6 +1915,8 @@ FLASHMEM void VehicleSafetyAndControlTask::configureWaypointChain(uint8_t profil
                                   apogee.stopAccel, apogee.thresholdM, 5 * Core::SECONDS);
   if (missionParams_.apogeeAltitude < Safety::kApogeeNoFlipBelowM)
     LOG_MSG("apogee below 90 m: no bellyflop, the flight ends in RTH\n");
+  if (fabsf(missionParams_.apogeeX) > 0.5f || fabsf(missionParams_.apogeeY) > 0.5f)
+    LOG_MSG("apogee not above home: the descent target is home, expect a lateral transfer in the descent\n");
   missionWaypointTask.setNextMission(&missionBellyflop);
   missionBellyflop.setNextMission(&missionFreefallTask);
   missionFreefallTask.setNextMission(&defaultMission_);

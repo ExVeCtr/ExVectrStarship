@@ -332,10 +332,20 @@ void test_set_mission_param() {
   expect(run(msgI(4, 24, 1, 10.0f)), 0, 0);
   expect(run(msgI(5, 24, 6, 600.0f)), 0, 0);
   expect(run(msgI(6, 24, 3, 0.0f)), 0, 0);
+  expect(run(msgI(50, 24, 7, 0.2f)), 0, 0);
+  expect(run(msgI(51, 24, 8, 20.0f)), 0, 0);
+  expect(run(msgI(52, 24, 9, -2000.0f)), 0, 0);
+  expect(run(msgI(53, 24, 10, 2000.0f)), 0, 0);
+  TEST_ASSERT_EQUAL_UINT8(10, act.mpId);
+  TEST_ASSERT_EQUAL_FLOAT(2000.0f, act.mpVal);
   const int ok = act.mpCalls;
   // invalid: unknown id, out of range, non-finite
   expect(run(msgI(10, 24, 0, 5.0f)), 3, 1);
-  expect(run(msgI(11, 24, 7, 5.0f)), 3, 1);
+  expect(run(msgI(11, 24, 11, 5.0f)), 3, 1);
+  expect(run(msgI(60, 24, 7, 0.19f)), 3, 1);
+  expect(run(msgI(61, 24, 8, 20.1f)), 3, 1);
+  expect(run(msgI(62, 24, 9, 2000.5f)), 3, 1);
+  expect(run(msgI(63, 24, -0 + 10, -2000.5f)), 3, 1);
   expect(run(msgI(12, 24, -1, 5.0f)), 3, 1);
   expect(run(msgI(13, 24, 1, 0.49f)), 3, 1);
   expect(run(msgI(14, 24, 1, 10.1f)), 3, 1);

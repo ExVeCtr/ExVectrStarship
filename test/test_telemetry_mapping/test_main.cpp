@@ -653,13 +653,25 @@ void test_mission_params() {
   TEST_ASSERT_EQUAL_FLOAT(10.0f, d.p1_hold_1_s);
   TEST_ASSERT_EQUAL_FLOAT(15.0f, d.p1_hold_2_s);
   TEST_ASSERT_EQUAL_FLOAT(15.0f, d.p1_hold_3_s);
+  TEST_ASSERT_EQUAL_FLOAT(3.0f, d.ascent_accel);
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, d.ascent_decel);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, d.apogee_x);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, d.apogee_y);
   s.missionParams.ascentSpeed = 3.5f;
   s.missionParams.apogeeAltitude = 45.0f;
   s.missionParams.p1Hold3S = 0.0f;
+  s.missionParams.ascentAccel = 4.5f;
+  s.missionParams.ascentDecel = 1.25f;
+  s.missionParams.apogeeX = 12.5f;
+  s.missionParams.apogeeY = -7.5f;
   d = roundTrip(makeMissionParams(s));
   TEST_ASSERT_EQUAL_FLOAT(3.5f, d.ascent_speed);
   TEST_ASSERT_EQUAL_FLOAT(45.0f, d.apogee_altitude);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, d.p1_hold_3_s);
+  TEST_ASSERT_EQUAL_FLOAT(4.5f, d.ascent_accel);
+  TEST_ASSERT_EQUAL_FLOAT(1.25f, d.ascent_decel);
+  TEST_ASSERT_EQUAL_FLOAT(12.5f, d.apogee_x);
+  TEST_ASSERT_EQUAL_FLOAT(-7.5f, d.apogee_y);
 }
 
 void test_calibration() {
@@ -979,7 +991,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x5E23CDD1u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0xC2061E5Du, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }

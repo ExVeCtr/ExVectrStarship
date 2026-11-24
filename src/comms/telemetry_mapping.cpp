@@ -502,6 +502,10 @@ Packets::MissionParams makeMissionParams(const TelemetrySnapshot &s) {
   p.p1_hold_1_s = s.missionParams.p1Hold1S;
   p.p1_hold_2_s = s.missionParams.p1Hold2S;
   p.p1_hold_3_s = s.missionParams.p1Hold3S;
+  p.ascent_accel = s.missionParams.ascentAccel;
+  p.ascent_decel = s.missionParams.ascentDecel;
+  p.apogee_x = s.missionParams.apogeeX;
+  p.apogee_y = s.missionParams.apogeeY;
   return p;
 }
 

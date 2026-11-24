@@ -20,6 +20,10 @@ FLASHMEM bool missionParamValid(uint8_t id, float v) {
   case 4:
   case 5:
   case 6: return v >= 0.0f && v <= 600.0f;
+  case 7:
+  case 8: return v >= 0.2f && v <= 20.0f;
+  case 9:
+  case 10: return v >= -2000.0f && v <= 2000.0f;
   default: return false;
   }
 }
@@ -32,7 +36,11 @@ FLASHMEM bool missionParamApply(MissionParamSet &s, uint8_t id, float v) {
   case 3: s.hoverHoldS = v; break;
   case 4: s.p1Hold1S = v; break;
   case 5: s.p1Hold2S = v; break;
-  default: s.p1Hold3S = v; break;
+  case 6: s.p1Hold3S = v; break;
+  case 7: s.ascentAccel = v; break;
+  case 8: s.ascentDecel = v; break;
+  case 9: s.apogeeX = v; break;
+  default: s.apogeeY = v; break;
   }
   return true;
 }

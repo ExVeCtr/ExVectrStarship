@@ -1,7 +1,11 @@
 #include "safety/mission_profile.hpp"
 
 #ifndef FLASHMEM // Teensy: cold code runs from flash and keeps ITCM (RAM1 code) small; empty on the host
+#ifdef __IMXRT1062__
+#define FLASHMEM __attribute__((section(".flashmem")))
+#else
 #define FLASHMEM
+#endif
 #endif
 
 namespace VCTR {
@@ -48,7 +52,7 @@ FLASHMEM MissionProfileDesc missionProfileFor(uint8_t profile, const MissionPara
 }
 
 FLASHMEM ProfileWaypoint flightApogeeWaypoint(const MissionParamSet &p) {
-  return {0, 0, p.apogeeAltitude, p.ascentSpeed, 3, 2, 3, 5, 0};
+  return {p.apogeeX, p.apogeeY, p.apogeeAltitude, p.ascentSpeed, p.ascentAccel, p.ascentDecel, 3, 5, 0};
 }
 
 FLASHMEM const char *profileName(uint8_t profile) {
