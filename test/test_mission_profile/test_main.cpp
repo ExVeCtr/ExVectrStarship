@@ -121,10 +121,40 @@ static void test_parameters_change_the_lists() {
   TEST_ASSERT_TRUE(a.z < kApogeeNoFlipBelowM);
 }
 
+static void test_new_params_apogee_waypoint() {
+  MissionParamSet p;
+  TEST_ASSERT_EQUAL_FLOAT(3.0f, p.ascentAccel);
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, p.ascentDecel);
+  TEST_ASSERT_TRUE(missionParamApply(p, 7, 5.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 8, 1.5f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 9, 40.0f));
+  TEST_ASSERT_TRUE(missionParamApply(p, 10, -25.0f));
+  sameWp(flightApogeeWaypoint(p), {40, -25, 120, 7, 5, 1.5f, 3, 5, 0});
+  // range edges and invalid values of ids 7..10
+  for (uint8_t id = 7; id <= 8; id++) {
+    TEST_ASSERT_TRUE(missionParamValid(id, 0.2f));
+    TEST_ASSERT_TRUE(missionParamValid(id, 20.0f));
+    TEST_ASSERT_FALSE(missionParamValid(id, 0.19f));
+    TEST_ASSERT_FALSE(missionParamValid(id, 20.1f));
+  }
+  for (uint8_t id = 9; id <= 10; id++) {
+    TEST_ASSERT_TRUE(missionParamValid(id, -2000.0f));
+    TEST_ASSERT_TRUE(missionParamValid(id, 2000.0f));
+    TEST_ASSERT_TRUE(missionParamValid(id, 0.0f));
+    TEST_ASSERT_FALSE(missionParamValid(id, -2000.5f));
+    TEST_ASSERT_FALSE(missionParamValid(id, 2000.5f));
+    TEST_ASSERT_FALSE(missionParamValid(id, NAN));
+    TEST_ASSERT_FALSE(missionParamValid(id, INFINITY));
+  }
+  MissionParamSet q;
+  TEST_ASSERT_FALSE(missionParamApply(q, 9, 3000.0f));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, q.apogeeX);
+}
+
 static void test_param_validation() {
   MissionParamSet p;
   TEST_ASSERT_FALSE(missionParamApply(p, 0, 1.0f));
-  TEST_ASSERT_FALSE(missionParamApply(p, 7, 1.0f));
+  TEST_ASSERT_FALSE(missionParamApply(p, 11, 1.0f));
   TEST_ASSERT_FALSE(missionParamApply(p, 1, 0.4f));
   TEST_ASSERT_FALSE(missionParamApply(p, 1, 10.5f));
   TEST_ASSERT_FALSE(missionParamApply(p, 2, 1.5f));
@@ -179,6 +209,7 @@ int main(int, char **) {
   RUN_TEST(test_hover_test);
   RUN_TEST(test_defaults_reproduce_the_hard_coded_lists);
   RUN_TEST(test_parameters_change_the_lists);
+  RUN_TEST(test_new_params_apogee_waypoint);
   RUN_TEST(test_param_validation);
   RUN_TEST(test_waypoint_test);
   RUN_TEST(test_decide_go_profiles);
