@@ -1,5 +1,6 @@
 #include "safety/motor_enable.hpp"
 #include "starship_tvc.hpp"
+#include "flashmem.hpp"
 
 #include "ExVectrActuator/pwm_output.hpp"
 #include "ExVectrCore/print.hpp"
@@ -11,6 +12,15 @@
 
 namespace VCTR {
 namespace CTRL {
+
+FLASHMEM __attribute__((noinline)) static void warnNonFiniteThrust() {
+  static int64_t lastWarnNs = -2000000000LL;
+  if (Core::NowNs() - lastWarnNs >= 1000000000LL) {
+    lastWarnNs = Core::NowNs();
+    LOG_MSG("WARNING: non-finite thrust command, thrust set to 0\n");
+  }
+}
+
 
 StarshipTVC::StarshipTVC(HAL::PinPWM &tvcServoPinXP, HAL::PinPWM &tvcServoPinXN,
                          HAL::PinPWM &tvcServoPinYP, HAL::PinPWM &tvcServoPinYN,
@@ -215,6 +225,11 @@ void StarshipTVC::taskThread() {
 
   auto motorCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;
   auto motorCCWOut = thrustMagnitude / tvcThrustLimit_N_ * motorPowerLimit_;
+  if (!isfinite(motorCWOut) || !isfinite(motorCCWOut)) { // explicit (was an implicit zero), now loud
+    warnNonFiniteThrust();
+    motorCWOut = 0;
+    motorCCWOut = 0;
+  }
 
   if (motorCWOut > motorPowerLimit_)
     motorCWOut = motorPowerLimit_;
@@ -237,6 +252,7 @@ void StarshipTVC::taskThread() {
     if (!(isfinite(angleXAxis) && isfinite(angleYAxis) && isfinite(thrustMag))) {
       // A non-finite TVC command must not latch NaN into the integrated actual angles (it stayed NaN until
       // reboot): hold the previous angles and report no thrust for this tick.
+      warnNonFiniteThrust();
       angleXAxis = actualThrustXAngle;
       angleYAxis = actualThrustYAngle;
       thrustMag = 0.0f;
