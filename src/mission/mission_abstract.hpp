@@ -12,6 +12,9 @@
 #include "../starship_flaps.hpp"
 #include "../telemetry.hpp"
 #include "../safety/motor_enable.hpp"
+#include "../safety/setpoint_sanitiser.hpp"
+#include "../flashmem.hpp"
+#include "ExVectrCore/print.hpp"
 
 namespace VCTR
 {
@@ -24,6 +27,13 @@ enum class MissionType : uint8_t
     MissionType_Waypoint, // Waypoint mission. This is used to fly a path to a certain point.
     MissionType_FlapDescent // Flap descent mission. This puts the vehicle belly first and uses the flaps to stabilise the vehicle.
 };
+
+FLASHMEM __attribute__((noinline)) static void logBadSetpoint(uint8_t bad, uint32_t count) { // cold
+    LOG_MSG("WARNING: non-finite mission setpoint (%s), holding the last valid setpoint (count %u)\n",
+            (bad == (Safety::SetpointSanitiser::kBadVelocity | Safety::SetpointSanitiser::kBadPosition)) ? "velocity+position"
+            : (bad & Safety::SetpointSanitiser::kBadVelocity) ? "velocity" : "position",
+            (unsigned)count);
+}
 
 class MissionAbstract
 {
@@ -48,6 +58,20 @@ protected:
     bool disableKinematicSafety_ = false;
 
     bool missionEnd_ = false; // If true, then the mission is finished and the vehicle should be in a safe state.
+
+    Safety::SetpointSanitiser setpointSanitiser_;
+
+
+    /// Publishes the setpoint [V,P] to the controllers. A non-finite value is never passed on: the last finite
+    /// setpoint is held (velocity zero), counted and logged at most once per second.
+    void publishSetpointSafe(const Math::Vector<float, 6>& sp, const Math::Vector<float, 6>& is) {
+        const float in[6] = {sp(0), sp(1), sp(2), sp(3), sp(4), sp(5)};
+        const float pos[3] = {is(3), is(4), is(5)};
+        float out[6];
+        const uint8_t bad = setpointSanitiser_.sanitise(in, pos, out);
+        if (bad && setpointSanitiser_.takeLogSlot(Core::NowNs())) logBadSetpoint(bad, setpointSanitiser_.count());
+        positionSetpointTopic_.publish({out[0], out[1], out[2], out[3], out[4], out[5]});
+    }
 
     /**
      * Puts the reported mission state back to its boot values: mode Idle, mission time 0, setpoint zero.

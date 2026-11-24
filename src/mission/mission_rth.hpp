@@ -12,6 +12,7 @@
 #include "ExVectrCore/topic_subscribers.hpp"
 #include "../safety/landing_detector.hpp"
 #include "../safety/rth_altitude.hpp"
+#include "../safety/rth_translation.hpp"
 #include "mission_abstract.hpp"
 
 namespace VCTR {
@@ -20,6 +21,11 @@ namespace VCTR {
  * @brief This mission is used to return the vehicle to the home position. This
  * is used for example is emergencies to have the vehicle in a safe state.
  */
+FLASHMEM __attribute__((noinline)) static void logHandover(bool vehicleNear, float vehDist) { // cold
+  LOG_MSG("RTH: descent starts (%s), vehicle %.2f m from the return point\n",
+          vehicleNear ? "vehicle within 0.5 m" : "setpoint dwell 3 s, wind offset", double(vehDist));
+}
+
 class MissionRTH : public MissionAbstract, public Core::Task_Periodic {
 private:
   enum class RunningState {
@@ -57,6 +63,7 @@ private:
 
   float descentRate_ = 0.2; // How fast the vehicle should go down in m/s.
   Safety::LandingDetector landingDetector_;
+  Safety::RthHandoverRule handoverRule_;
   int64_t descentModeTimestamp_ = 0; // When the vehicle is in descent mode.
 
 public:
@@ -188,8 +195,7 @@ public:
     missionState_.positionSetpoint[4] = positionSetpoint_(4);
     missionState_.positionSetpoint[5] = positionSetpoint_(5);
 
-    positionSetpointTopic_.publish(
-        positionSetpoint_); // Publish the setpoint to the control system
+    publishSetpointSafe(positionSetpoint_, positionIs_); // finite-guarded
 
     // flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to
     // the control system
@@ -199,6 +205,7 @@ public:
   }
 
 private:
+
   void missionIdle() {
     actuatorsEnabled_ = false; // Disable actuators
     missionTime_.setTime(0);   // Set the mission time to the start time
@@ -270,6 +277,7 @@ private:
                  // stopped, and begin translation
         runningState_ = RunningState::RunningState_Ascent; // Go to ascent mode
         translationVelocity_ = 0;
+        handoverRule_.reset();
       }
 
       break;
@@ -283,40 +291,19 @@ private:
 
     {
       const Math::Vector<float, 3> returnPoint = {homePosition_(0), homePosition_(1), returnAltitude_};
-      auto travelDistance =
-          returnPoint -
-          positionSetpoint_.block<3, 1>(3); // Get the velocity vector to the
-                                            // home position in reference frame
-      auto travelDistanceMag =
-          travelDistance.magnitude(); // Get the magnitude of the travel
-                                      // distance vector
-      auto travelDistanceNorm =
-          travelDistance /
-          travelDistanceMag; // Normalize the travel distance vector
-
-      const float accel = 0.5;
-      if (translationVelocity_ < 2)
-        translationVelocity_ += dTime * accel;
-
-      if (translationVelocity_ > 2) {
-        translationVelocity_ = 2;
+      Safety::RthTranslationState ts;
+      for (int i = 0; i < 3; i++) ts.setpoint[i] = positionSetpoint_(3 + i);
+      ts.velocity = translationVelocity_;
+      const float ret[3] = {returnPoint(0), returnPoint(1), returnPoint(2)};
+      const Safety::RthTranslationOut to = Safety::rthTranslationStep(ts, ret, dTime);
+      translationVelocity_ = to.velocity;
+      for (int i = 0; i < 3; i++) {
+        positionSetpoint_(i) = to.velSetpoint[i];
+        positionSetpoint_(3 + i) = to.setpoint[i];
       }
-
-      if (travelDistanceMag / dTime > translationVelocity_) {
-        travelDistance = travelDistanceNorm * translationVelocity_ * dTime;
-      }
-
-      auto accelVelocityLimit = sqrtf(travelDistanceMag * accel);
-      if (translationVelocity_ > accelVelocityLimit) {
-        translationVelocity_ = accelVelocityLimit;
-      }
-      positionSetpoint_(0) = travelDistanceNorm(0) * translationVelocity_;
-      positionSetpoint_(1) = travelDistanceNorm(1) * translationVelocity_;
-      positionSetpoint_(2) = travelDistanceNorm(2) * translationVelocity_;
-      positionSetpoint_(3) += travelDistance(
-          0); // Update the setpoint position in the reference frame
-      positionSetpoint_(4) += travelDistance(1);
-      positionSetpoint_(5) += travelDistance(2);
+      const float spDist = sqrtf((ret[0] - to.setpoint[0]) * (ret[0] - to.setpoint[0]) +
+                                 (ret[1] - to.setpoint[1]) * (ret[1] - to.setpoint[1]) +
+                                 (ret[2] - to.setpoint[2]) * (ret[2] - to.setpoint[2]));
 
       // flapSettings_.enableActuators = true; // Enable the actuators
       // flapSettings_.tlAngle = 90; // Move top flaps out fully
@@ -335,8 +322,11 @@ private:
       // %f)\n", distance(0), distance(1), distance(2)); // Log the mission
       // start
 
-      if (distance.magnitude() < 0.5) { // If the vehicle is within 0.5 m of the
-                                        // home position, we begin descent
+      const Safety::RthHandover handover = handoverRule_.update(Core::NowNs(), spDist, distance.magnitude());
+      if (handover != Safety::RthHandover::None) { // vehicle within 0.5 m, or setpoint dwelled 3 s at the return
+                                                   // point and vehicle within 1.5 m (wind offset): begin descent
+        logHandover(handover == Safety::RthHandover::VehicleNear, distance.magnitude());
+        handoverRule_.reset();
         runningState_ =
             RunningState::RunningState_Descent; // Go to descent mode
         descentModeTimestamp_ =

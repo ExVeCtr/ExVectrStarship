@@ -239,8 +239,7 @@ public:
     missionState_.positionSetpoint[4] = positionSetpoint_(4);
     missionState_.positionSetpoint[5] = positionSetpoint_(5);
 
-    positionSetpointTopic_.publish(
-        positionSetpoint_); // Publish the setpoint to the control system
+    publishSetpointSafe(positionSetpoint_, positionIs_); // finite-guarded
 
     // flapSettingTopic_.publish(flapSettings_); // Publish the flap settings to
     // the control system
