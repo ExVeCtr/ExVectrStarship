@@ -85,8 +85,8 @@ public:
   static constexpr uint32_t kAirGnssPhase = 3;
   static constexpr uint32_t kAirGnssInfoPhase = 31;
   static constexpr uint32_t kAirActuatorsPhase = 6; ///< send tick phase (a sampling tick, so the newest is fresh)
-  /// MISSION_PARAMS period on the radio: 0.5 Hz (the schema's integer rate_air cannot express it); USB uses kUsbRateHz (1 Hz).
-  static constexpr uint32_t kMissionParamsAirPeriodTicks = 2 * kTickHz;
+  /// MISSION_PARAMS period on the radio: 0.2 Hz (every 5 s) (the schema's integer rate_air cannot express it); USB uses kUsbRateHz (1 Hz).
+  static constexpr uint32_t kMissionParamsAirPeriodTicks = 5 * kTickHz;
 
   /// True on the ticks where CALIBRATION is due on USB (every kCalibrationPeriodTicks, phase 17).
   static bool calibrationDue(uint32_t tick);

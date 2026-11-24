@@ -164,7 +164,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::AirMission::kAirRateHz, 9)) sendOn(uartNode_, gs, makeAirMission(s));
   if (due(t, Packets::HandsetTelem::kAirRateHz, 7)) sendOn(uartNode_, bc, makeHandsetTelem(s));
   if (due(t, Packets::AirGnss::kAirRateHz, kAirGnssPhase)) sendOn(uartNode_, gs, makeAirGnss(s));
-  if ((t % kMissionParamsAirPeriodTicks) == 21) sendOn(uartNode_, gs, makeMissionParams(s)); // 0.5 Hz
+  if ((t % kMissionParamsAirPeriodTicks) == 21) sendOn(uartNode_, gs, makeMissionParams(s)); // 0.2 Hz (5 s)
   if (due(t, Packets::AirGnssInfo::kAirRateHz, kAirGnssInfoPhase)) sendOn(uartNode_, gs, makeAirGnssInfo(s));
 }
 
