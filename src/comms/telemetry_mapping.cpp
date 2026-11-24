@@ -494,6 +494,17 @@ Packets::Calibration makeCalibration(const TelemetrySnapshot &s) {
   return p;
 }
 
+Packets::MissionParams makeMissionParams(const TelemetrySnapshot &s) {
+  Packets::MissionParams p;
+  p.ascent_speed = s.missionParams.ascentSpeed;
+  p.apogee_altitude = s.missionParams.apogeeAltitude;
+  p.hover_hold_s = s.missionParams.hoverHoldS;
+  p.p1_hold_1_s = s.missionParams.p1Hold1S;
+  p.p1_hold_2_s = s.missionParams.p1Hold2S;
+  p.p1_hold_3_s = s.missionParams.p1Hold3S;
+  return p;
+}
+
 // ---- HOME_POSITION ----
 
 Packets::HomePosition makeHomePosition(const HomeInput &in) {

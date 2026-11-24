@@ -644,6 +644,24 @@ void test_imu_raw_and_estimator() {
   TEST_ASSERT_EQUAL_FLOAT(1.2f, e.pos_std[0]);
 }
 
+void test_mission_params() {
+  TelemetrySnapshot s;
+  auto d = roundTrip(makeMissionParams(s)); // defaults of the store
+  TEST_ASSERT_EQUAL_FLOAT(7.0f, d.ascent_speed);
+  TEST_ASSERT_EQUAL_FLOAT(120.0f, d.apogee_altitude);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, d.hover_hold_s);
+  TEST_ASSERT_EQUAL_FLOAT(10.0f, d.p1_hold_1_s);
+  TEST_ASSERT_EQUAL_FLOAT(15.0f, d.p1_hold_2_s);
+  TEST_ASSERT_EQUAL_FLOAT(15.0f, d.p1_hold_3_s);
+  s.missionParams.ascentSpeed = 3.5f;
+  s.missionParams.apogeeAltitude = 45.0f;
+  s.missionParams.p1Hold3S = 0.0f;
+  d = roundTrip(makeMissionParams(s));
+  TEST_ASSERT_EQUAL_FLOAT(3.5f, d.ascent_speed);
+  TEST_ASSERT_EQUAL_FLOAT(45.0f, d.apogee_altitude);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, d.p1_hold_3_s);
+}
+
 void test_calibration() {
   TelemetrySnapshot s = sample();
   // Gyro: hard-coded bias override, diag(-1,1,-1) transform (as the if(false) block in main.cpp would store)
@@ -961,7 +979,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x036F9C45u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x5E23CDD1u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -991,6 +1009,7 @@ int main() {
   RUN_TEST(test_mode_text);
   RUN_TEST(test_imu_raw_and_estimator);
   RUN_TEST(test_calibration);
+  RUN_TEST(test_mission_params);
   RUN_TEST(test_attitude_std_world);
   RUN_TEST(test_home_position_from_a_faked_reference);
   RUN_TEST(test_home_position_without_fix_has_nan_position);
