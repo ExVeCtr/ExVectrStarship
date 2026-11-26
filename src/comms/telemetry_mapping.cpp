@@ -246,6 +246,7 @@ Packets::AirPose makeAirPose(const TelemetrySnapshot &s) {
   for (int i = 0; i < 4; i++) p.q[i] = s.att[3 + i];
   copy3(&s.pos[3], p.pos);
   copy3(&s.pos[0], p.vel);
+  p.ground_distance = s.groundDistance;
   return p;
 }
 
@@ -256,6 +257,7 @@ Packets::Pose makePose(const TelemetrySnapshot &s) {
   for (int i = 0; i < 4; i++) p.q[i] = s.att[3 + i];
   copy3(&s.pos[0], p.vel);
   copy3(&s.pos[3], p.pos);
+  p.ground_distance = s.groundDistance;
   return p;
 }
 
@@ -267,7 +269,6 @@ Packets::Actuators makeActuators(const TelemetrySnapshot &s) {
   tvcDeflection(s.tvcThrust, p.tvc);
   p.thrust = sqrtf(s.tvcThrust[0] * s.tvcThrust[0] + s.tvcThrust[1] * s.tvcThrust[1] +
                    s.tvcThrust[2] * s.tvcThrust[2]);
-  p.ground_distance = s.groundDistance;
   return p;
 }
 
