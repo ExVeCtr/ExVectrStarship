@@ -357,6 +357,15 @@ Other ways a mission gets switched:
 
 `missionSelection_` is written into a **local copy** of `MissionState` at `:619` that is then discarded, so the telemetry `missionIndex` never carries it. The latched SB profile is reported in `VEHICLE_STATUS.mission_profile` (T9b-4).
 
+### Whole-mission clock (`mission_elapsed`)
+
+`MISSION.mission_elapsed` and `AIR_MISSION.mission_elapsed` (owner decision 2026-11-26) carry the seconds since the mission's T0 for the WHOLE chain, whereas `mission_time` restarts for each step. Implemented by `Safety::MissionClock` (`src/safety/mission_clock.hpp`, pure, host-tested in `test/test_mission_clock`), owned by `VehicleSafetyAndControlTask` as `missionClock_`. It is telemetry only: nothing reads it, it only records events that already happen, and it is the same in simulation and real mode.
+
+- `begin(now, startTime)` in `beginMissionFromGo` (the only chain begin), next to `missionChain_.begin()`: `elapsed = (now - beginTime) + startTime`, so -20 s at the begin (default countdown), 0 after 20 s, continuous across all steps (a step restarting its own mission time does not matter). A new begin restarts it.
+- `end(now)` when the chain ends normally: the `RthEnded` chain step with a pending chain (RTH landed, also after an abort that went to RTH). The final value is then held.
+- `reset()` (NaN) in `resetMissionsToBootState` (SystemReset), `resetAndStopOnGround` (SA abort or calibration abort on the ground) and when the pending chain is cancelled because the active mission was reset to Idle. NaN also from boot until the first begin.
+- `fillSnapshot` reads it through `missionElapsedS()` (`FLASHMEM`). The encode of MISSION and AIR_MISSION runs in `encodeMission` / `encodeAirMission` (`src/comms/telemetry_mapping.cpp`, `FLASHMEM`) for ITCM budget reasons.
+
 ### 6.3 Actuator gating (`vehicleShutdownControl`, `:1187-1203`), every tick
 
 - `shutdown` (not ready, a failure latched, or RTH ended): TVC actuators off, flaps off, simulator TVC off.

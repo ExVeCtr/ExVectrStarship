@@ -48,6 +48,7 @@
 #include "safety/descent_target.hpp"
 #include "safety/sim_flap_fault.hpp"
 #include "safety/mission_chain.hpp"
+#include "safety/mission_clock.hpp"
 #include "safety/mission_profile.hpp"
 #include "subsystems.hpp"
 #include "safety/stop_altitude.hpp"
@@ -418,6 +419,7 @@ private:
   // Mission chain switching (docs/project/missions.md section 6.2): a chain is pending only from an accepted
   // MissionBegin until RTH ends or a reset. A reset mission (mode Idle) never advances the chain.
   Safety::MissionChain missionChain_;
+  Safety::MissionClock missionClock_; // telemetry only (mission_elapsed), never read by any logic
 
   // Explicit controller phase table (docs/project/missions.md section 6.2, src/safety/control_phase.hpp): applied
   // once per tick after all mission switches. missionSwitchCount_ counts switchMissionTo() calls so a mission
@@ -496,6 +498,9 @@ public:
 
   /// TVC set (ControlPositionStandard + ControlAttitudeTvc) enabled by the controller phase table (telemetry only).
   bool tvcControlActive() const { return controlPhase_.tvcEnabled(); }
+
+  /// Whole-mission clock for telemetry (NaN before the first begin and after a reset).
+  float missionElapsedS(int64_t nowNs) const; // cold: defined after the class (FLASHMEM)
 
   void switchMissionTo(MissionAbstract *mission, int64_t startTime = 0) {
     mission_->resetMission(); // Reset the mission
@@ -576,6 +581,7 @@ public:
     // Stop, not continue: before 2026-11-20 the reset mission's missionEnd() started the next mission of the
     // chain on the next tick. The mission stays the active one, in Idle.
     missionChain_.reset();
+    missionClock_.reset();
     mission_->resetMission();
     // T9b-4: ResetAndStop must NOT clear latches (only the SE short press does). The vehicle is Running here (decideAbort
     // ignores every other mode), so no failure flag is set; only the sensor states are re-initialised so that the
@@ -720,6 +726,7 @@ public:
    */
   void resetMissionsToBootState() {
     missionChain_.reset();
+    missionClock_.reset();
     missionWaypointTask.resetMission();
     missionBellyflop.resetMission();
     missionFreefallTask.resetMission();
@@ -820,6 +827,7 @@ public:
     configureWaypointChain(profile);
     switchMissionTo(&missionWaypointTask, startTime);
     missionChain_.begin(); // the configured chain may advance from now on
+    missionClock_.begin(Core::NowNs(), startTime);
     vehicleMode_ = VehicleMode::VehicleMode_Running;
     missionProfile_ = profile;
     starshipTVC.enableMotors(true); // same in simulation and real mode (safety.md rule 9)
@@ -1232,6 +1240,8 @@ public:
         LOG_MSG("RTH mission ended.\n"); // Log the mission end
       }
 
+      if (chainWasPending)
+        missionClock_.end(Core::NowNs()); // hold the final mission_elapsed
       starshipTVC.enableMotors(false);      // Disable motors
       starshipFlaps.enableActuators(false); // Disable actuators
       vehicleShutdownControl(true);         // Disable everything
@@ -1257,6 +1267,7 @@ public:
     case Safety::ChainStep::None:
       if (chainWasPending && !missionChain_.pending()) {
         LOG_MSG("Mission chain cancelled: active mission was reset\n");
+        missionClock_.reset();
       }
       break;
     }
@@ -1895,6 +1906,10 @@ public:
     allSystemsInitialised_ = false; // Reset the system initialisation flag
   }
 };
+FLASHMEM float VehicleSafetyAndControlTask::missionElapsedS(int64_t nowNs) const {
+  return missionClock_.elapsedS(nowNs);
+}
+
 FLASHMEM void VehicleSafetyAndControlTask::configureWaypointChain(uint8_t profile) {
   missionWaypointTask.clearWaypoints();
   const Safety::MissionProfileDesc d = Safety::missionProfileFor(profile, missionParams_);
@@ -2099,6 +2114,7 @@ public:
 
   void fillSnapshot(Comms::TelemetrySnapshot &s) override {
     auto &vt = vehicleSafetyAndControlTask;
+    s.missionElapsedS = vt.missionElapsedS(Core::NowNs());
     s.mode = vt.getVehicleMode();
     s.sensors = vt.getSensoryState();
     s.failures = vt.getFailureState();

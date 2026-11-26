@@ -173,6 +173,16 @@ private:
     return node.send(dst, T::kPort, buf, n, static_cast<network::wire::Qos>(T::kQos), T::kLatest);
   }
 
+  /// As sendOn, but the packet is built and encoded by `enc` (a flash-resident function, see encodeMission).
+  template <class T>
+  bool sendEncoded(network::Node &node, uint8_t dst, size_t (*enc)(const TelemetrySnapshot &, uint8_t *, size_t),
+                   const TelemetrySnapshot &s) {
+    uint8_t buf[T::kMaxSize];
+    size_t n = enc(s, buf, sizeof buf);
+    if (n == 0) return false;
+    return node.send(dst, T::kPort, buf, n, static_cast<network::wire::Qos>(T::kQos), T::kLatest);
+  }
+
   network::TimeSourceI &time_;
   network::StreamFrameLink<kUsbTxRing> usbLink_;
   network::StreamFrameLink<kUartTxRing> uartLink_;

@@ -1,5 +1,5 @@
 # ExVectrPackets
-> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: a93a66d (Development; schema hash 0x93EF9C5F)`
+> Shared packet definitions. Schema-generated packets (TOML schema -> C++ headers and a Python module, one source of truth for the vehicle, ExVectrLink and the ground station), plus the legacy hand-written fixed-point structs and CRSF classes used by ExVectrLink FPV. Repo: https://github.com/ExVeCtr/ExVectrPackets.git `Last verified against commit: 3bdd417 (Development; schema hash 0xF49ACD01)`
 
 The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/telemetry-sets.md`, `docs/versioning.md`, `docs/adding-a-packet.md` and the generated `docs/packet-reference.md` (every field, offset, scaling and unit). This file covers what the flight software uses.
 
@@ -39,7 +39,7 @@ The authoritative docs are in the library repo: `docs/schema-format.md`, `docs/t
 
 How the vehicle fills each field: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#9-telemetry-generated-packets-srccommstelemetry_mappingcpp).
 
-Vehicle-directed `REQUEST` actions (hash now 0x93EF9C5F, Packets a93a66d): 7, 8, 12..24 are executed by `Safety::RequestExecutor` (table: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#10-requests-the-legacy-telecommand-port-0x7f-is-deleted)); action 24 `SET_MISSION_PARAM` takes ids 1..10 and `MISSION_PARAMS` (0x26) is 40 B; `GET_HOME_POSITION` is answered with `HOME_POSITION` (0x50).
+Vehicle-directed `REQUEST` actions (hash now 0xF49ACD01, Packets 3bdd417): 7, 8, 12..24 are executed by `Safety::RequestExecutor` (table: [../project/hardware-and-drivers.md](../project/hardware-and-drivers.md#10-requests-the-legacy-telecommand-port-0x7f-is-deleted)); action 24 `SET_MISSION_PARAM` takes ids 1..10 and `MISSION_PARAMS` (0x26) is 40 B; `GET_HOME_POSITION` is answered with `HOME_POSITION` (0x50).
 
 ## Usage
 ```cpp

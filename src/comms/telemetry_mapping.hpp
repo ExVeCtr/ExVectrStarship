@@ -14,6 +14,7 @@
  * mode_text, Euler angles) are documented in docs/project/hardware-and-drivers.md section 9.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "ExVectrPackets/gen/all.hpp"
@@ -72,6 +73,7 @@ struct TelemetrySnapshot {
   // Mission
   float setpoint[6] = {0, 0, 0, 0, 0, 0}; ///< [Vx, Vy, Vz, Px, Py, Pz]
   int64_t missionTime_ns = 0;
+  float missionElapsedS = NAN; ///< s since T0 of the whole mission (MissionClock), NaN = none
   float stopAltitudeM = 20.0f;        ///< stop altitude parameter of the freefall mission (always sent)
   float flipStartAltitudeM = NAN;     ///< getStopAltitude() while the freefall phase is active, else NaN
   uint8_t waypointIndex = 0xFF; ///< current waypoint of the waypoint mission, 0xFF = another mission is active
@@ -197,6 +199,10 @@ Packets::AirGnssInfo makeAirGnssInfo(const TelemetrySnapshot &s);
 Packets::Pose makePose(const TelemetrySnapshot &s);
 Packets::Actuators makeActuators(const TelemetrySnapshot &s);
 Packets::Mission makeMission(const TelemetrySnapshot &s);
+/// makeMission / makeAirMission plus encode in ONE flash-resident function (ITCM budget: the encoders are large and
+/// are inlined here instead of being separate ITCM functions). Return the encoded size, 0 on failure.
+size_t encodeMission(const TelemetrySnapshot &s, uint8_t *buf, size_t cap);
+size_t encodeAirMission(const TelemetrySnapshot &s, uint8_t *buf, size_t cap);
 Packets::Gnss makeGnss(const TelemetrySnapshot &s);
 Packets::HandsetTelem makeHandsetTelem(const TelemetrySnapshot &s);
 Packets::ImuRaw makeImuRaw(const TelemetrySnapshot &s);
