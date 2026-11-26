@@ -357,6 +357,22 @@ void test_mission_time_seconds() {
   TEST_ASSERT_EQUAL_UINT8(1, p.phase);
 }
 
+void test_mission_elapsed() {
+  TelemetrySnapshot s = sample();
+  // default: NaN (no mission begun), in both packets
+  TEST_ASSERT_TRUE(isnan(roundTrip(makeMission(s)).mission_elapsed));
+  TEST_ASSERT_TRUE(isnan(roundTrip(makeAirMission(s)).mission_elapsed));
+  s.missionElapsedS = -17.25f; // T-minus; independent of mission_time (-7.5 in the sample)
+  auto m = roundTrip(makeMission(s));
+  auto a = roundTrip(makeAirMission(s));
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, -17.25f, m.mission_elapsed);
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, -17.25f, a.mission_elapsed);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, -7.5f, m.mission_time);
+  s.missionElapsedS = 123.456f;
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 123.456f, roundTrip(makeMission(s)).mission_elapsed);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 123.456f, roundTrip(makeAirMission(s)).mission_elapsed);
+}
+
 void test_gnss_radians() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeGnss(s));
@@ -589,7 +605,7 @@ void test_actuators_roll_torque_and_mission_fields() {
   h.push(makeActuatorSample(s));
   TEST_ASSERT_FLOAT_WITHIN(0.00001f, a.roll_torque, makeAirActuators(h).roll_torque[0]);
   // MISSION.mission_mode / waypoint exactly as AIR_MISSION
-  TEST_ASSERT_EQUAL_UINT(60, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(64, Packets::Mission::kMaxSize);
   s.waypointIndex = 2;
   auto m = roundTrip(makeMission(s));
   auto am = roundTrip(makeAirMission(s));
@@ -968,7 +984,7 @@ void test_mission_setpoint_q_encoding() {
   m = roundTrip(makeMission(s));
   for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(q[i], m.setpoint_q[i]);
   uint8_t buf[Packets::AirMission::kMaxSize];
-  TEST_ASSERT_EQUAL_UINT(42, makeAirMission(s).encode(buf, sizeof buf));
+  TEST_ASSERT_EQUAL_UINT(46, makeAirMission(s).encode(buf, sizeof buf));
   const int16_t want[4] = {16384, 16384, -16384, 16384}; // 16383.5 rounds away from zero
   for (int i = 0; i < 4; i++) {
     const int16_t raw = int16_t(uint16_t(buf[30 + 2 * i]) | (uint16_t(buf[31 + 2 * i]) << 8));
@@ -993,8 +1009,8 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT(32, Packets::AirPose::kMaxSize); // +2: ground_distance
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(42, Packets::AirMission::kMaxSize);
-  TEST_ASSERT_EQUAL_UINT(60, Packets::Mission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(46, Packets::AirMission::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(64, Packets::Mission::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(22, Packets::AirGnss::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(10, Packets::AirGnssInfo::kMaxSize);
   TEST_ASSERT_EQUAL_UINT16(25, Packets::AirPose::kAirRateHz);
@@ -1003,7 +1019,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0x93EF9C5Fu, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0xF49ACD01u, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -1020,6 +1036,7 @@ int main() {
   RUN_TEST(test_air_pose_fixed_point_and_saturation);
   RUN_TEST(test_actuators);
   RUN_TEST(test_mission_time_seconds);
+  RUN_TEST(test_mission_elapsed);
   RUN_TEST(test_gnss_radians);
   RUN_TEST(test_air_gnss);
   RUN_TEST(test_air_gnss_info);

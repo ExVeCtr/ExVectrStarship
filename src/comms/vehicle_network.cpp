@@ -148,7 +148,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::ImuRaw::kUsbRateHz, 0)) sendOn(usbNode_, gs, makeImuRaw(s));
   if (due(t, Packets::Actuators::kUsbRateHz, 1)) sendOn(usbNode_, gs, makeActuators(s));
   if (due(t, Packets::VehicleStatus::kUsbRateHz, 0)) sendOn(usbNode_, gs, makeVehicleStatus(s));
-  if (due(t, Packets::Mission::kUsbRateHz, 2)) sendOn(usbNode_, gs, makeMission(s));
+  if (due(t, Packets::Mission::kUsbRateHz, 2)) sendEncoded<Packets::Mission>(usbNode_, gs, encodeMission, s);
   if (due(t, Packets::Estimator::kUsbRateHz, 4)) sendOn(usbNode_, gs, makeEstimator(s));
   if (due(t, Packets::Gnss::kUsbRateHz, 3)) sendOn(usbNode_, gs, makeGnss(s));
   if (due(t, Packets::HandsetTelem::kUsbRateHz, 7)) sendOn(usbNode_, bc, makeHandsetTelem(s));
@@ -161,7 +161,7 @@ void VehicleNetwork::sendTelemetry(uint32_t t, const TelemetrySnapshot &s) {
   if (due(t, Packets::VehicleStatus::kAirRateHz, 0)) sendOn(uartNode_, gs, makeVehicleStatus(s));
   if (due(t, Packets::AirPose::kAirRateHz, 5)) sendOn(uartNode_, gs, makeAirPose(s));
   if (due(t, Packets::AirActuators::kAirRateHz, kAirActuatorsPhase)) sendOn(uartNode_, gs, makeAirActuators(actuatorHistory_));
-  if (due(t, Packets::AirMission::kAirRateHz, 9)) sendOn(uartNode_, gs, makeAirMission(s));
+  if (due(t, Packets::AirMission::kAirRateHz, 9)) sendEncoded<Packets::AirMission>(uartNode_, gs, encodeAirMission, s);
   if (due(t, Packets::HandsetTelem::kAirRateHz, 7)) sendOn(uartNode_, bc, makeHandsetTelem(s));
   if (due(t, Packets::AirGnss::kAirRateHz, kAirGnssPhase)) sendOn(uartNode_, gs, makeAirGnss(s));
   if ((t % kMissionParamsAirPeriodTicks) == 21) sendOn(uartNode_, gs, makeMissionParams(s)); // 0.2 Hz (5 s)

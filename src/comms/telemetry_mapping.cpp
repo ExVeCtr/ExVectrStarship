@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "flashmem.hpp"
+
 namespace VCTR {
 namespace Comms {
 
@@ -386,10 +388,12 @@ void attitudeSetpoint(const AttitudeSetpointInputs &in, float out[4]) {
   }
 }
 
-Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
+// Cold (5 and 20 Hz): runs from flash to keep the ITCM code below the 9 x 32 KB bank boundary.
+FLASHMEM Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
   Packets::AirMission p;
   p.t_us = timeUs(s.t_ns);
   p.mission_time = static_cast<float>(static_cast<double>(s.missionTime_ns) * 1e-9);
+  p.mission_elapsed = s.missionElapsedS;
   p.mission_mode = static_cast<uint8_t>(s.missionMode);
   p.phase = static_cast<uint8_t>(s.missionPhase);
   p.index = s.missionIndex;
@@ -402,7 +406,7 @@ Packets::AirMission makeAirMission(const TelemetrySnapshot &s) {
   return p;
 }
 
-Packets::Mission makeMission(const TelemetrySnapshot &s) {
+FLASHMEM Packets::Mission makeMission(const TelemetrySnapshot &s) {
   Packets::Mission p;
   p.t_us = timeUs(s.t_ns);
   copy3(&s.setpoint[3], p.setpoint_pos);
@@ -411,6 +415,7 @@ Packets::Mission makeMission(const TelemetrySnapshot &s) {
   p.index = s.missionIndex;
   p.phase = static_cast<uint8_t>(s.missionPhase);
   for (int i = 0; i < 4; i++) p.setpoint_q[i] = s.setpointQ[i];
+  p.mission_elapsed = s.missionElapsedS;
   p.mission_mode = static_cast<uint8_t>(s.missionMode); // as AIR_MISSION
   p.waypoint = s.waypointIndex;                         // 255 = not the waypoint mission
   p.flip_start_altitude = s.flipStartAltitudeM;
@@ -529,5 +534,16 @@ Packets::HomePosition makeHomePosition(const HomeInput &in) {
   return p;
 }
 
+} // namespace Comms
+} // namespace VCTR
+
+namespace VCTR {
+namespace Comms {
+FLASHMEM __attribute__((flatten)) size_t encodeMission(const TelemetrySnapshot &s, uint8_t *buf, size_t cap) {
+  return makeMission(s).encode(buf, cap);
+}
+FLASHMEM __attribute__((flatten)) size_t encodeAirMission(const TelemetrySnapshot &s, uint8_t *buf, size_t cap) {
+  return makeAirMission(s).encode(buf, cap);
+}
 } // namespace Comms
 } // namespace VCTR
