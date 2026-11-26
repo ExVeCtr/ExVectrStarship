@@ -55,13 +55,57 @@ constexpr float kKickThrustLimitN = 11.0f;
 /// long after the time limit (one safety tick), the TVC set is switched off anyway.
 constexpr int64_t kKickGuardMarginNs = 100000000LL;
 
-enum class KickEnd : uint8_t { None = 0, Angle, Rate, Time };
+/// Coast predictor of the early end (feature/kick-end-criterion, 2026-11-26): the kick ends when the attitude
+/// predicted after the motor cut is good enough, instead of waiting for the 15 deg angle trigger (sweep in
+/// docs/descent-control-design.md and test/test_kick_sweep). 0 = off (old behaviour: only the 15 deg angle trigger
+/// ends the kick early), 1 = lead time, 2 = ballistic (default). See KickEndParams.
+constexpr int kKickPredictorMode = 2;
+
+/// Lead time of predictor mode 1: predicted remaining angle = remaining - closingRate * kKickLeadTimeS.
+constexpr float kKickLeadTimeS = 0.15f;
+
+/// Braking deceleration assumed by predictor mode 2 (flaps and aero), rad/s^2: predicted coast
+/// travel = closingRate * |closingRate| / (2 * alpha).
+constexpr float kKickBrakeDecelRadPs2 = 4.0f;
+
+/// The predictor ends the kick once the predicted remaining angle after the coast is at or below this: the "remaining
+/// angle limit" (owner 2026-11-26: the coast may end up to 50 deg short of horizontal, 40 deg chosen for wind margin; the ship is passively
+/// stable belly-down and the flaps take over). 0 would aim at belly-down exactly.
+constexpr float kKickPredictTargetRad = 40.0f * kKickDeg;
+
+enum class KickEnd : uint8_t { None = 0, Angle, Rate, Time, Predicted };
+
+/// All thresholds of the end trigger as one value, so the host sweep can vary them. kKickEndDefault = the constants.
+struct KickEndParams {
+  int64_t timeLimitNs;
+  float angleRad;         ///< normal end: remaining angle below this
+  float rateRadPs;        ///< spin guard
+  int predictorMode;      ///< 0 off, 1 lead time, 2 ballistic
+  float leadS;            ///< mode 1
+  float brakeDecelRadPs2; ///< mode 2
+  float targetRad;        ///< predicted remaining angle at or below this ends the kick
+};
+
+constexpr KickEndParams kKickEndDefault = {kKickTimeLimitNs,   kKickEndRemainingAngleRad, kKickEndPitchRateRadPs,
+                                           kKickPredictorMode, kKickLeadTimeS,
+                                           kKickBrakeDecelRadPs2, kKickPredictTargetRad};
+
+/// The behaviour before feature/kick-end-criterion: no predictor, 15 deg angle trigger, 1 s limit, 250 deg/s guard.
+constexpr KickEndParams kKickEndLegacy = {kKickTimeLimitNs, kKickEndRemainingAngleRad, kKickEndPitchRateRadPs, 0,
+                                          kKickLeadTimeS,   kKickBrakeDecelRadPs2,     kKickPredictTargetRad};
 
 /**
- * End trigger of the kick, checked every mission tick. Time first (it always ends the kick), then angle, then rate.
- * Non-finite angle or rate never trigger (the time limit still does).
+ * End trigger of the kick, checked every mission tick. Time first (it always ends the kick), then angle, then rate,
+ * then the coast predictor (if enabled). Non-finite angle or rate never trigger (the time limit still does).
+ *
+ * pitchRateRadPs is the body +Y rate; the pitch-over target is a rotation about body -Y (kickTargetAttitude), so the
+ * closing rate towards the target is -pitchRateRadPs.
  */
-KickEnd kickEndTrigger(int64_t elapsedNs, float remainingAngleRad, float pitchRateRadPs);
+KickEnd kickEndTrigger(int64_t elapsedNs, float remainingAngleRad, float pitchRateRadPs,
+                       const KickEndParams &p = kKickEndDefault);
+
+/// Predicted remaining angle after the coast (rad), per the predictor mode of p. NaN for mode 0 or invalid input.
+float kickPredictedRemaining(float remainingAngleRad, float pitchRateRadPs, const KickEndParams &p);
 
 /// Rotates v (body) into the world frame with q (body -> world).
 void kickRotate(const float q[4], const float v[3], float out[3]);
