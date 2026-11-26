@@ -46,24 +46,63 @@ static void test_constants_sane() {
 
 static void test_end_trigger() {
   // Nothing reached: continue.
-  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, 90 * kDeg, 0) == KickEnd::None);
-  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs, 90 * kDeg, 0) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, 90 * kDeg, 0, kKickEndLegacy) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs, 90 * kDeg, 0, kKickEndLegacy) == KickEnd::None);
   // Hard time limit, whatever the attitude (also with invalid inputs).
-  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, 90 * kDeg, 0) == KickEnd::Time);
-  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, NAN, NAN) == KickEnd::Time);
-  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, 10 * kDeg, 200 * kDeg) == KickEnd::Time);
+  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, 90 * kDeg, 0, kKickEndLegacy) == KickEnd::Time);
+  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, NAN, NAN, kKickEndLegacy) == KickEnd::Time);
+  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, 10 * kDeg, 200 * kDeg, kKickEndLegacy) == KickEnd::Time);
   // Angle.
   const float a = kKickEndRemainingAngleRad, r = kKickEndPitchRateRadPs;
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, a - 1 * kDeg, 0) == KickEnd::Angle);
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, a + 1 * kDeg, 0) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, a - 1 * kDeg, 0, kKickEndLegacy) == KickEnd::Angle);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, a + 1 * kDeg, 0, kKickEndLegacy) == KickEnd::None);
   // Rate (spin guard), either sign.
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, r + 1 * kDeg) == KickEnd::Rate);
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, -r - 1 * kDeg) == KickEnd::Rate);
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, r - 1 * kDeg) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, r + 1 * kDeg, kKickEndLegacy) == KickEnd::Rate);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, -r - 1 * kDeg, kKickEndLegacy) == KickEnd::Rate);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, 80 * kDeg, r - 1 * kDeg, kKickEndLegacy) == KickEnd::None);
   TEST_ASSERT_TRUE(r > 150 * kDeg); // above the bench peak (135 deg/s): a guard, not the normal end
   // Non-finite angle/rate never end the kick early.
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, NAN, NAN) == KickEnd::None);
-  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, INFINITY, -INFINITY) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, NAN, NAN, kKickEndLegacy) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(200 * MS, INFINITY, -INFINITY, kKickEndLegacy) == KickEnd::None);
+}
+
+// Coast predictor (feature/kick-end-criterion). Closing rate towards the target = -body Y rate.
+static void test_predictor() {
+  KickEndParams p = kKickEndDefault;
+  TEST_ASSERT_EQUAL_INT(2, p.predictorMode);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 40 * kDeg, p.targetRad);
+  const float closing = 100 * kDeg; // rad/s towards the target
+  // Ballistic: remaining - w^2 / (2 alpha). alpha = 4: 100 deg/s travels 0.381 rad = 21.8 deg.
+  const float travel = closing * closing / (2.0f * p.brakeDecelRadPs2);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.38077f, travel);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 70 * kDeg - 0.38077f, kickPredictedRemaining(70 * kDeg, -closing, p));
+  // 60 deg remaining, 100 deg/s: predicted 38.2 <= 40: end. 70 deg: predicted 48.2: continue.
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 60 * kDeg, -closing, p) == KickEnd::Predicted);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 70 * kDeg, -closing, p) == KickEnd::None);
+  // Turning away (opposite rate): the prediction gets worse, never an early end.
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 70 * kDeg, +closing, p) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 80 * kDeg, 0, p) == KickEnd::None);
+  // Lead-time mode: remaining - w * lead (0.15 s: 15 deg).
+  p.predictorMode = 1;
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 55.0f * kDeg, kickPredictedRemaining(70 * kDeg, -closing, p));
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 54 * kDeg, -closing, p) == KickEnd::Predicted);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 56 * kDeg, -closing, p) == KickEnd::None);
+  // Off (legacy): no predicted end, the old triggers only.
+  TEST_ASSERT_TRUE(isnan(kickPredictedRemaining(70 * kDeg, -closing, kKickEndLegacy)));
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 40 * kDeg, -closing, kKickEndLegacy) == KickEnd::None);
+  // Invalid input or alpha never triggers, the hard limit and the guards still win.
+  p = kKickEndDefault;
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, NAN, -closing, p) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 80 * kDeg, NAN, p) == KickEnd::None);
+  p.brakeDecelRadPs2 = 0;
+  TEST_ASSERT_TRUE(isnan(kickPredictedRemaining(70 * kDeg, -closing, p)));
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 80 * kDeg, -closing, p) == KickEnd::None);
+  p = kKickEndDefault;
+  TEST_ASSERT_TRUE(kickEndTrigger(kKickTimeLimitNs + 1, 90 * kDeg, 0, p) == KickEnd::Time);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 70 * kDeg, -(kKickEndPitchRateRadPs + 0.1f), p) != KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(300 * MS, 10 * kDeg, 0, p) == KickEnd::Angle); // old 15 deg trigger stays
+  TEST_ASSERT_EQUAL(1000 * MS, kKickTimeLimitNs);                                 // 1 s hard limit unchanged
+  TEST_ASSERT_FLOAT_WITHIN(1e-5f, 250 * kDeg, kKickEndPitchRateRadPs);
 }
 
 static void test_target_identity_is_old_setpoint() {
@@ -129,10 +168,10 @@ static void test_remaining_angle() {
   float q40[4];
   quatAxisAngle(0, 1, 0, -40 * kDeg, q40); // pitched 40 deg towards the belly
   TEST_ASSERT_FLOAT_WITHIN(1e-3f, 50 * kDeg, kickRemainingAngle(q40, t));
-  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, kickRemainingAngle(q40, t), 0) == KickEnd::None);
+  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, kickRemainingAngle(q40, t), 0, kKickEndLegacy) == KickEnd::None);
   float q80[4];
   quatAxisAngle(0, 1, 0, -80 * kDeg, q80);
-  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, kickRemainingAngle(q80, t), 0) == KickEnd::Angle);
+  TEST_ASSERT_TRUE(kickEndTrigger(100 * MS, kickRemainingAngle(q80, t), 0, kKickEndLegacy) == KickEnd::Angle);
   const float bad[4] = {NAN, 0, 0, 0};
   TEST_ASSERT_TRUE(isnan(kickRemainingAngle(bad, t)));
 }
@@ -164,6 +203,7 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_constants_sane);
   RUN_TEST(test_end_trigger);
+  RUN_TEST(test_predictor);
   RUN_TEST(test_target_identity_is_old_setpoint);
   RUN_TEST(test_target_keeps_heading);
   RUN_TEST(test_target_degenerate_heading);

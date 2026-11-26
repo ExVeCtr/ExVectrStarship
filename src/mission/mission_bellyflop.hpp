@@ -124,7 +124,7 @@ public:
     missionState_.missionMode = MissionMode::MissionMode_Finished;
     missionEnd_ = true;
     setPaused(true);
-    static const char *const kNames[] = {"none", "angle", "rate", "time limit"};
+    static const char *const kNames[] = {"none", "angle", "rate", "time limit", "predicted"};
     LOG_MSG("Bellyflop kick finished (%s): remaining %.1f deg, pitch rate %.1f deg/s, %.3f s\n",
             kNames[uint8_t(trigger)], double(remaining / DEGREES), double(pitchRate / DEGREES),
             double(elapsed) / Core::SECONDS);

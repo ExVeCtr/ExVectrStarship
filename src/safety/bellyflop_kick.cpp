@@ -2,16 +2,40 @@
 
 #include <math.h>
 
+#include "flashmem.hpp"
+
 namespace VCTR {
 namespace Safety {
 
-KickEnd kickEndTrigger(int64_t elapsedNs, float remainingAngleRad, float pitchRateRadPs) {
-  if (elapsedNs > kKickTimeLimitNs)
+float kickPredictedRemaining(float remainingAngleRad, float pitchRateRadPs, const KickEndParams &p) {
+  if (!isfinite(remainingAngleRad) || !isfinite(pitchRateRadPs))
+    return NAN;
+  const float closing = -pitchRateRadPs; // rate towards the target (negative = turning away)
+  float travel;
+  if (p.predictorMode == 1) {
+    travel = closing * p.leadS;
+  } else if (p.predictorMode == 2) {
+    if (!(p.brakeDecelRadPs2 > 0.0f))
+      return NAN;
+    travel = closing * fabsf(closing) / (2.0f * p.brakeDecelRadPs2);
+  } else {
+    return NAN;
+  }
+  return remainingAngleRad - travel;
+}
+
+KickEnd kickEndTrigger(int64_t elapsedNs, float remainingAngleRad, float pitchRateRadPs, const KickEndParams &p) {
+  if (elapsedNs > p.timeLimitNs)
     return KickEnd::Time;
-  if (isfinite(remainingAngleRad) && remainingAngleRad < kKickEndRemainingAngleRad)
+  if (isfinite(remainingAngleRad) && remainingAngleRad < p.angleRad)
     return KickEnd::Angle;
-  if (isfinite(pitchRateRadPs) && fabsf(pitchRateRadPs) > kKickEndPitchRateRadPs)
+  if (isfinite(pitchRateRadPs) && fabsf(pitchRateRadPs) > p.rateRadPs)
     return KickEnd::Rate;
+  if (p.predictorMode != 0 && isfinite(remainingAngleRad)) {
+    const float pred = kickPredictedRemaining(remainingAngleRad, pitchRateRadPs, p);
+    if (isfinite(pred) && pred <= p.targetRad)
+      return KickEnd::Predicted;
+  }
   return KickEnd::None;
 }
 
@@ -26,7 +50,8 @@ void kickRotate(const float q[4], const float v[3], float out[3]) {
   out[2] = v[2] + w * tz + (x * ty - y * tx);
 }
 
-void kickTargetAttitude(const float q0[4], float pitchRad, float out[4]) {
+// Runs once at the start of the kick: from flash, keeps ITCM below the 9 x 32 KB boundary.
+FLASHMEM void kickTargetAttitude(const float q0[4], float pitchRad, float out[4]) {
   static const float kBelly[3] = {-1.0f, 0.0f, 0.0f};
   float b[3];
   kickRotate(q0, kBelly, b);
