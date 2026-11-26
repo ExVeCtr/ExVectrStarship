@@ -288,6 +288,23 @@ void test_pose_full_precision() {
   TEST_ASSERT_EQUAL_FLOAT(3.5f, p.pos[2]);
 }
 
+void test_pose_air_pose_ground_distance() {
+  TelemetrySnapshot s = sample();
+  TEST_ASSERT_EQUAL_FLOAT(0.8f, roundTrip(makePose(s)).ground_distance);
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, 0.8f, roundTrip(makeAirPose(s)).ground_distance);
+  // Above 2 m (old ACTUATORS telemetry overflowed int16 above 2 m)
+  s.groundDistance = 8.19f;
+  TEST_ASSERT_EQUAL_FLOAT(8.19f, roundTrip(makePose(s)).ground_distance);
+  TEST_ASSERT_FLOAT_WITHIN(0.0006f, 8.19f, roundTrip(makeAirPose(s)).ground_distance);
+  // Unavailable: NaN round-trips (AIR_POSE wire sentinel 65535)
+  s.groundDistance = NAN;
+  TEST_ASSERT_TRUE(isnan(roundTrip(makePose(s)).ground_distance));
+  TEST_ASSERT_TRUE(isnan(roundTrip(makeAirPose(s)).ground_distance));
+  // Default snapshot (before the first sample) is NaN
+  TelemetrySnapshot d;
+  TEST_ASSERT_TRUE(isnan(d.groundDistance));
+}
+
 void test_air_pose_fixed_point_and_saturation() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeAirPose(s));
@@ -322,11 +339,6 @@ void test_actuators() {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, atan2f(1.0f, 10.0f), p.tvc[0]);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, p.tvc[1]);
   TEST_ASSERT_FLOAT_WITHIN(1e-5f, sqrtf(101.0f), p.thrust);
-  TEST_ASSERT_EQUAL_FLOAT(0.8f, p.ground_distance);
-  // Above 2 m the ground distance is still correct (old telemetry overflowed int16 above 2 m)
-  s.groundDistance = 8.19f;
-  p = roundTrip(makeActuators(s));
-  TEST_ASSERT_EQUAL_FLOAT(8.19f, p.ground_distance);
   // Zero thrust: no NaN
   float zero[4] = {0, 0, 0, 0};
   memcpy(s.tvcThrust, zero, sizeof zero);
@@ -569,7 +581,7 @@ void test_home_epoch_counter() {
 void test_actuators_roll_torque_and_mission_fields() {
   TelemetrySnapshot s = sample(); // tvcThrust[3] = 0.2
   auto a = roundTrip(makeActuators(s));
-  TEST_ASSERT_EQUAL_UINT(40, Packets::Actuators::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(36, Packets::Actuators::kMaxSize);
   TEST_ASSERT_EQUAL_FLOAT(0.2f, a.roll_torque); // unquantised f32
   // Same source as AIR_ACTUATORS.roll_torque
   TEST_ASSERT_EQUAL_FLOAT(makeActuatorSample(s).rollTorque, a.roll_torque);
@@ -978,7 +990,7 @@ void test_mission_setpoint_q_encoding() {
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
   TEST_ASSERT_EQUAL_UINT(38, Packets::VehicleStatus::kMaxSize); // +2: cmd_session (GS control)
-  TEST_ASSERT_EQUAL_UINT(30, Packets::AirPose::kMaxSize);
+  TEST_ASSERT_EQUAL_UINT(32, Packets::AirPose::kMaxSize); // +2: ground_distance
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(42, Packets::AirMission::kMaxSize);
@@ -991,7 +1003,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0xC2061E5Du, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x93EF9C5Fu, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
@@ -1004,6 +1016,7 @@ int main() {
   RUN_TEST(test_time_us_wraps);
   RUN_TEST(test_vehicle_status);
   RUN_TEST(test_pose_full_precision);
+  RUN_TEST(test_pose_air_pose_ground_distance);
   RUN_TEST(test_air_pose_fixed_point_and_saturation);
   RUN_TEST(test_actuators);
   RUN_TEST(test_mission_time_seconds);

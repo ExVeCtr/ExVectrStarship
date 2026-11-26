@@ -67,6 +67,7 @@ struct TelemetrySnapshot {
   // Estimates (attitude/position topic switches: estimators, or the body simulator in simulation mode)
   float att[7] = {0, 0, 0, 1, 0, 0, 0}; ///< [wx, wy, wz, qw, qx, qy, qz]
   float pos[6] = {0, 0, 0, 0, 0, 0};    ///< [Vx, Vy, Vz, Px, Py, Pz]
+  float groundDistance = NAN;           ///< m, downward lidar (POSE and AIR_POSE ground_distance), NaN if unavailable
 
   // Mission
   float setpoint[6] = {0, 0, 0, 0, 0, 0}; ///< [Vx, Vy, Vz, Px, Py, Pz]
@@ -81,7 +82,6 @@ struct TelemetrySnapshot {
   // Actuators
   float flaps[4] = {0, 0, 0, 0};     ///< true flap angles [TL, TR, BL, BR], rad
   float tvcThrust[4] = {0, 0, 0, 0}; ///< StarshipTVC actual [Fx, Fy, Fz, T], body frame, N (T: roll torque)
-  float groundDistance = 0;          ///< m, NaN if unavailable
 
   // GNSS
   double latitude = 0, longitude = 0; ///< rad
