@@ -1,13 +1,13 @@
 # ExVectrDynamics
 
-> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1 and S2 done (building blocks, host tests); S3 (flight-software `src/sim/`: `StarshipPlantT`, `starshipAero`, parameter sets, host golden test). Nothing is linked into the firmware yet (S4).
+> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1-S4 done (building blocks, host tests, `src/sim/` plant and vehicle task); S5 (2026-11-27) removed the legacy simulator classes from ExVectrDSP and ExVectrControl and ported the host harnesses to the plant. The firmware links this library (in flash) through `src/sim`.
 
 ## Purpose & scope
 
 - Reusable L1/L2 layers of the simulation architecture: building blocks (pure functions on POD types) and the machinery that runs a *model* (`Model` concept, `Sim<M, Integrator>`, integrators, probes).
 - Ship-specific code (flap layout, plant composition, parameter sets) is **not** here; it lives in flight-software `src/sim/` (decision D2).
 - Rules: float32, fixed step, SI, NWU, no heap, no virtual calls, no globals, no ExVectrCore.
-- Bit-exactness: every block is a port of the legacy simulator code (`BodySimModel`, `PhysicsBodySim`) with the same operations in the same order, and each has a host test against a frozen verbatim copy under `test/frozen/` in flight-software.
+- Bit-exactness: every block is a port of the legacy simulator code (`BodySimModel`, `PhysicsBodySim`, **deleted in S5**, 2026-11-27) with the same operations in the same order, and each has a host test against a frozen verbatim copy under `test/frozen/` in flight-software. Those frozen copies are the oracle of D4 (equivalence); the original library classes no longer exist, the tests do not depend on them.
 
 ## Dependencies
 
@@ -37,7 +37,7 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 ## Ship code that uses it (flight-software `src/sim/`, S3)
 
 - `starship_aero.hpp/.cpp`: `AeroConfig`, `AeroInput/Output`, `starshipAero(cfg, in, out)` (pure, stateless, `valid=false` and zeros for non-finite input), `airVelocityBody`, `flapFrame`.
-- `starship_plant.hpp/.cpp`: `StarshipPlantParams` (defaults identical to `BodySimParams`), `StarshipPlantT<kDelayCap>` with `StarshipPlant` (cap 1, vehicle) and `StarshipPlantHarness` (cap 128), `makeAeroConfig`. Explicitly instantiated in the .cpp (one instantiation per variant).
+- `starship_plant.hpp/.cpp`: `StarshipPlantParams` (defaults identical to the deleted `BodySimParams`), `StarshipPlantT<kDelayCap>` with `StarshipPlant` (cap 1, vehicle) and `StarshipPlantHarness` (cap 128), `makeAeroConfig`. Explicitly instantiated in the .cpp (one instantiation per variant).
 - `starship_param_sets.hpp`: `kVariants` (nominal, aero x0.7, x1.3, geometry) and `makeParams`.
 - The plant takes its inputs inside `step` (clamped into the held state). A caller that wants the legacy "last valid value is kept between calls" behaviour for several `set...` calls between two steps must hold the last valid value itself (the vehicle adapter `StarshipSimAdapter` does since S4: last received thrust, last finite flap angle per channel, fed on every step).
 
@@ -50,6 +50,7 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 ## Tests
 
 Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
+- Harnesses (S5, flight-software): `test_sim_aero`, `test_descent_guidance`, `test_descent_wiring`, `test_kick_sweep`, `test_sim_flap_fault` run the `StarshipPlantHarness` through `test/support/plant_model.hpp`; their report lines (`SIMAERO`, `DESCENT`, `WIRING`, `KICK`) are identical to the ones printed with the legacy model.
 - `pio test -e native -f test_sim_task` (S4, flight-software `src/sim`): the vehicle adapter against the frozen legacy `BodySimulator` wiring, memcmp after every run.
 - `pio test -e native -f test_dyn_rigid_body` (S1): `semiImplicitEulerStep` against the frozen `PhysicsBodySim` (1e5 random steps), `is_model`, `Sim`, RK4.
 - `pio test -e native -f test_sim_equivalence` (S3, flight-software `src/sim`): the plant against the frozen `BodySimModel`, scenarios E1-E8 plus the vehicle variant, random parameter sets, the standalone aero function, parameter variants side by side, RK4 convergence.

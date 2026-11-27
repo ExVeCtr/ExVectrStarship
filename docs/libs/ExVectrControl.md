@@ -1,15 +1,15 @@
 # ExVectrControl
 
-> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, a simple PID, and a rigid-body physics integrator. Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified; feature/sim-aero c8d1ffb, 2026-11-21: PhysicsBodySim integrator rewritten, re-verified for that file; feature/descent-s1 1902fa4, 2026-11-22: descent guidance, flap descent law, `Descent` flap mode, `FlapModeMapper`, re-verified for `ControlAttitudeFlaps` and `starship/`)`
+> Guidance and control for ExVectr vehicles: cascaded position → acceleration → attitude → TVC control, Starship bellyflop flap control, and a simple PID (the rigid-body physics integrator `PhysicsBodySim` was removed in S5, 2026-11-27: it is `Dyn::semiImplicitEulerStep` in ExVectrDynamics now). Repo: https://github.com/ExVeCtr/ExVectrControl.git. `Last verified against commit: 5575b74 on `feature/sim-s5-remove-legacy-sim` (S5 removal of PhysicsBodySim; the rest as verified at 2c0c00e); earlier: 084bea1 (pinned now: 6e07d38 = 084bea1 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09 (8d6efab) and resetControlState() (6e07d38, 2026-11-20, branch feature/bellyflop-abort-gnss); content otherwise as verified; feature/sim-aero c8d1ffb, 2026-11-21: PhysicsBodySim integrator rewritten, re-verified for that file; feature/descent-s1 1902fa4, 2026-11-22: descent guidance, flap descent law, `Descent` flap mode, `FlapModeMapper`, re-verified for `ControlAttitudeFlaps` and `starship/`)`
 
 ## Purpose & scope
 
-- Converts state estimates (`[v,p]`, `[ω,q]` topics from ExVectrDSP or `BodySimulator`) and setpoints into actuator commands:
+- Converts state estimates (`[v,p]`, `[ω,q]` topics from ExVectrDSP or the simulator task `ShipSim::StarshipSimTask`) and setpoints into actuator commands:
   - a TVC body-frame force plus roll torque (`Vector<4>`);
   - four flap angles (`ControlAttitudeFlapSetting`).
 - Descent (belly-flop) control for the freefall: `descent::DescentGuidance` and `descent::FlapDescentLaw` plus the `Descent` mode of `ControlAttitudeFlaps` (since 1902fa4). **S3 (feature/descent-s3): wired to the vehicle** (default; the legacy Stabilize law is selectable at compile time, see `FlapModeObserverTask` in missions.md section 8): `ControlAttitudeFlaps` runs the guidance every 50 Hz tick through `descent::DescentFlapController`.
 - Control laws are cascaded P/PI with hand-tuned gains. There is **no LQR, MPC or trajectory optimisation**. Guidance is minimal: it comes from mission setpoints in `src/mission/*` and `FlapModeObserverTask` in `src/main.cpp:1258`.
-- `PhysicsBodySim` is the integrator used by `DSP::BodySimModel` (inside `DSP::BodySimulator`).
+- (Removed in S5: `PhysicsBodySim`, the rigid-body integrator of the old simulator. It lives on as `Dyn::semiImplicitEulerStep`, ExVectrDynamics, bit for bit; the frozen original is `test/frozen/legacy_physics_bodysim.hpp` in flight-software.)
 - Commit `084bea1` removed the old monolithic `control_rocket.*`. The parent repo pins `9ab8379`, one commit behind.
 - The README is stale ("Implement PID control" TODO).
 
@@ -17,7 +17,7 @@
 
 - **ExVectrCore**: `Task_Periodic`, `Topic`, `Simple_Subscriber`, `Callback_Subscriber`, `Topic_Publisher`, `Timestamped`, `NowNs()`, `LOG_MSG`.
 - **ExVectrMath**: quaternions and vectors. Conventions are in `docs/libs/ExVectrMath.md`.
-- **ExVectrDSP**: only `value_covariance.hpp` is included. Note the reverse dependency: `DSP/body_simulator.hpp` includes `physics_bodysim.hpp` and `starship/control_attitude_flaps.hpp`, which makes the pair circular.
+- **ExVectrDSP**: only `value_covariance.hpp` is included. One direction only: since S5 (2026-11-27) ExVectrDSP no longer includes anything from Control, so the former DSP <-> Control cycle (via `body_simulator.hpp`) is gone.
 - External: `<math.h>`.
 
 ## Key concepts & API
@@ -135,28 +135,22 @@
   Setters exist for the rate gains only.
 
 ### `descent::DescentGuidance` and `descent::FlapDescentLaw` (`starship/descent_guidance.hpp`, `flap_descent_law.hpp`, shared helpers in `descent_common.hpp`)
-- Header-only, pure (no scheduler, clock, globals, heap), namespace `VCTR::CTRL::descent`, plain float arrays in the ExVectr conventions. Moved from the study prototype (`feature/descent-control-study`), host-tested by `test/test_descent_guidance` (closed loop against `DSP::BodySimModel`) and `test/test_descent_unit` (guards, mode mapping).
+- Header-only, pure (no scheduler, clock, globals, heap), namespace `VCTR::CTRL::descent`, plain float arrays in the ExVectr conventions. Moved from the study prototype (`feature/descent-control-study`), host-tested by `test/test_descent_guidance` (closed loop against the `StarshipPlantHarness`) and `test/test_descent_unit` (guards, mode mapping).
 - `DescentGuidance::step(params, DescentTarget{x,y,endAltitude,valid}, pos[6]=[V,P], att[7]=[ω,q], dt, DescentGuidanceMem&)` → `{headingSp_rad, glideCmd_mps, pitchSplit_rad, vDes, vAirCmd}`: funnel (v_des = e/3 s, limit 4.5 → 1.5 m/s over the last 20 m above `endAltitude`) → velocity PI (`velKp` 0.8, `velKi` 0.25, integral ≤ 7 m/s, anti-windup along the nose) → heading follows the air-velocity command above 1.2 m/s (holds below 0.6) → glide = command projected on the nose (0 beyond 60° heading error, ≤ 3.3 m/s beyond 20°, −1.1..4.9 m/s) → split from the glide map, slewed at 40°/s. First 1.5 s after `init` (entry hold): the heading setpoint already follows the air-velocity command (guidance active from the first tick, at any altitude), but the split stays −20°, the glide command is 0 and the velocity integral does not run. With an invalid target or input the heading is held (also in the hold). `DescentGuidanceMem` is 28 B and is owned by the caller.
 - **Invalid input** (target invalid, non-finite position, attitude, target or `endAltitude`, `dt` ≤ 0 or non-finite, also corrupted memory): the heading setpoint is held, the glide command is 0, the split slews to 0 (neutral 30/78, a vertical fall at about −0.24 m/s of glide), the velocity integral is frozen and stays finite, and guidance resumes when the input is valid again. With a bad `dt` the split cannot slew and stays where it was.
-- Model-based results (closed loop, calm, 2 seeds): miss at the freefall stop trigger median 1.2 m, p90 1.6 m, belly ≤ 13°. These rest on the unvalidated `BodySimModel` (fold shield 0.7, calibration 4.64); see the design document section 9.
+- Model-based results (closed loop, calm, 2 seeds): miss at the freefall stop trigger median 1.2 m, p90 1.6 m, belly ≤ 13°. These rest on the unvalidated simulator model (`StarshipPlant`) (fold shield 0.7, calibration 4.64); see the design document section 9.
 
 ### `descent::DescentFlapController` (`starship/descent_flap_controller.hpp`, S3)
 - Header-only, pure: `apply(setting, target, pos[6], posFresh, att[7], dt)` returns the setting for `FlapModeMapper::map`. Mode Descent: first tick = `DescentGuidance::init(params, att, mem)` (integrator 0, heading setpoint = the current nose heading, entry hold 1.5 s with split -20 deg), then `DescentGuidance::step` every tick; `azimuthAngle_Rad` = heading setpoint and `pitchSplit_Rad` = split of the result. Any other mode: the setting is returned unchanged and the guidance memory and status are reset at once (leaving Descent through the flip, an abort, a failure or the compile-time legacy switch needs nothing else; the next entry starts fresh).
 - **Invalid inputs** follow the design failure table: stale position (`posFresh` false), `target.valid` false, or non-finite position, attitude or `dt` -> `DescentGuidance` holds the heading setpoint, glide 0, the split slews to 0 (neutral 30/78, a vertical fall) and the integral is frozen. Valid input again resumes the guidance.
-- Host-tested in `test/test_descent_wiring` (entry/leave/reset, pass-through, stale/NaN/target-invalid cases, recovery, and a closed loop with `DSP::BodySimModel` through the same chain).
+- Host-tested in `test/test_descent_wiring` (entry/leave/reset, pass-through, stale/NaN/target-invalid cases, recovery, and a closed loop with the `StarshipPlantHarness` (`test/support/plant_model.hpp`) through the same chain).
 
 ### `SimplePID` (`simple_pid.hpp/.cpp`)
 - 1-D PID: `SimplePID(kp, ki, kd, maxOutput)`, `setSetPoint`, `update(state, stateTime_ns)` returns a clamped output, `reset()`.
 - Derivative on error. The integral is zeroed on saturation. Unused in the project.
 
-### `PhysicsBodySim` (`physics_bodysim.hpp/.cpp`)
-- State: `positionState_` `[v(3), p(3)]` world, and `attitudeState_` `[ω_body(3), q(4)]`.
-- `addForce(F, r_body=0, bodyFrame=true, isAccel=false)` accumulates the force and `r×F` torque into body or nav sums. `addTorque(...)`, `clearForces()`.
-- `step(dt_s)` (since 2026-11-21, `feature/sim-aero`, c8d1ffb; `simulateForTime(dt_ns)` forwards to it), semi-implicit Euler with the force and torque sums held over the step:
-  - `v += (R(q)F_body + F_nav)/m·dt`, then `p += v_new·dt`.
-  - `ω += I⁻¹(τ_body + R(q)ᵀτ_nav − ω × Iω)·dt` (full Euler equation, full inertia tensor with products of inertia, inverse cached by `setInertiaTensor`), then `q ← normalize(q ⊗ Δq(ω_new·dt))`, w ≥ 0.
-  - Pure code (no scheduler or wall clock, no print): host-built in the flight software's native harness (`test/test_sim_aero`, torque-free spin conserves |L| within 1.3 % over 4 s at 2 ms steps).
-- No damping terms (aerodynamics are the caller's job: `DSP::BodySimModel`).
+### `PhysicsBodySim` (removed in S5, 2026-11-27)
+- Was `physics_bodysim.hpp/.cpp` (semi-implicit Euler, full Euler equation with `ω × Iω`, `v` then `p`, `ω` then `q`, w >= 0). Replaced by `Dyn::semiImplicitEulerStep` and `Dyn::addForce/addTorque` in `lib/ExVectrDynamics/include/ExVectrDynamics/rigid_body.hpp`, bit-identical (1e5 random steps, `test_dyn_rigid_body` against the frozen copy). Last present at ExVectrControl 2c0c00e. Aerodynamics were always the caller's job (`ShipSim::StarshipPlant`).
 
 ## Usage
 
@@ -209,9 +203,11 @@ attTvc.setAttitudeStateSetpoint({0, 0, 0, qSp(0), qSp(1), qSp(2), qSp(3)});   //
 - S3: `FlapModeObserverTask` selects `BellyFlopMode_Descent` (default) and publishes `DescentTarget` on `descentTargetTopic` (10 Hz); `controlAttitudeFlaps.subscribeDescentTarget(descentTargetTopic)` in `setup()`. `Safety::makeDescentTarget` / `descentPositionUsable` / `flapSetpointAngles` (`src/safety/descent_target.hpp`) are the pure parts. Telemetry reads `controlAttitudeFlaps.getDescentStatus()`.
 - `src/main.cpp` `FlapModeObserverTask` (10 Hz) chooses the bellyflop mode and sets azimuth/pitch targets (freefall and the bellyflop after its powered kick → Stabilize (bellyflop since 2026-11-20, after the kick only since 2026-11-21), RTH stabilising → Upright, otherwise Ascent), published on `bellyFlopControlTopic`.
 - `src/mission/mission_bellyflop.hpp`: takes over the TVC attitude setpoint directly (`unsubscribeAttitudeSetpoint()` + `setAttitudeStateSetpoint()` every 10 ms) for the powered bellyflop kick (2026-11-21), and calls `enableControl(false)` itself at the kick end so the motors go neutral without waiting for the 10 Hz phase table.
-- `CTRL::PhysicsBodySim` is used inside `DSP::BodySimModel` / `DSP::BodySimulator`. `SimplePID` is unused.
+- `SimplePID` is unused. (`PhysicsBodySim` was removed in S5.)
 
 ## Known issues & limitations
+
+Rows that name `physics_bodysim.cpp` refer to `PhysicsBodySim`, removed in S5 (last present at 2c0c00e); its code lives on in `Dyn::semiImplicitEulerStep` (ExVectrDynamics).
 
 "Quat-semantics" marks call sites whose behaviour likely changed with ExVectrMath `b221829`. This library was tuned on 2026-01-25 against the old reversed product and inverse `rotate()`. With the **current** Math, the Control call sites below read as correct, which suggests the fix was made for them. But the gains were tuned in a simulator whose own quaternion code changed at the same time, so **re-validate the tuning in sim and on the bench**.
 
@@ -255,4 +251,4 @@ To add a controller:
    - Provide `enableControl(bool)` that zeroes integrators and outputs a safe command when disabled.
 5. Compute attitude errors as `q.conjugate() * q_sp` (body frame). Use `q.rotate()` for body→world and `q.conjugate().rotate()` for world→body, per `docs/libs/ExVectrMath.md`.
 6. Clamp outputs to actuator limits inside the controller. Don't rely on the downstream mapping.
-7. Wire it in `src/main.cpp` `initialiseTopicConnections()` (`:1920`) and gate it in the vehicle-mode logic (`:620-690`). Test it with `DSP::BodySimulator` by switching the topic switches to the simulator outputs (`:920-960`).
+7. Wire it in `src/main.cpp` `initialiseTopicConnections()` (`:1920`) and gate it in the vehicle-mode logic (`:620-690`). Test it with the simulator task (`StarshipSimTask`) by switching the topic switches to the simulator outputs (`:920-960`).

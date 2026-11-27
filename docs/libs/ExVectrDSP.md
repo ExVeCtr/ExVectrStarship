@@ -1,6 +1,6 @@
 # ExVectrDSP
 
-> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, plus a rigid-body flight simulator. Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 3e1f070 (pinned now: fc99b99 = 3e1f070 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified; feature/sim-aero a5c21af, 2026-11-21: body simulator section re-verified against the redesign; feature/sim-fixes-3, 2026-11-21: fold shield default and calibration)`
+> State estimation and signal processing for ExVectr: IMU attitude EKF, IMU/baro/GNSS/range position KF, sensor-frame transforms and calibration, generic KF and filters, (the rigid-body flight simulator was removed in S5, 2026-11-27: it is `StarshipPlant` in `src/sim` now). Repo: https://github.com/ExVeCtr/ExVectrDSP. `Last verified against commit: 7043ab8 on `feature/sim-s5-remove-legacy-sim` (S5 removal; the sections other than the simulator are as verified at 3e1f070); earlier: 3e1f070 (pinned now: fc99b99 = 3e1f070 plus a mechanical NOW() -> NowNs() port for ExVectrCore 18bbb09; content otherwise as verified; feature/sim-aero a5c21af, 2026-11-21: body simulator section re-verified against the redesign; feature/sim-fixes-3, 2026-11-21: fold shield default and calibration)`
 
 ## Purpose & scope
 
@@ -9,7 +9,7 @@
   - **position** `[v(3), p(3)]` in NWU
   - plus a ground-distance estimate.
 - Provides `TopicCoordTransform` (sensor→body plus calibration) and calibrators for gyro and magnetometer.
-- (Since S4, 2026-11-27, the vehicle no longer uses `BodySimulator`/`BodySimModel`: `ShipSim::StarshipSimTask` in `src/sim` replaced them, they are not linked into the firmware and stay only for the frozen tests and harnesses until S5.) Contains `BodySimulator`, a simulator task that publishes the same topic types as the estimators, so the application can switch between real and simulated state, around the pure, host-tested physics model `BodySimModel` (2026-11-21).
+- The body simulator is **not in this library any more** (S5, 2026-11-27, branch `feature/sim-s5-remove-legacy-sim`): `BodySimulator` and `BodySimModel` were removed. The simulation is `ShipSim::StarshipPlant` (`src/sim/`, flight software) built on ExVectrDynamics, and the vehicle task is `ShipSim::StarshipSimTask` (since S4). See [../project/simulation-architecture.md](../project/simulation-architecture.md) and [ExVectrDynamics.md](ExVectrDynamics.md). The model description below is kept because it still applies to `StarshipPlant` (same equations and defaults, bit for bit).
 - Generic helpers: `KalmanFilter<LEN>`, `ValueCov`, first-order `LowPassFilter` and `HighPassFilter`.
 - Not implemented:
   - `FullStateEKF` is declared only, with no `.cpp`.
@@ -24,7 +24,7 @@
 - **ExVectrMath**: all algebra. Frame conventions come from `docs/libs/ExVectrMath.md`.
 - **ExVectrSensor**: `SNSR::GNSSData` (`gnss.hpp`). Lat/lon in rad, alt in m above the ellipsoid, velocity documented as NED (`imu_gps_position_kf.hpp:128`).
 - **ExVectrData**: `Data::Memory_Interface` and memory manager, used by `Calibrator_Manager`.
-- **ExVectrControl** (**circular**): `body_sim_model.hpp` includes `ExVectrControl/physics_bodysim.hpp` and `body_simulator.hpp` includes `starship/control_attitude_flaps.hpp`, while Control includes `ExVectrDSP/value_covariance.hpp`. PlatformIO resolves this because all headers are on the include path. The CMake build would need both libraries.
+- **ExVectrControl**: none. (Until S5 the simulator headers included `ExVectrControl/physics_bodysim.hpp` and `starship/control_attitude_flaps.hpp`, which made DSP and Control circular. The simulator is gone, so the cycle is gone: ExVectrDSP includes only ExVectrCore, ExVectrSensor, ExVectrData, ExVectrMath. Control still includes `ExVectrDSP/value_covariance.hpp`: one direction only.)
 - External: `<math.h>` only.
 
 ## Key concepts & API
@@ -140,11 +140,12 @@ Common pattern:
 - **Tuning (hard-coded):** acc cov ×1000; baro cov ×1000 and velocity cov ×2/dt×10; range cov ×1000 and velocity cov ×2/dt×10; GNSS cov ×200; acc-bias IIR 0.1; zeroing IIR 0.1. `setProcessNoise()` is a no-op.
 - **Task:** `IMUGPSPositionKalmanTask(period)` runs `predict()` then `update()`. Main runs it at **10 ms**.
 
-### Body simulator (`body_sim_model.hpp/.cpp` + `body_simulator.hpp/.cpp`, redesigned 2026-11-21, `feature/sim-aero`)
+### Body simulator model (code removed from this library in S5; now `StarshipPlant` in `src/sim/` + ExVectrDynamics; model first written 2026-11-21, `feature/sim-aero`)
 
-Two parts:
-- **`BodySimModel`** (pure: no scheduler, topics, wall clock or random numbers; host-built and tested in the flight software, `test/test_sim_aero`). Holds `CTRL::PhysicsBodySim` (semi-implicit Euler with `ω × Iω`, ExVectrControl), the geometry, the aerodynamics, the actuator models and the wind. All coefficients are in **`BodySimParams`** (table below). `step()` integrates one fixed step (2 ms); `advance(elapsed)` integrates elapsed time in fixed steps with the remainder carried, at most `maxAdvance_s` (50 ms) per call. Identical inputs give bit-identical runs.
-- **`BodySimulator`** (`Task_Periodic`, 10 ms, registered on the system scheduler): feeds the TVC actual-thrust topic `[Fx,Fy,Fz,T]` and the true flap angles into the model, integrates the wall-clock time since its previous run (a gap above `kMaxGapNs` = 100 ms, i.e. a pause or a restart, is not integrated: the simulation continues from where it stopped), applies zeroing mode, publishes `[ω,q]`, `[v,p]`, ground `[v_U, p_U]`. On the vehicle `applyActuatorRateLimits = false`: the flap driver (`ServoAngleSimulator`, 300°/s) and the TVC driver (thrust-angle slew 20°/s = 300°/s servo / 15) already publish rate-limited actual values.
+Where the former parts live now (S5):
+- `BodySimModel` (pure physics) -> `ShipSim::StarshipPlant` / `StarshipPlantHarness` (`src/sim/starship_plant.*`, `starship_aero.*`) on the ExVectrDynamics blocks. `BodySimParams` -> `ShipSim::StarshipPlantParams` (same defaults and units; the coefficient names below map to its nested members, e.g. `bodyStrips` -> `hull.strips`, `flapFoldShieldFactor` -> `flapAero.foldShieldFactor`, `windSpeed_mps` -> `wind.speed_mps`, `applyActuatorRateLimits` -> `applyActuatorModels`). `step()`/`advance(elapsed)` -> `Dyn::Sim<StarshipPlant>::step/advance` (2 ms, carry, 50 ms bound). `PhysicsBodySim` -> `Dyn::semiImplicitEulerStep`.
+- `BodySimulator` (the 10 ms task) -> `ShipSim::StarshipSimTask` + `StarshipSimAdapter`. On the vehicle the plant applies no actuator models (`applyActuatorModels = false`): the flap driver (`ServoAngleSimulator`, 300°/s) and the TVC driver (thrust-angle slew 20°/s = 300°/s servo / 15) already publish rate-limited actual values.
+- Host harnesses use `StarshipPlantHarness` through `test/support/plant_model.hpp`. Bit-identity with the removed code is proven by the frozen copies in `test/frozen/` (`test_sim_equivalence`, `test_sim_task`, `test_dyn_*`).
 
 **Model (body frame +Z nose, belly −X, flaps TL/BL on +Y, origin at the CoM):**
 - **Body crossflow (strip theory):** `bodyStrips` (24) strips over the real length (tube 0.54 m + parabolic nose 0.20 m, `r = R(2s − s²)`), each `dF = ½ρ·η·Cdc·d(z)·dz·|u⊥|u⊥` with the local air velocity `u = u_cg − ω × r`. The rotation term gives the distributed pitch/yaw damping.
@@ -275,10 +276,10 @@ Core::Simple_Subscriber<Core::Timestamped<Math::Vector<float, 7>>> att(imuTask.g
 Math::Quat_F q = att.getItem().data.block<4, 1>(3, 0);   // body -> world
 ```
 
-Simulator in place of the estimators (main.cpp `bodySimulator`, `SimulationMode` handler):
+Simulator in place of the estimators (main.cpp `bodySimulator`, `SimulationMode` handler; since S4 a `ShipSim::StarshipSimTask`, formerly `DSP::BodySimulator`, same public calls):
 
 ```cpp
-DSP::BodySimulator sim(1.1f, {0.044, 0.044, 0.004}, 14.0f, TVC_ANGLE_LIMIT_RAD);
+ShipSim::StarshipSimTask sim(1.1f, {0.044, 0.044, 0.004}, 14.0f, TVC_ANGLE_LIMIT_RAD);
 sim.setTVCInputTopic(starshipTVC.getTVCActualThrustTopic(), {0, 0, -0.35},
                      TVC_ANGLE_LIMIT_RAD, TVC_THRUST_LIMIT_N);
 sim.setFlapSettingInputTopic(trueFlapSettingTopic);
@@ -300,12 +301,15 @@ positionTopicSwitch.subscribe(sim.getStateEstTopic());
 - `src/main.cpp:110-112`: three `TopicCoordTransform<float>` (gyro, acc, mag). Their transforms are set at `:1862-1866` / `:1909-1913` from stored calibration, and the mag transform also from the in-app calibration at `:799`.
 - `src/main.cpp:114`: `IMUAttitudeEKFTask imuTask(1 ms)`.
 - `src/main.cpp:115`: `IMUGPSPositionKalmanTask posEstTask(10 ms)`. Range limits 0.4–1.5 m. Range-for-altitude is disabled (`:1932`, `:1934`).
-- `src/main.cpp:117`: `BodySimulator`.
+- `src/main.cpp:117`: `StarshipSimTask bodySimulator` (was `BodySimulator`).
 - `Topic_Switch`es `attitudeTopicSwitch`, `positionTopicSwitch` and `groundTopicSwitch` (`:182-186`) select estimator or simulator output for the controllers and missions (`:920-960`, default `:1971-1972`).
 - Zeroing modes: `VehicleSafetyAndControlTask::applyEstimatorZeroing()` sets `enableZeroingMode` on `posEstTask`, `imuTask` and `bodySimulator` together, while the waypoint mission's Initialisation mode or the zeroing window (automatic boot zero, `ZeroEstimators` telecommand) is active ([../project/overview.md](../project/overview.md), "Estimator zeroing"). Since 2026-11-20 `setPositionReference()` is no longer called by SystemReset (only commented-out code in `DisplayTask` still references it); re-referencing happens only through zeroing mode.
 - Not used: `IMUAttitudeCF`, `KalmanFilter`, `LowPass/HighPassFilter`, `FullStateEKF`, the calibrators.
 
 ## Known issues & limitations
+
+Note on the file references in the table below: rows that name `body_sim_model`, `body_simulator` or `BodySimParams` refer to the code removed in S5 (last present at ExVectrDSP 5aba4c6); the same code lives on bit for bit in `src/sim/starship_plant.cpp`, `src/sim/starship_aero.cpp` and `lib/ExVectrDynamics`.
+
 
 "Quat-semantics" marks call sites whose behaviour likely changed with ExVectrMath `b221829`: `rotate()` now applies the opposite rotation, and `a*b` now composes in the opposite order. The verdict given is relative to the current (Hamilton) Math.
 
@@ -364,7 +368,7 @@ To add an estimator:
    - `predict(int64_t t)` with dt taken from timestamps (guard the first sample and dt ≤ 0).
 2. Add `class <Name>Task : public <Name>, public Core::Task_Periodic`. The constructor is `Task_Periodic("<Name>Task", period)` followed by `scheduler.addTask(*this)`. `taskCheck()` does `setPaused(false)` on new data. `taskThread()` does `update(); setPaused(true);`.
 3. Publish **the existing layouts** (`[ω,q]` as `Vector<7>`, `[v,p]` as `Vector<6>`, `[v,d]` as `Vector<2>`). Then the new estimator can be selected via the `Topic_Switch`es in `src/main.cpp:182-186` without touching the controllers.
-4. Follow `docs/libs/ExVectrMath.md` Conventions. Write measurement models explicitly, as the EKF does; don't depend on implicit `rotate()` direction. Add a simulator test through `BodySimulator`.
+4. Follow `docs/libs/ExVectrMath.md` Conventions. Write measurement models explicitly, as the EKF does; don't depend on implicit `rotate()` direction. Add a simulator test through `StarshipPlantHarness` (`test/support/plant_model.hpp`).
 5. Covariance hygiene: symmetrise after updates, and prefer the Joseph form. Don't rely on the unpivoted `Matrix::inverse()` for poorly conditioned `S`.
 6. Wire it in `src/main.cpp` `initialiseTopicConnections()` (`:1920`). Feed inputs from the `TopicCoordTransform` outputs, never from raw sensor topics.
 
