@@ -16,7 +16,7 @@ The owner wants a modular simulation system built from **models**:
 |---|---|---|
 | 1 | Rebuild the ship simulation on this architecture: rigid body, aerodynamics, TVC/flap/motor actuators, wind, and sensor outputs where sensible. Run the existing in-vehicle simulation mode through it with **unchanged behaviour**. | Detailed (sections 3 to 7) |
 | 2 | Controllers become models with explicit state. A `{controller + plant}` model can be simulated forward. The vehicle then runs the new controller structure, **without** MPC. | High level (section 5) |
-| 3 | Velocity-dependent control that uses the aero model: acceleration-loop and force/moment disturbance observers, aero feedforward, speed-scheduled limits ([../../../docs/ascent-control-design.md](../../../docs/ascent-control-design.md)). | Out of scope. The design must not block it (section 6) |
+| 3 | Velocity-dependent control that uses the aero model: acceleration-loop and force/moment disturbance observers, aero feedforward, speed-scheduled limits ([../../../docs/ascent-control-design.md](../../../docs/ascent-control-design.md)). | Out of scope. The design must not block it (section 6). Stage 3 design: [aero-control-design.md](aero-control-design.md) |
 
 **Why the aero model must be callable outside the simulator.**
 - Ascent: the nose-cone normal force acts 0.28 m ahead of the CoM. Its moment grows with airspeed² and passes the 0.256 N m
