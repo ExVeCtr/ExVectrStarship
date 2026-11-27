@@ -2,7 +2,7 @@
 //
 // Closed loop from the apogee hover (120 m, vertical, at rest over home) through the kick into the freefall descent:
 //   - kick: replica of ControlAttitudeTvc (P 1.2, rate 0.5, TVC limit compensation on, 50 Hz) + StarshipTVC cap
-//     (11 N) + DSP::BodySimModel (vane servo rate, 3 deg cone), flaps retracted (90 deg), mission task at 100 Hz
+//     (11 N) + the StarshipPlantHarness (vane servo rate, 3 deg cone), flaps retracted (90 deg), mission task at 100 Hz
 //     evaluating Safety::kickEndTrigger (the production function, parameters varied by the sweep),
 //   - motor cut at the trigger (thrust off 20 ms later), flap attitude control from the next 10 Hz safety tick,
 //   - descent: DescentGuidance + FlapDescentLaw (strategy B of test_descent_guidance) with estimator noise, until
@@ -23,13 +23,13 @@
 
 #include "ExVectrControl/starship/descent_guidance.hpp"
 #include "ExVectrControl/starship/flap_descent_law.hpp"
-#include "ExVectrDSP/body_sim_model.hpp"
+#include "../support/plant_model.hpp"
 #include "safety/bellyflop_kick.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Math;
-using DSP::BodySimModel;
-using DSP::BodySimParams;
+using plant_test::PlantModel;
+using ShipSim::StarshipPlantParams;
 namespace D = VCTR::CTRL::descent;
 namespace S = VCTR::Safety;
 
@@ -135,9 +135,9 @@ struct Result {
 };
 
 static Result runKick(const Rule &rule, const Scenario &sc, bool trace = false) {
-  BodySimParams p;
-  p.applyActuatorRateLimits = true;
-  BodySimModel m(p);
+  StarshipPlantParams p;
+  p.applyActuatorModels = true;
+  PlantModel m(p);
   Rng rng(sc.seed);
   const float windDir = rng.uni() * 2 * kPi;
   Quat_F q0 = Quat_F(Vector_F{0, 0, 1}, sc.yawDeg * kDeg);

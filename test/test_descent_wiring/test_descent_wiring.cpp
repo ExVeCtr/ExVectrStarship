@@ -13,7 +13,7 @@
 
 #include "ExVectrControl/starship/descent_flap_controller.hpp"
 #include "ExVectrControl/starship/flap_mode_mapper.hpp"
-#include "ExVectrDSP/body_sim_model.hpp"
+#include "../support/plant_model.hpp"
 #include "safety/descent_target.hpp"
 
 using namespace VCTR;
@@ -364,9 +364,9 @@ struct Res {
 /// Kick end state at 120 m (belly-down, +5 deg, 3.6 m/s along the nose, flaps 90 deg), 0.5 s of Acsent (flaps retracted),
 /// then Descent from the observer (10 Hz target) through the flap-task chain at 50 Hz.
 static Res runWired(const Scn &sc) {
-  DSP::BodySimParams p;
-  p.applyActuatorRateLimits = true;
-  DSP::BodySimModel m(p);
+  ShipSim::StarshipPlantParams p;
+  p.applyActuatorModels = true;
+  plant_test::PlantModel m(p);
   Rng rng(sc.seed);
   const float beta = sc.betaDeg * kDeg;
   const float psi0 = beta + sc.headingErrDeg * kDeg;
@@ -549,9 +549,9 @@ static void test_closed_loop_offsets_with_noise() { runMatrix(true); }
 /// The no-position failure through the chain: GNSS lost at 100 m after the descent began: the ship must not glide away.
 static void test_closed_loop_gnss_loss_falls_straight() {
   // offset 10 m, nose toward home; target goes invalid after 3 s.
-  DSP::BodySimParams p;
-  p.applyActuatorRateLimits = true;
-  DSP::BodySimModel m(p);
+  ShipSim::StarshipPlantParams p;
+  p.applyActuatorModels = true;
+  plant_test::PlantModel m(p);
   const float psi0 = 0;
   Quat_F q = Quat_F(Vector_F{0, 0, 1}, psi0 - kPi) * bellyDown(5);
   Vector<float, 7> a0 = attOf(q);
