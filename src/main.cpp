@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "sim_lidar.hpp"
+#include "sim/starship_sim_task.hpp"
 #include "ExVectrActuator/pwm_output.hpp"
 #include "ExVectrActuator/servo_control.hpp"
 #include "ExVectrArduinoPlatform.hpp"
@@ -16,7 +17,6 @@
 #include "ExVectrCore/random.h"
 #include "ExVectrCore/scheduler2.hpp"
 #include "ExVectrCore/task_types.hpp"
-#include "ExVectrDSP/body_simulator.hpp"
 #include "ExVectrDSP/imu_attitude_cf.hpp"
 #include "ExVectrDSP/imu_attitude_ekf.hpp"
 #include "ExVectrDSP/imu_gps_position_kf.hpp"
@@ -255,8 +255,8 @@ static bool saveCalibrationMemory() {
 DSP::IMUAttitudeEKFTask imuTask(1 * Core::MILLISECONDS);
 DSP::IMUGPSPositionKalmanTask posEstTask(10 * Core::MILLISECONDS);
 
-DMAMEM DSP::BodySimulator bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
-                                 TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
+DMAMEM ShipSim::StarshipSimTask bodySimulator(VEHICLE_MASS_KG, {0.044, 0.044, 0.004},
+                                              TVC_THRUST_LIMIT_N, TVC_ANGLE_LIMIT_RAD);
 
 // Networking: VehicleComms (src/comms/), defined below the vehicle tasks it reads from.
 extern Comms::VehicleComms vehicleComms;

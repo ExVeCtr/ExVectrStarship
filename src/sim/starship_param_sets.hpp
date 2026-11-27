@@ -12,7 +12,7 @@
  * added when S5 ports that harness.
  */
 
-#include "sim/starship_plant.hpp"
+#include "starship_plant.hpp"
 
 namespace VCTR {
 namespace ShipSim {

@@ -1,4 +1,4 @@
-#include "sim/starship_plant.hpp"
+#include "starship_plant.hpp"
 
 #include "ExVectrDynamics/ground_contact.hpp"
 

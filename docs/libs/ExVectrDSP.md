@@ -9,7 +9,7 @@
   - **position** `[v(3), p(3)]` in NWU
   - plus a ground-distance estimate.
 - Provides `TopicCoordTransform` (sensor→body plus calibration) and calibrators for gyro and magnetometer.
-- Contains `BodySimulator`, a simulator task that publishes the same topic types as the estimators, so the application can switch between real and simulated state, around the pure, host-tested physics model `BodySimModel` (2026-11-21).
+- (Since S4, 2026-11-27, the vehicle no longer uses `BodySimulator`/`BodySimModel`: `ShipSim::StarshipSimTask` in `src/sim` replaced them, they are not linked into the firmware and stay only for the frozen tests and harnesses until S5.) Contains `BodySimulator`, a simulator task that publishes the same topic types as the estimators, so the application can switch between real and simulated state, around the pure, host-tested physics model `BodySimModel` (2026-11-21).
 - Generic helpers: `KalmanFilter<LEN>`, `ValueCov`, first-order `LowPassFilter` and `HighPassFilter`.
 - Not implemented:
   - `FullStateEKF` is declared only, with no `.cpp`.

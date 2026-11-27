@@ -39,7 +39,7 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 - `starship_aero.hpp/.cpp`: `AeroConfig`, `AeroInput/Output`, `starshipAero(cfg, in, out)` (pure, stateless, `valid=false` and zeros for non-finite input), `airVelocityBody`, `flapFrame`.
 - `starship_plant.hpp/.cpp`: `StarshipPlantParams` (defaults identical to `BodySimParams`), `StarshipPlantT<kDelayCap>` with `StarshipPlant` (cap 1, vehicle) and `StarshipPlantHarness` (cap 128), `makeAeroConfig`. Explicitly instantiated in the .cpp (one instantiation per variant).
 - `starship_param_sets.hpp`: `kVariants` (nominal, aero x0.7, x1.3, geometry) and `makeParams`.
-- The plant takes its inputs inside `step` (clamped into the held state). A caller that wants the legacy "last valid value is kept between calls" behaviour for several `set...` calls between two steps must hold the last valid value itself (the vehicle adapter in S4 does, as `BodySimulator::update` does).
+- The plant takes its inputs inside `step` (clamped into the held state). A caller that wants the legacy "last valid value is kept between calls" behaviour for several `set...` calls between two steps must hold the last valid value itself (the vehicle adapter `StarshipSimAdapter` does since S4: last received thrust, last finite flap angle per channel, fed on every step).
 
 ## Behaviour notes
 
@@ -50,6 +50,7 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 ## Tests
 
 Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
+- `pio test -e native -f test_sim_task` (S4, flight-software `src/sim`): the vehicle adapter against the frozen legacy `BodySimulator` wiring, memcmp after every run.
 - `pio test -e native -f test_dyn_rigid_body` (S1): `semiImplicitEulerStep` against the frozen `PhysicsBodySim` (1e5 random steps), `is_model`, `Sim`, RK4.
 - `pio test -e native -f test_sim_equivalence` (S3, flight-software `src/sim`): the plant against the frozen `BodySimModel`, scenarios E1-E8 plus the vehicle variant, random parameter sets, the standalone aero function, parameter variants side by side, RK4 convergence.
 - `pio test -e native -f test_dyn_blocks` (S2): every block against the frozen `BodySimModel` (`test/frozen/legacy_body_sim_model.hpp`, verbatim except namespace, `inline` and `private:` opened to `public:`): wind/gust tables and series, hull aero (legacy total with the flap effectiveness set to 0), `flatPlateFlap` with random geometry and candidate effects, `tvcClamp`, servo + TVC slew sequences (dead time, lag, rate limits, NaN inputs, capacity 128 and 1), ground contact. Hull and flat plate comparisons treat +0 and -0 as equal where the legacy value is a sum that starts from zero.
@@ -57,7 +58,8 @@ Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
 ## Repository state (TODO for the main session)
 
 - The library is a **local git repository** at `lib/ExVectrDynamics` (branches `master`, `Development`, feature branches per step). There is no remote and **no `.gitmodules` entry** (a URL to a missing remote would break `git submodule update`). When the owner has created `github.com/ExVeCtr/ExVectrDynamics`: add the remote, push `master`/`Development`, then `git submodule add` it in flight-software and pin the pushed commit.
-- `platformio.ini` `[env:native]` has `-Ilib/ExVectrDynamics/include` and `+<../lib/ExVectrDynamics/src/>`. The teensy40 env does not reference the library, so nothing is linked into the firmware.
+- `placement.hpp` (S4): `VCTR_DYN_COLD` = `.flashmem` on the Teensy 4.x, empty on the host; every non-inline function declared in the headers carries it so the library never occupies ITCM. Inline functions and templates are inlined into the flatten functions of `src/sim` (check with `nm`: no `Dyn::` symbol below 0x60000000 on the target).
+- `platformio.ini` `[env:native]` has `-Ilib/ExVectrDynamics/include` and `+<../lib/ExVectrDynamics/src/>`. Since S4 the teensy40 firmware links the library (through `src/sim`), in flash only.
 
 ## Known issues
 

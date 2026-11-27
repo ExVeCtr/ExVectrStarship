@@ -17,6 +17,7 @@
 #include "ExVectrDynamics/flat_plate.hpp"
 #include "ExVectrDynamics/slender_body.hpp"
 #include "ExVectrDynamics/types.hpp"
+#include "sim_placement.hpp"
 
 namespace VCTR {
 namespace ShipSim {
@@ -63,14 +64,14 @@ struct AeroOutput {
 };
 
 /// Pure, stateless. Equal to BodySimModel::computeAero bit for bit for finite inputs.
-void starshipAero(const AeroConfig &cfg, const AeroInput &in, AeroOutput &out);
+SIM_COLD void starshipAero(const AeroConfig &cfg, const AeroInput &in, AeroOutput &out);
 
 /// Air velocity at the CoM in body axes: R(q)^T (wind - v).
-Vec3 airVelocityBody(const Math::Quat_F &qBodyToWorld, const Vec3 &vWorld, const Vec3 &windWorld);
+SIM_COLD Vec3 airVelocityBody(const Math::Quat_F &qBodyToWorld, const Vec3 &vWorld, const Vec3 &windWorld);
 
 /// Orthonormal plate frame of flap `index` at `angle`: normal n, radial d (hinge -> outer edge), axial e (along the
 /// hinge line, lower -> upper end). Port of BodySimModel::flapFrame.
-void flapFrame(const AeroConfig &cfg, int index, float angle, Vec3 &n, Vec3 &d, Vec3 &e);
+SIM_COLD void flapFrame(const AeroConfig &cfg, int index, float angle, Vec3 &n, Vec3 &d, Vec3 &e);
 
 } // namespace ShipSim
 } // namespace VCTR
