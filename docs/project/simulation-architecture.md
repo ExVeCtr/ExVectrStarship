@@ -805,4 +805,4 @@ Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-..
 
 - flight-software, merge commits on `feature/sim-dynamics`: S1 `2b1d2c9`, S2 `4e7b227`, S3 `36eefe7`.
 - lib/ExVectrDynamics (local repo, branch `Development`), merge commits: 7e39b34 Merge feature/sim-s2-building-blocks, 5441750 Merge feature/sim-s1-dynamics-skeleton. Library commits (no merges, newest first): cda07e0 d50ad90 5e95cdf. S3 changed no library file (no S3 library branch).
-- S4 (filled in at merge): see the S4 line in the final report; library `feature/sim-s4-vehicle-task` 9a5b0ae, merged into the library `Development` as 42e675c.
+- S4: flight-software branch commit 63e6406, merge commit on `feature/sim-dynamics` a0acef0. lib/ExVectrDynamics: commit 9a5b0ae on `feature/sim-s4-vehicle-task`, merged into the library `Development` as 42e675c (not pushed when written).
