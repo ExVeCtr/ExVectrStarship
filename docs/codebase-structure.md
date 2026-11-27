@@ -46,6 +46,7 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 | An implementation of a HAL interface for a platform | `lib/ExVectrArduinoPlatform` (or a new platform lib) | Teensy PWM, I2C, EEPROM |
 | Pure math with no hardware/time dependency | `lib/ExVectrMath` | matrix ops, quaternion helpers |
 | Generic estimation / filtering / calibration / simulation | `lib/ExVectrDSP` | EKF, calibrators, body simulator |
+| Pure dynamics: rigid body, aero and actuator building blocks, model/simulation machinery (Math only) | `lib/ExVectrDynamics` | `semiImplicitEulerStep`, `Sim<M,I>` (new, local only, see [libs/ExVectrDynamics.md](libs/ExVectrDynamics.md)) |
 | Generic controllers usable on other vehicles | `lib/ExVectrControl` | PID, attitude controller |
 | A reusable sensor driver | `lib/ExVectrSensor` | IMU, baro, magnetometer drivers |
 | A reusable actuator abstraction | `lib/ExVectrActuator` | PWM protocols, H-bridge |

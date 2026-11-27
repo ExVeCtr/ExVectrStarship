@@ -24,6 +24,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [ExVectrArduinoPlatform](libs/ExVectrArduinoPlatform.md) | Arduino/Teensy implementation of Core platform hooks and HAL |
 | [ExVectrMath](libs/ExVectrMath.md) | Matrix/vector/quaternion templates; **authoritative frame and rotation conventions** |
 | [ExVectrDSP](libs/ExVectrDSP.md) | Attitude EKF, position KF, calibrators, body simulator, filters |
+| [ExVectrDynamics](libs/ExVectrDynamics.md) | **New, local only** (feature/sim-dynamics): rigid body, aero and actuator building blocks, `Sim<Model, Integrator>` (simulation architecture) |
 | [ExVectrControl](libs/ExVectrControl.md) | Position, attitude (TVC) and flap controllers |
 | [ExVectrSensor](libs/ExVectrSensor.md) | Sensor interfaces and drivers (MPU9250, BME280, QMC5883) |
 | [ExVectrActuator](libs/ExVectrActuator.md) | PWM output protocols, servo and H-bridge abstractions |
