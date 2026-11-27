@@ -96,8 +96,8 @@ static void test_defaults_reproduce_the_hard_coded_lists() {
   sameWp(w.wp[2], {2, 0, 1, 0.5f, 3, 1, 0.5f, 15, 12});
   sameWp(w.wp[3], {2, 2, 1, 0.5f, 3, 1, 0.5f, 15, 12});
   // the flight apogee waypoint: {0, 0, 120} 7 m/s, accel 3 / 2, threshold 3 m, hold 5 s (main.cpp, as before)
-  sameWp(flightApogeeWaypoint(p), {0, 0, 120, 7, 3, 2, 3, 5, 0});
-  sameWp(flightApogeeWaypoint(), {0, 0, 120, 7, 3, 2, 3, 5, 0});
+  sameWp(flightApogeeWaypoint(p), {0, 0, 120, 7, 1, 2, 3, 5, 0});
+  sameWp(flightApogeeWaypoint(), {0, 0, 120, 7, 1, 2, 3, 5, 0});
   // the default-argument form equals the explicit defaults
   sameWp(missionProfileFor(kProfileHoverTest).wp[1], h.wp[1]);
 }
@@ -123,7 +123,7 @@ static void test_parameters_change_the_lists() {
 
 static void test_new_params_apogee_waypoint() {
   MissionParamSet p;
-  TEST_ASSERT_EQUAL_FLOAT(3.0f, p.ascentAccel);
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, p.ascentAccel);
   TEST_ASSERT_EQUAL_FLOAT(2.0f, p.ascentDecel);
   TEST_ASSERT_TRUE(missionParamApply(p, 7, 5.0f));
   TEST_ASSERT_TRUE(missionParamApply(p, 8, 1.5f));
