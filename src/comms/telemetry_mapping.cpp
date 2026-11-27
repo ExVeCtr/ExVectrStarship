@@ -150,6 +150,7 @@ Packets::VehicleStatus makeVehicleStatus(const TelemetrySnapshot &s) {
   p.mission_profile = s.missionProfile;
   p.rc_rejected = s.rcRejected;
   p.cmd_session = s.cmdSession;
+  p.profile_selected = s.profileSelected;
   return p;
 }
 
@@ -197,6 +198,7 @@ void fillCmdTelemetry(TelemetrySnapshot &s, const Safety::CmdIngressSnapshot &cs
   const Safety::CmdFrame fr = (cs.latched && cs.seen) ? cs.frame : Safety::CmdFrame();
   a.go = fr.go;
   a.profile = fr.profile;
+  s.profileSelected = (cs.latched && cs.seen) ? fr.profile : 255; // telemetry only, same source as CMD_APPLIED.profile
   a.vehicleMode = fr.vehicleMode;
   a.motors = fr.motors;
   a.resetButton = fr.resetButton;
