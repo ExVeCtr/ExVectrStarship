@@ -1,7 +1,6 @@
 # Simulation and dynamics architecture (design)
 
-> **Status: design only (2026-11-27, branch `feature/sim-architecture-design`).** Nothing in this document is implemented
-> yet. It proposes how to rebuild the body simulator from reusable models, and how to bring the controllers into the same
+> **Status: design (2026-11-27, branch `feature/sim-architecture-design`); steps S1-S3 are implemented on `feature/sim-dynamics`, host only (section 10).** The rest of this document is not implemented yet. It proposes how to rebuild the body simulator from reusable models, and how to bring the controllers into the same
 > structure later. Read "Decisions for the owner" (section 9) before starting any step.
 > Verified against: flight-software `Development` dc3f9f4, ExVectrDSP 5aba4c6, ExVectrControl 2c0c00e. Sizes come from
 > the `teensy40` ELF of the 2026-11-26 build. Line numbers drift, so re-check them before relying on one.
@@ -767,6 +766,7 @@ Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-..
 |---|---|---|---|
 | S1 | done (host only) | `feature/sim-s1-dynamics-skeleton` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
 | S2 | done (host only) | `feature/sim-s2-building-blocks` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
+| S3 | done (host only) | `feature/sim-s3-starship-plant` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
 
 **S1 (library skeleton).**
 - `lib/ExVectrDynamics` created as a local git repository (no remote, no `.gitmodules` entry yet, see [libs/ExVectrDynamics.md](../libs/ExVectrDynamics.md)).
@@ -778,3 +778,16 @@ Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-..
 - Added to `lib/ExVectrDynamics`: `atmosphere`, `wind`, `slender_body`, `flat_plate`, `tvc`, `servo`, `motor`, `ground_contact`, all bit-exact ports (same operations, same order).
 - Test `test/test_dyn_blocks` against the frozen `test/frozen/legacy_body_sim_model.hpp` (a whole-class frozen copy so each legacy member function can be called individually; the copy is header-only and has its `private:` opened for the tests).
 - Deviations from the design table: no ISA atmosphere (constant density, as today); `thrustWrench` is not a function (the plant adds thrust force and roll torque through `addForce`/`addTorque` so the torque sum keeps the legacy order); `flatPlateFlap` returns the force and the centre of pressure (the caller forms `cp x F` and accumulates) and the plate frame (`flapFrame`) stays vehicle geometry for S3; the hull block takes `rho` and the calibration separately and computes `k = 0.5 rho cal` itself, as the legacy code did; `motor` is new code with no legacy counterpart (tested for identity by default).
+
+**S3 (Starship plant).**
+- `src/sim/`: `starship_aero.*`, `starship_plant.*`, `starship_param_sets.hpp`. Legacy `BodySimModel`/`BodySimulator`/`PhysicsBodySim` are untouched and the vehicle task still uses them; nothing in `src/` references `src/sim/`.
+- `platformio.ini`: `[env:native]` builds `src/sim/` and the library; `[env:teensy40]` has `-<sim/>` in `build_src_filter` (src is compiled with `+<*>`, so without the filter the new files were linked in: the first S3 build grew by +320 B code through static initialisers of the ExVectrMath constants header). **S4 removes the `-<sim/>` filter** when the task references the plant.
+- Test `test/test_sim_equivalence`: E1-E8 plus the vehicle variant (capacity-1 servo line, pass-through actuators), the default parameters without a converter, 12 random parameter sets, the standalone aero function against the legacy loads, parameter variants side by side, snapshot/restore, RK4 against a fine Euler. Criterion: memcmp of attitude/position state, flap angles (true, rate-limited, held input), TVC angles, held thrust, aero force/torque, per-flap forces, air velocity and time after every step. A mutation check (gravity 9.807 -> 9.8071) fails at step 1.
+- Teensy build (S3, `pio run -e teensy40`): FLASH code 308348 B, RAM1 variables 68768 B, code 293208 B, padding 1704 B (margin to 294912 B unchanged), 160608 B free: identical to the baseline above. `nm` shows no `ShipSim` or `Dyn` symbol.
+- Sizes (host, `-v | grep SIMSIZE`): `StarshipPlant::State` 168 B, harness state 2200 B, `Config` 636 B, `Sim<StarshipPlant>` 304 B.
+- Deviations from the design: (1) `Params` holds mass and inertia entries (as `BodySimParams`), the derived `RigidBodyParams` is in `Derived`; (2) `AeroScales` is not introduced yet (S6): the calibration is `aeroCalibration`/`AeroConfig::calibration`, the other knobs are the existing coefficients; (3) `starshipAero` returns zeros with `valid=false` for non-finite input, where the legacy model propagated NaN (only reachable with an already non-finite state; all equivalence scenarios use finite states and sanitised inputs); (4) `evalSums`/`beginStep`/`endStep` split the step so the same code serves `Sim` (Euler, bit-exact) and the RK4 integrator; (5) the Input is taken inside `step`; two `set...` calls between steps keep only the last, the adapter must hold the last valid value (see the library doc); (6) the harness `advance` is `Sim::advance` (same carry rule) and compares equal including the carry; (7) `tvcAngle`/`flapAngle` outputs are copied from the state after the actuators.
+- Observations on the legacy code (no bug confirmed, none fixed, all reproduced): `clearWind` does not reset `gustSpread`; `resetToStartPose` leaves time and actuators (documented); the flap dead-time line is primed with the first input rather than the initial angle; the TVC angles keep their last value while the commanded thrust is below 1e-6 N (so a stale slewed angle is used when thrust returns, before the slew moves it); the gust phase uses double `sin` (16 calls per evaluation, cost on the target, not a defect).
+
+### Hashes
+
+Filled in after the merges (see the report of the task): flight-software `feature/sim-dynamics` merge commits of S1, S2, S3 and the library `Development` merge commits, `git log --merges -5` in both repositories.
