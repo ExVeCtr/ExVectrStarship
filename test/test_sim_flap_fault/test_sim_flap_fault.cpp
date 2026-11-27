@@ -8,7 +8,7 @@
 #include <string.h>
 #include <unity.h>
 
-#include "ExVectrDSP/body_sim_model.hpp"
+#include "../support/plant_model.hpp"
 #include "comms/telemetry_mapping.hpp"
 #include "safety/sim_flap_fault.hpp"
 
@@ -281,8 +281,8 @@ static void test_forced_angle_reaches_every_consumer() {
   const auto air = VCTR::Comms::makeAirActuators(hist);
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 20 * kDeg, air.flaps[1]); // i16 on the wire, 4 per sample
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 20 * kDeg, air.flaps[4 + 1]);
-  // (3) body simulator: BodySimulator passes the topic to BodySimModel::setFlapInput; the modelled flap reaches it.
-  VCTR::DSP::BodySimModel model{VCTR::DSP::BodySimParams()};
+  // (3) body simulator: the sim task passes the topic to the plant (PlantModel::setFlapInput); the modelled flap reaches it.
+  ::plant_test::PlantModel model{::VCTR::ShipSim::StarshipPlantParams()};
   model.setFlapInput(s.out[0], s.out[1], s.out[2], s.out[3]);
   for (int n = 0; n < 200; n++)
     model.step();

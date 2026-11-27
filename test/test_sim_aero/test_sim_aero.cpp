@@ -1,6 +1,6 @@
 // Native harness of the body simulator model: pio test -e native -f test_sim_aero
 //
-// Deterministic fixed-step runs of DSP::BodySimModel (lib/ExVectrDSP body_sim_model) with scripted actuator inputs.
+// Deterministic fixed-step runs of the StarshipPlantHarness (src/sim, via test/support/plant_model.hpp) with scripted actuator inputs.
 // The same scenarios also run on a replica of the model before feature/sim-aero (legacy_model.hpp) and print both
 // as a table ("SIMAERO" lines), so the before/after numbers in the docs can be reproduced:
 //   pio test -e native -f test_sim_aero -v | grep SIMAERO
@@ -15,14 +15,14 @@
 #include <string.h>
 #include <unity.h>
 
-#include "ExVectrDSP/body_sim_model.hpp"
+#include "../support/plant_model.hpp"
 #include "legacy_model.hpp"
 #include "safety/sim_flap_fault.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Math;
-using DSP::BodySimModel;
-using DSP::BodySimParams;
+using plant_test::PlantModel;
+using ShipSim::StarshipPlantParams;
 
 void setUp() {}
 void tearDown() {}
@@ -35,9 +35,9 @@ static constexpr float kTopNeutral = 50 * kDeg, kBottomNeutral = 40 * kDeg; // C
 // Adapters: one interface over the new model and the legacy replica.
 // ---------------------------------------------------------------------------------------------------------------
 struct NewSim {
-  BodySimModel m;
-  NewSim() : m(BodySimParams()) {}
-  explicit NewSim(const BodySimParams &p) : m(p) {}
+  PlantModel m;
+  NewSim() : m(StarshipPlantParams()) {}
+  explicit NewSim(const StarshipPlantParams &p) : m(p) {}
   const char *name() const { return "new"; }
   float dt() const { return m.params().step_s; }
   void setState(const Vector<float, 7> &a, const Vector<float, 6> &p) {
@@ -577,7 +577,7 @@ static void test_flap_steps() {
 static void test_static_flap_authority_table() {
   // Moments at belly-down terminal speed (attitude held) vs flap angle: the azimuth (tau_x), pitch (tau_y) and
   // roll (tau_z) derivatives of the controller's mixer directions u0, u1, u2 (+1 deg each).
-  BodySimModel m;
+  PlantModel m;
   const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f;
   printf("SIMAERO static moments at belly-down %.2f m/s, per +1 deg of u (N m/deg): neutral top/bottom | d tau/du0 (x) | d tau/du1 (y) | d tau/du2 (z) | tau at neutral\n", v);
   float tops[] = {50, 30, 40, 50, 60, 70};
@@ -585,9 +585,9 @@ static void test_static_flap_authority_table() {
   for (int k = 0; k < 6; k++) {
     float t = tops[k] * kDeg, b = bots[k] * kDeg;
     auto torque = [&](float tl, float tr, float bl, float br) {
-      BodySimParams p;
-      p.applyActuatorRateLimits = false;
-      BodySimModel mm(p);
+      StarshipPlantParams p;
+      p.applyActuatorModels = false;
+      PlantModel mm(p);
       mm.setAttitudeState(attOf(bellyDown()));
       mm.setPositionState({0, 0, -v, 0, 0, 100});
       mm.setFlapInput(tl, tr, bl, br);
@@ -609,9 +609,9 @@ static void test_static_flap_authority_table() {
   // Information for the owner: static pitch moment at belly-down vs the neutral angles (zero = trimmed belly-down).
   {
     auto tauY = [&](float tDeg, float bDeg) {
-      BodySimParams p;
-      p.applyActuatorRateLimits = false;
-      BodySimModel mm(p);
+      StarshipPlantParams p;
+      p.applyActuatorModels = false;
+      PlantModel mm(p);
       mm.setFlapInput(tDeg * kDeg, tDeg * kDeg, bDeg * kDeg, bDeg * kDeg);
       mm.step();
       mm.setAttitudeState(attOf(bellyDown()));
@@ -633,7 +633,7 @@ static void test_static_flap_authority_table() {
   }
   // Flat plate coefficient sanity: 0 at 0, C_N90 at 90 deg, positive in between.
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, m.flapCn(0));
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, m.params().flapCn90, m.flapCn(90 * kDeg));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, m.params().flapAero.cn90, m.flapCn(90 * kDeg));
   for (int a = 1; a < 90; a++)
     TEST_ASSERT_TRUE(m.flapCn(a * kDeg) > 0);
 }
@@ -657,12 +657,12 @@ static void test_control_axis_signs() {
   // Variants: the default model (fold toward the back, fold shield 0.7 since 2026-11-21), the same without the fold
   // shield (documents the reversal it fixes) and the fold toward the belly without shield (the rejected alternative).
   auto newTau = [&](bool belly, const float a[4], float pDeg, bool shield = true) {
-    BodySimParams p;
-    p.applyActuatorRateLimits = false;
+    StarshipPlantParams p;
+    p.applyActuatorModels = false;
     p.flapFoldTowardBelly = belly;
     if (!shield || belly)
-      p.flapFoldShieldFactor = 0.0f;
-    BodySimModel mm(p);
+      p.flapAero.foldShieldFactor = 0.0f;
+    PlantModel mm(p);
     mm.setFlapInput(a[0], a[1], a[2], a[3]);
     mm.step();
     mm.setAttitudeState(attOf(bellyDown(pDeg)));
@@ -707,15 +707,15 @@ static void test_control_axis_signs() {
   }
   // Per-flap derivation at belly-down, fold toward the back: sideways force and its tau_x when each flap extends 1 deg.
   for (int i = 0; i < 4; i++) {
-    BodySimParams p;
-    p.applyActuatorRateLimits = false;
+    StarshipPlantParams p;
+    p.applyActuatorModels = false;
     float a[4];
     flapMixer(0, 0, 0, a);
-    BodySimModel m0(p), m1(p);
+    PlantModel m0(p), m1(p);
     m0.setFlapInput(a[0], a[1], a[2], a[3]);
     a[i] -= d;
     m1.setFlapInput(a[0], a[1], a[2], a[3]);
-    BodySimModel *ms[2] = {&m0, &m1};
+    PlantModel *ms[2] = {&m0, &m1};
     for (auto *m : ms) {
       m->step();
       m->setAttitudeState(attOf(bellyDown()));
@@ -730,9 +730,9 @@ static void test_control_axis_signs() {
   }
   // Closed loop with the controller replica and the fold toward the belly (information for the owner).
   {
-    BodySimParams p;
+    StarshipPlantParams p;
     p.flapFoldTowardBelly = true;
-    p.flapFoldShieldFactor = 0.0f;
+    p.flapAero.foldShieldFactor = 0.0f;
     NewSim n(p);
     ClosedResult rb = runClosedLoop(n, "closed_pitch20_yaw20_foldbelly", 20, 20, v, 15.0f);
     printf("SIMAERO flap controller replica, fold toward the belly, start pitch +20 yaw +20 deg: pitch %.1f +- %.1f deg, belly max %.0f, az err end %.1f deg, v %.2f\n",
@@ -746,14 +746,14 @@ static void test_control_axis_signs() {
 struct AxisDeriv {
   float yaw, pitch, roll; // d tau_x/du0, d tau_y/du1, d tau_z/du2
 };
-static AxisDeriv axisDerivs(const BodySimParams &base, float t, float b, float pDeg, float v) {
+static AxisDeriv axisDerivs(const StarshipPlantParams &base, float t, float b, float pDeg, float v) {
   const float lo = 1 * kDeg, hi = 89 * kDeg, d = 1 * kDeg;
   t = t < lo ? lo : (t > hi ? hi : t);
   b = b < lo ? lo : (b > hi ? hi : b);
   auto tau = [&](float u0, float u1, float u2) {
-    BodySimParams p = base;
-    p.applyActuatorRateLimits = false;
-    BodySimModel mm(p);
+    StarshipPlantParams p = base;
+    p.applyActuatorModels = false;
+    PlantModel mm(p);
     mm.setFlapInput(t + (-u0 - u1 + u2), t + (u0 - u1 - u2), b + (u0 + u1 + u2), b + (-u0 + u1 - u2));
     mm.step();
     mm.setAttitudeState(attOf(bellyDown(pDeg)));
@@ -770,12 +770,12 @@ static void test_neutral_sweep_effective_angle() {
   // Report only (owner question 2026-11-21): where does the yaw (azimuth) response have the controller's sign
   // (+) over the neutral-angle range, with the effective aerodynamic flap angle (a_eff = smoothmax(a, 20 deg))?
   const float v = gNewTerminal > 0 ? gNewTerminal : 6.4f;
-  BodySimParams p;
+  StarshipPlantParams p;
   const float aoas[5] = {-20, -10, 0, 10, 20};
   printf("SIMAERO a_eff check: a = 0/10/20/40/50/90 deg -> a_eff = %.2f %.2f %.2f %.2f %.2f %.2f deg\n",
-         BodySimModel(p).flapAeroAngle(0) / kDeg, BodySimModel(p).flapAeroAngle(10 * kDeg) / kDeg,
-         BodySimModel(p).flapAeroAngle(20 * kDeg) / kDeg, BodySimModel(p).flapAeroAngle(40 * kDeg) / kDeg,
-         BodySimModel(p).flapAeroAngle(50 * kDeg) / kDeg, BodySimModel(p).flapAeroAngle(90 * kDeg) / kDeg);
+         PlantModel(p).flapAeroAngle(0) / kDeg, PlantModel(p).flapAeroAngle(10 * kDeg) / kDeg,
+         PlantModel(p).flapAeroAngle(20 * kDeg) / kDeg, PlantModel(p).flapAeroAngle(40 * kDeg) / kDeg,
+         PlantModel(p).flapAeroAngle(50 * kDeg) / kDeg, PlantModel(p).flapAeroAngle(90 * kDeg) / kDeg);
   const char *names[3] = {"yaw d tau_x/du0", "pitch d tau_y/du1", "roll d tau_z/du2"};
   static AxisDeriv grid[10][10][5];
   for (int i = 0; i < 10; i++)
@@ -825,10 +825,10 @@ static void test_candidate_effects_yaw_sign() {
   };
   printf("SIMAERO candidates at neutral 50/40 (N m/deg) | yaw AoA -20/-10/0/+10/+20 | pitch AoA0 | roll AoA0 | terminal m/s (factor fixed)\n");
   for (auto &c : cands) {
-    BodySimParams p;
-    p.flapSidewashGain = c.side;
-    p.flapBodyCrossflowGain = c.cross;
-    p.flapFoldShieldFactor = c.shield;
+    StarshipPlantParams p;
+    p.flapAero.sidewashGain = c.side;
+    p.flapAero.bodyCrossflowGain = c.cross;
+    p.flapAero.foldShieldFactor = c.shield;
     float y[5];
     const float aoas[5] = {-20, -10, 0, 10, 20};
     for (int k = 0; k < 5; k++)
@@ -842,8 +842,8 @@ static void test_candidate_effects_yaw_sign() {
   // The smallest shield factor that restores the sign at every AoA (0.7), recalibrated to 6.4 m/s, in the
   // flap-controller replica (information for the owner; v ~ 1/sqrt(factor), two fixed-point iterations).
   {
-    BodySimParams p;
-    p.flapFoldShieldFactor = 0.7f;
+    StarshipPlantParams p;
+    p.flapAero.foldShieldFactor = 0.7f;
     for (int it = 0; it < 3; it++) {
       NewSim s(p);
       const float vt = runTerminalHeld(s, 20.0f, kTopNeutral, kBottomNeutral);
@@ -860,21 +860,21 @@ static void test_candidate_effects_yaw_sign() {
 }
 
 static void test_flap_geometry_and_cant() {
-  BodySimParams p;
-  BodySimModel m(p);
-  const float cant = p.topFlapCantRad;
+  StarshipPlantParams p;
+  PlantModel m(p);
+  const float cant = p.flapTop.cant_rad;
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 10 * kDeg, cant);
   // Bottom flaps: lower edge 1 cm above the ship bottom, centroid about 0.115 m above it (chamfer lowers it a bit).
   Vector_F cb, nb;
   m.flapPlate(2, 0.0f, cb, nb);
-  const float zcBottom = cb(2) + p.cgFromBottom_m; // height above the bottom
+  const float zcBottom = cb(2) + p.hull.cgFromBottom_m; // height above the bottom
   printf("SIMAERO bottom flap centroid %.4f m above the bottom (%.4f from the CoM)\n", zcBottom, cb(2));
   TEST_ASSERT_FLOAT_WITHIN(0.012f, 0.115f, zcBottom);
   TEST_ASSERT_TRUE(zcBottom - p.flapBottom.bottomFromShipBottom_m < 0.5f * p.flapBottom.height_m + 1e-4f);
   // Top flap cant: compare the canted flap with an uncanted copy (angle 0 and 90 deg, both sides).
-  BodySimParams p0 = p;
-  p0.topFlapCantRad = 0.0f;
-  BodySimModel m0(p0);
+  StarshipPlantParams p0 = p;
+  p0.flapTop.cant_rad = 0.0f;
+  PlantModel m0(p0);
   const float len = p.flapTop.height_m;
   for (int i = 0; i < 2; i++) { // TL (+Y), TR (-Y)
     const float side = i == 0 ? 1.0f : -1.0f;
@@ -1069,11 +1069,11 @@ static void test_wind_frame() {
   // Steady wind 3 m/s toward West (direction 90 deg): a falling body drifts toward West only (no North component),
   // for any yaw; broadside to the wind (yaw 0: nose South) it reaches the wind speed within 20 s.
   for (float yaw : {0.0f, 90.0f, 45.0f}) {
-    BodySimParams p;
-    p.topFlapCantRad = 0.0f; // the cant tilts the flap normals axially: a crosswind then adds a small axial drift
-    p.windSpeed_mps = 3.0f;
-    p.windDirection_rad = 90 * kDeg;
-    BodySimModel m(p);
+    StarshipPlantParams p;
+    p.flapTop.cant_rad = 0.0f; // the cant tilts the flap normals axially: a crosswind then adds a small axial drift
+    p.wind.speed_mps = 3.0f;
+    p.wind.direction_rad = 90 * kDeg;
+    PlantModel m(p);
     Quat_F q = Quat_F(Vector_F{0, 0, 1}, yaw * kDeg) * bellyDown();
     m.setFlapInput(kTopNeutral, kTopNeutral, kBottomNeutral, kBottomNeutral);
     for (int i = 0; i < int(20.0f / p.step_s); i++) {
@@ -1097,14 +1097,14 @@ static void test_wind_frame() {
     }
   }
   // Off by default
-  BodySimModel m;
+  PlantModel m;
   TEST_ASSERT_EQUAL_FLOAT(0.0f, m.windWorld().magnitude());
 }
 
 static void test_gusts() {
   // Off by default.
   {
-    BodySimModel m;
+    PlantModel m;
     float a, c;
     m.gustAt(12.3, a, c);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, a);
@@ -1114,23 +1114,23 @@ static void test_gusts() {
   }
   // Clamping and non-finite input.
   {
-    BodySimModel m;
+    PlantModel m;
     m.setGust(50.0f, 0.01f, 7);
-    TEST_ASSERT_EQUAL_FLOAT(10.0f, m.params().gustStrength_mps);
-    TEST_ASSERT_EQUAL_FLOAT(0.5f, m.params().gustPeriod_s);
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, m.params().wind.gustStrength_mps);
+    TEST_ASSERT_EQUAL_FLOAT(0.5f, m.params().wind.gustPeriod_s);
     m.setGust(-1.0f, 100.0f, 7);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().gustStrength_mps);
-    TEST_ASSERT_EQUAL_FLOAT(30.0f, m.params().gustPeriod_s);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().wind.gustStrength_mps);
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, m.params().wind.gustPeriod_s);
     m.setGust(NAN, NAN, 8);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().gustStrength_mps);
-    TEST_ASSERT_EQUAL_FLOAT(30.0f, m.params().gustPeriod_s);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().wind.gustStrength_mps);
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, m.params().wind.gustPeriod_s);
     m.clearWind();
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().gustStrength_mps);
-    TEST_ASSERT_EQUAL_FLOAT(5.0f, m.params().gustPeriod_s);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().windSpeed_mps);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().wind.gustStrength_mps);
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, m.params().wind.gustPeriod_s);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, m.params().wind.speed_mps);
   }
   // Determinism and seed dependence; statistics over 1200 s at 0.1 s sampling.
-  BodySimModel a, b, c;
+  PlantModel a, b, c;
   a.setGust(4.0f, 3.0f, 42);
   b.setGust(4.0f, 3.0f, 42);
   c.setGust(4.0f, 3.0f, 43);
@@ -1162,11 +1162,11 @@ static void test_gusts() {
   TEST_ASSERT_FLOAT_WITHIN(0.3f, 0.0f, float(sumMean / n));
   // Effect direction: mean wind toward West (90 deg), gusts along it: the horizontal wind vector stays on the
   // West axis for spread 0, and its Y component equals mean + gust.
-  BodySimParams p;
-  p.windSpeed_mps = 3.0f;
-  p.windDirection_rad = 90 * kDeg;
-  p.gustSpread = 0.0f;
-  BodySimModel w(p);
+  StarshipPlantParams p;
+  p.wind.speed_mps = 3.0f;
+  p.wind.direction_rad = 90 * kDeg;
+  p.wind.gustSpread = 0.0f;
+  PlantModel w(p);
   w.setGust(2.0f, 2.0f, 5);
   bool varies = false;
   for (int i = 0; i < 500; i++) { // advance the clock with steps
@@ -1180,14 +1180,14 @@ static void test_gusts() {
   }
   TEST_ASSERT_TRUE(varies);
   // A falling, held-attitude body picks up the gusts: horizontal speed varies around the mean wind.
-  BodySimParams p2;
-  p2.windSpeed_mps = 3.0f;
-  p2.windDirection_rad = 90 * kDeg;
-  BodySimModel f(p2), g(p2);
+  StarshipPlantParams p2;
+  p2.wind.speed_mps = 3.0f;
+  p2.wind.direction_rad = 90 * kDeg;
+  PlantModel f(p2), g(p2);
   f.setGust(3.0f, 2.0f, 9);
   float minV = 1e9f, maxV = -1e9f, gMin = 1e9f, gMax = -1e9f;
   for (int i = 0; i < int(30.0f / p2.step_s); i++) {
-    for (BodySimModel *mm : {&f, &g}) {
+    for (PlantModel *mm : {&f, &g}) {
       auto ps = mm->positionState();
       if (i == 0)
         ps = {0, 0, 0, 0, 0, 5000};
@@ -1210,10 +1210,10 @@ static void test_gusts() {
 }
 
 static void test_ground_contact_holds_in_wind() {
-  BodySimParams p;
-  p.windSpeed_mps = 10.0f;
-  p.windDirection_rad = 1.0f;
-  BodySimModel m(p);
+  StarshipPlantParams p;
+  p.wind.speed_mps = 10.0f;
+  p.wind.direction_rad = 1.0f;
+  PlantModel m(p);
   m.setAttitudeState(attOf(Quat_F(Vector_F{0, 1, 0}, 3 * kDeg)));
   m.setPositionState({0, 0, 0, 1.0f, 2.0f, 0});
   for (int i = 0; i < 5000; i++)
@@ -1228,7 +1228,7 @@ static void test_ground_contact_holds_in_wind() {
 
 static void test_determinism() {
   auto run = [](Vector<float, 7> &a, Vector<float, 6> &p) {
-    BodySimModel m;
+    PlantModel m;
     m.setAttitudeState(attOf(Quat_F(Vector_F{0, 1, 0}, 7 * kDeg)));
     m.setPositionState({0, 0, 0, 0, 0, 500});
     FlapCtrlReplica c;
@@ -1254,7 +1254,7 @@ static void test_determinism() {
 }
 
 static void test_advance_bounded_and_fixed_step() {
-  BodySimModel m;
+  PlantModel m;
   m.setPositionState({0, 0, 0, 0, 0, 1000});
   TEST_ASSERT_EQUAL_INT(5, m.advance(0.010f));             // 10 ms = 5 fixed steps of 2 ms
   TEST_ASSERT_EQUAL_INT(25, m.advance(120.0f));            // a 2 min pause integrates only maxAdvance (50 ms)
@@ -1262,7 +1262,7 @@ static void test_advance_bounded_and_fixed_step() {
   TEST_ASSERT_EQUAL_INT(0, m.advance(NAN));
   TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.060, m.time());
   // Same total time in different slices gives the same state as fixed steps.
-  BodySimModel a, b;
+  PlantModel a, b;
   a.setPositionState({0, 0, 0, 0, 0, 1000});
   b.setPositionState({0, 0, 0, 0, 0, 1000});
   for (int i = 0; i < 100; i++)
@@ -1273,9 +1273,9 @@ static void test_advance_bounded_and_fixed_step() {
 }
 
 static void test_torque_free_spin_conserves_momentum() {
-  BodySimParams p;
-  p.airDensity_kgm3 = 0.0f; // vacuum
-  BodySimModel m(p);
+  StarshipPlantParams p;
+  p.air.rho_kgm3 = 0.0f; // vacuum
+  PlantModel m(p);
   m.setAttitudeState({0.5f, 3.0f, 2.0f, 1, 0, 0, 0});
   m.setPositionState({0, 0, 50, 0, 0, 10000}); // keep away from the ground
   auto L = [&]() {
@@ -1295,7 +1295,7 @@ static void test_torque_free_spin_conserves_momentum() {
 }
 
 static void test_thrust_gating_and_nan_inputs() {
-  BodySimModel m;
+  PlantModel m;
   m.setPositionState({0, 0, 0, 0, 0, 100});
   m.setThrust(Vector_F{0, 0, 10}, 0.05f, false); // disabled: no force, no roll torque (review F13)
   for (int i = 0; i < 100; i++)
@@ -1311,9 +1311,9 @@ static void test_thrust_gating_and_nan_inputs() {
   for (int i = 0; i < 6; i++)
     TEST_ASSERT_TRUE(isfinite(m.positionState()(i)));
   // Cone clamp keeps the vector toward +Z (review F14): 10 deg request -> 3 deg.
-  BodySimParams p;
-  p.applyActuatorRateLimits = false;
-  BodySimModel c(p);
+  StarshipPlantParams p;
+  p.applyActuatorModels = false;
+  PlantModel c(p);
   c.setThrust(Vector_F{sinf(10 * kDeg) * 10, sinf(10 * kDeg) * 10, 10}, 0, true);
   c.step();
   TEST_ASSERT_TRUE(fabsf(c.tvcAngleX()) < 3.01f * kDeg && fabsf(c.tvcAngleY()) < 3.01f * kDeg);

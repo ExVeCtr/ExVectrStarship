@@ -1,6 +1,6 @@
 // Descent (belly-down freefall) control study: pio test -e native -f test_descent_guidance -v | grep DESCENT
 //
-// Closed loop: DSP::BodySimModel (lib/ExVectrDSP, flap servos 300 deg/s, wind and seeded gusts) + estimator noise +
+// Closed loop: the StarshipPlantHarness (src/sim, via test/support/plant_model.hpp; flap servos 300 deg/s, wind and seeded gusts) + estimator noise +
 // a flap controller at 50 Hz, from the kick end at 120 m down to the freefall stop trigger (MissionFreefall formula:
 // z < 0.5 vz^2 / (14/1.1 - 9.81) + 20). Target (0,0). Strategies:
 //   L  legacy: FlapModeObserverTask guidance (10 Hz) + ControlAttitudeFlaps Stabilize (verbatim replica, 50/40 deg)
@@ -22,14 +22,14 @@
 #include <algorithm>
 #include <vector>
 
-#include "ExVectrDSP/body_sim_model.hpp"
+#include "../support/plant_model.hpp"
 #include "ExVectrControl/starship/descent_guidance.hpp"
 #include "ExVectrControl/starship/flap_descent_law.hpp"
 
 using namespace VCTR;
 using namespace VCTR::Math;
-using DSP::BodySimModel;
-using DSP::BodySimParams;
+using plant_test::PlantModel;
+using ShipSim::StarshipPlantParams;
 namespace D = VCTR::CTRL::descent;
 
 void setUp() {}
@@ -186,14 +186,14 @@ struct Metrics {
 static bool isLegacyLaw(Strat s) { return s == Strat::L || s == Strat::A; }
 
 static Metrics runScenario(Strat st, const Scenario &sc, bool trace = false) {
-  BodySimParams p;
-  p.applyActuatorRateLimits = true;
+  StarshipPlantParams p;
+  p.applyActuatorModels = true;
   if (!sc.shield) {
-    p.flapFoldShieldFactor = 0;
+    p.flapAero.foldShieldFactor = 0;
     p.aeroCalibration = 4.00f;
   }
   p.aeroCalibration *= sc.aeroScale;
-  BodySimModel m(p);
+  PlantModel m(p);
   Rng rng(sc.seed);
   float beta = rng.uni() * 2 * kPi; // bearing from the vehicle to the target
   if (isfinite(sc.betaDeg))
@@ -491,12 +491,12 @@ static void test_reproduce_legacy() {
 /// Attitude law alone: heading steps of 90 and 175 deg at zero glide (split 0), calm, no noise, with and without
 /// the fold shield. Prints the heading response (deg) and the peak belly angle.
 static void headingStep(bool shield, float stepDeg, float split, bool print) {
-  BodySimParams p;
+  StarshipPlantParams p;
   if (!shield) {
-    p.flapFoldShieldFactor = 0;
+    p.flapAero.foldShieldFactor = 0;
     p.aeroCalibration = 4.00f;
   }
-  BodySimModel m(p);
+  PlantModel m(p);
   m.setAttitudeState(attOf(bellyDown(0, 0)));
   m.setPositionState({0, 0, -6.4f, 0, 0, 500});
   D::FlapDescentLawParams lp;
@@ -540,13 +540,13 @@ static void test_glide_map() {
            lp.neutralBottom_rad / kDeg);
     const float sps[] = {-83, -80, -76, -72, -68, -64, -60, -50, -40, -30, -20, -12, -4, 0, 4, 8, 12};
     for (float sp : sps) {
-      BodySimParams p;
-      p.applyActuatorRateLimits = false;
+      StarshipPlantParams p;
+      p.applyActuatorModels = false;
       if (!sh) {
-        p.flapFoldShieldFactor = 0;
+        p.flapAero.foldShieldFactor = 0;
         p.aeroCalibration = 4.00f;
       }
-      BodySimModel m(p);
+      PlantModel m(p);
       const float t = D::clampf(lp.neutralTop_rad - sp * kDeg, 15 * kDeg, 90 * kDeg);
       const float b = D::clampf(lp.neutralBottom_rad + D::FlapDescentLaw::bottomSplit(lp, sp * kDeg), 15 * kDeg, 90 * kDeg);
       m.setFlapInput(t, t, b, b);
@@ -578,13 +578,13 @@ static void flapJacobian(float t, float b, bool shield, float pitchDeg) {
   for (int f = 0; f < 4; f++) {
     float tq[2][3];
     for (int sgn = 0; sgn < 2; sgn++) {
-      BodySimParams p;
-      p.applyActuatorRateLimits = false;
+      StarshipPlantParams p;
+      p.applyActuatorModels = false;
       if (!shield) {
-        p.flapFoldShieldFactor = 0;
+        p.flapAero.foldShieldFactor = 0;
         p.aeroCalibration = 4.0f;
       }
-      BodySimModel mm(p);
+      PlantModel mm(p);
       float a[4] = {t, t, b, b};
       a[f] += (sgn ? 1 : -1) * 2 * kDeg;
       mm.setFlapInput(a[0], a[1], a[2], a[3]);
@@ -607,13 +607,13 @@ static void yawAuthority(float t, float b, bool shield) {
   for (float aoa : {-30.f, -15.f, 0.f, 15.f, 30.f}) {
     float tq[2][3];
     for (int sgn = 0; sgn < 2; sgn++) {
-      BodySimParams p;
-      p.applyActuatorRateLimits = false;
+      StarshipPlantParams p;
+      p.applyActuatorModels = false;
       if (!shield) {
-        p.flapFoldShieldFactor = 0;
+        p.flapAero.foldShieldFactor = 0;
         p.aeroCalibration = 4.0f;
       }
-      BodySimModel mm(p);
+      PlantModel mm(p);
       const float d = (sgn ? 1 : -1) * 2 * kDeg;
       mm.setFlapInput(t * kDeg, t * kDeg, b * kDeg + d, b * kDeg - d);
       mm.step();
