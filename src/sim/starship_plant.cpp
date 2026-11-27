@@ -36,6 +36,24 @@ AeroConfig makeAeroConfig(const StarshipPlantParams &p) {
   return a;
 }
 
+AeroConfig makeScaledAeroConfig(const StarshipPlantParams &p, const AeroScales &s) {
+  StarshipPlantParams q = p;
+  q.hullAero.cdCrossflow *= s.hullCrossflow;
+  q.hullAero.potentialFactor *= s.hullPotential;
+  q.hullAero.cdAxialTailFirst *= s.hullAxial;
+  q.hullAero.cdAxialNoseFirst *= s.hullAxial;
+  q.flapTop.effectiveness *= s.flapTop;
+  q.flapBottom.effectiveness *= s.flapBottom;
+  q.aeroCalibration *= s.global;
+  return makeAeroConfig(q);
+}
+
+AeroConfig makeReducedAeroConfig(const StarshipPlantParams &p, int strips, const AeroScales &s) {
+  StarshipPlantParams q = p;
+  q.hull.strips = strips;
+  return makeScaledAeroConfig(q, s);
+}
+
 template <int K> typename StarshipPlantT<K>::Config StarshipPlantT<K>::configure(const Params &p) {
   Config c;
   c.p = p;
