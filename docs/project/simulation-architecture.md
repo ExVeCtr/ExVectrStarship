@@ -766,9 +766,15 @@ Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-..
 | Step | State | Branch | Commits |
 |---|---|---|---|
 | S1 | done (host only) | `feature/sim-s1-dynamics-skeleton` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
+| S2 | done (host only) | `feature/sim-s2-building-blocks` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
 
 **S1 (library skeleton).**
 - `lib/ExVectrDynamics` created as a local git repository (no remote, no `.gitmodules` entry yet, see [libs/ExVectrDynamics.md](../libs/ExVectrDynamics.md)).
 - Contents: `types`, `rigid_body` (`semiImplicitEulerStep`, `rigidBodyDeriv`, `addForce`/`addTorque`), `model` (`is_model`), `integrators` (`SemiImplicitEuler`, `Rk4`), `sim` (`Sim<M,I>`).
 - Test `test/test_dyn_rigid_body`: 1e5 random steps (random sums, inertia with products, dt including 0/negative/NaN/inf) bit-identical (memcmp after every step) against the frozen `PhysicsBodySim` in `test/frozen/legacy_physics_bodysim.hpp`; `is_model` positive and negative (static_assert); snapshot/restore; `advance` rule; RK4 against an analytic solution.
 - Deviations from the sketch: `ForceSums` also has `torqueWorld` (needed for a bit-exact port); no global `noProbe()` (a local `NoProbe` is used); the model concept needs `stepSize_s`/`maxAdvance_s`, and `forces(...)` takes the `Output&` (so diagnostics are filled without a second evaluation); the frozen copy omits `simulateForTime` (needs ExVectrCore).
+
+**S2 (building blocks).**
+- Added to `lib/ExVectrDynamics`: `atmosphere`, `wind`, `slender_body`, `flat_plate`, `tvc`, `servo`, `motor`, `ground_contact`, all bit-exact ports (same operations, same order).
+- Test `test/test_dyn_blocks` against the frozen `test/frozen/legacy_body_sim_model.hpp` (a whole-class frozen copy so each legacy member function can be called individually; the copy is header-only and has its `private:` opened for the tests).
+- Deviations from the design table: no ISA atmosphere (constant density, as today); `thrustWrench` is not a function (the plant adds thrust force and roll torque through `addForce`/`addTorque` so the torque sum keeps the legacy order); `flatPlateFlap` returns the force and the centre of pressure (the caller forms `cp x F` and accumulates) and the plate frame (`flapFrame`) stays vehicle geometry for S3; the hull block takes `rho` and the calibration separately and computes `k = 0.5 rho cal` itself, as the legacy code did; `motor` is new code with no legacy counterpart (tested for identity by default).
