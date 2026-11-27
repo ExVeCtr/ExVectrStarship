@@ -31,3 +31,7 @@
 [submodule "lib/ExVectrPackets"]
 	path = lib/ExVectrPackets
 	url = https://github.com/ExVeCtr/ExVectrPackets.git
+[submodule "lib/ExVectrDynamics"]
+	path = lib/ExVectrDynamics
+	url = https://github.com/ExVeCtr/ExVectrDynamics.git
+	branch = Development
