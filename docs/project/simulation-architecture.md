@@ -624,7 +624,7 @@ for (int k = 0; k < 500; ++k) { lo.step(u); hi.step(u); }                  // 1 
 const float dz = hi.state().body.pos(5) - lo.state().body.pos(5);          // spread of the altitude prediction
 ```
 
-### 6.3 Cost (estimate from operation counts; the S6 timing build is ready, the cycle table is NOT measured yet, see section 10)
+### 6.3 Cost (estimate from operation counts, then measured on the Teensy on 2026-11-27)
 
 | Part (one evaluation) | Operations | Cycles (estimate) |
 |---|---|---|
@@ -635,6 +635,20 @@ const float dz = hi.state().body.pos(5) - lo.state().body.pos(5);          // sp
 | **Aero total** | | **≈ 5800 (≈ 10 µs)** |
 | Plant step extra: rigid body (2 quaternion rotations, 3 × 3 products, axis-angle sin/cos, normalisation), actuators | | ≈ 1500 |
 | Gusts (16 double `sin`, only when the strength is above 0) | | ≈ 3000-6000 |
+
+**Measured (Teensy 4.0, 600 MHz, DWT cycle counter, `teensy40_aerotiming`, 800 calls per case over 16 input points, interrupts off per call, code in flash as in flight):**
+
+| Case | min | mean | max (cycles) | mean µs | max µs |
+|---|---|---|---|---|---|
+| `starshipAero`, 24 strips | 9026 | 10267 | 10857 | 17.11 | 18.10 |
+| `starshipAero`, 8 strips | 7946 | 8996 | 9573 | 14.99 | 15.95 |
+| `StarshipPlant::step`, 24 strips | 12162 | 13357 | 14018 | 22.26 | 23.36 |
+| `StarshipPlant::step`, 8 strips | 11086 | 12086 | 12734 | 20.14 | 21.22 |
+| `StarshipPlant::step`, 24 strips + gusts | 16691 | 17107 | 17734 | 28.51 | 29.56 |
+
+Findings: the aero evaluation costs about 1.7 times the estimate (17 µs, not 10 µs; about 10300 cycles against 5800), the plant step about 22 µs without gusts (estimate 12-14 µs) and 28.5 µs with gusts. The reduced 8-strip config saves only 12 % of the aero cost (15.0 µs against 17.1 µs): the cost is dominated by the four flaps' transcendental functions, not by the hull strips, so the strip count is not the lever. Consequence for the stage 3 controller and any rollout: budget about 15-17 µs per aero evaluation (not 9-10 µs); caching the flap frame sines and cosines per flap angle (below) is the first optimisation to try if the evaluation count per cycle matters.
+
+Original estimate, kept for reference:
 
 - **Plant step:** ≈ 12-14 µs without gusts, ≈ 20-25 µs with them.
 - **Today's simulation load:** 5 steps per 10 ms run, ≈ 0.6-1.3 % CPU.
