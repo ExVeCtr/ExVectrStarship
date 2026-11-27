@@ -33,7 +33,7 @@ flight-software/            (repo ExVectr-Testing; lives in ~/Development/ExVect
 │   ├── ExVectr*/             The ExVectr framework, one git submodule per library
 │   └── Adafruit_*/           Display libraries (SSD1306 OLED), committed as plain folders
 ├── test/                     `frozen/` = frozen verbatim copies of the legacy simulator for equivalence tests (never edit). Host tests of src/comms, src/safety, src/calibration, the GNSS config sequencer and the body simulator model (pio test -e native)
-├── tools/                    Bench tools (UART pin scan, bench_vehicle_usb.py temporary USB session)
+├── tools/                    Bench tools (UART pin scan, `aerotiming/` DWT timing firmware of the aero model (env `teensy40_aerotiming`), bench_vehicle_usb.py temporary USB session)
 ├── include/                  PlatformIO default, unused
 └── utils/                    Helper scripts
 ```

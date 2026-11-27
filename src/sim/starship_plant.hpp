@@ -63,6 +63,17 @@ struct StarshipPlantParams {
 /// controller's own "belief" config (decision D7).
 SIM_COLD AeroConfig makeAeroConfig(const StarshipPlantParams &p);
 
+/// makeAeroConfig with the aero coefficients multiplied by `s` (calibration * s.global, hull Cdc * s.hullCrossflow,
+/// potential factor * s.hullPotential, both axial Cd * s.hullAxial, pair effectiveness * s.flapTop / s.flapBottom).
+/// Default scales give a config that is bit-identical to makeAeroConfig(p). For a controller's belief config or a
+/// parameter variant; the plant's own config is built by makeAeroConfig and is unchanged.
+SIM_COLD AeroConfig makeScaledAeroConfig(const StarshipPlantParams &p, const AeroScales &s);
+
+/// Reduced-cost aero config for controllers and observers (rollouts): the same parameters and scales with `strips`
+/// hull strips (8 instead of 24). Validated in test/test_aero_reduced; see simulation-architecture.md section 10.
+SIM_COLD AeroConfig makeReducedAeroConfig(const StarshipPlantParams &p, int strips = 8,
+                                          const AeroScales &s = AeroScales());
+
 template <int kDelayCap> // 1 on the vehicle (no dead time), 128 in the host harness
 struct StarshipPlantT {
   using Params = StarshipPlantParams;

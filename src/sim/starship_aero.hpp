@@ -34,6 +34,19 @@ struct FlapPairGeometry {
   float cant_rad;               ///< Inward cant of the pair about the horizontal line through its lower hinge point.
 };
 
+/// Multiplicative scale factors on the aerodynamic coefficients (calibration and robustness knobs, simulation
+/// architecture section 6.1). All default to 1.0, which is exact in IEEE arithmetic: default scales leave every
+/// result bit-identical. They are applied once when a config is built (makeScaledAeroConfig in starship_plant.hpp),
+/// never inside starshipAero. The plant's own config (makeAeroConfig, `aeroCalibration`) is unchanged.
+struct AeroScales {
+  float global = 1.0f;         ///< On every aero force and moment, on top of StarshipPlantParams::aeroCalibration (4.64).
+  float hullCrossflow = 1.0f;  ///< Multiplies the hull crossflow drag coefficient (Cdc).
+  float hullPotential = 1.0f;  ///< Multiplies the nose potential normal force (the ascent moment).
+  float hullAxial = 1.0f;      ///< Multiplies both axial drag coefficients.
+  float flapTop = 1.0f;        ///< Multiplies the effectiveness of TL, TR.
+  float flapBottom = 1.0f;     ///< Multiplies the effectiveness of BL, BR.
+};
+
 /// Everything starshipAero needs (read-only, shareable). Built by makeAeroConfig(StarshipPlantParams).
 struct AeroConfig {
   Dyn::SlenderBodyConfig hull;
@@ -41,7 +54,7 @@ struct AeroConfig {
   FlapPairGeometry pair[2]; ///< [0] top (TL, TR), [1] bottom (BL, BR).
   float hingeRadius_m;
   bool foldTowardBelly;
-  float calibration;        ///< Global scale on every aerodynamic force and moment.
+  float calibration;        ///< Global scale on every aerodynamic force and moment (aeroCalibration * scales.global).
   // Derived per pair:
   float area_m2[2];         ///< Flap area (rectangle minus the chamfer triangle).
   float sc_m[2];            ///< Area centroid distance from the lower edge along the hinge line.
@@ -60,7 +73,7 @@ struct AeroOutput {
   Dyn::Wrench hull, flaps; ///< Split of the total.
   Vec3 flapForce[4];
   float alpha_rad;     ///< Hull angle of attack (0 axial, pi/2 broadside).
-  bool valid;          ///< False if an input was non-finite: then every output is 0.
+  bool valid;          ///< False if an input was non-finite: then every output is 0 (callers must check it).
 };
 
 /// Pure, stateless. Equal to BodySimModel::computeAero bit for bit for finite inputs.

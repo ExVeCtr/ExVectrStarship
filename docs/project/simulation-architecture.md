@@ -596,6 +596,8 @@ Vec3 airVelocityBody(const Math::Quat_F &qBodyToWorld, const Vec3 &vWorld, const
 - **Derivatives:** central differences (2 evaluations per input dimension) are enough for observers and linearisation.
   Analytic Jacobians are not designed here.
 
+**As built (S6).** `AeroScales` has `global` defaulting to **1.0** (a multiplier on top of `aeroCalibration` 4.64, not the calibration itself). It is applied when a config is built: `makeScaledAeroConfig(params, scales)`; the plant's own `makeAeroConfig` and `StarshipPlantParams` are unchanged, because any change to them alters the flight image (the sim is linked since S4) and S6 had to keep it byte-identical. `makeReducedAeroConfig(params, strips = 8, scales)` gives the reduced config. See section 10 (S6).
+
 ### 6.2 Worked example
 
 ```cpp
@@ -622,7 +624,7 @@ for (int k = 0; k < 500; ++k) { lo.step(u); hi.step(u); }                  // 1 
 const float dz = hi.state().body.pos(5) - lo.state().body.pos(5);          // spread of the altitude prediction
 ```
 
-### 6.3 Cost (estimate from operation counts; measure in S6 with the DWT cycle counter)
+### 6.3 Cost (estimate from operation counts; the S6 timing build is ready, the cycle table is NOT measured yet, see section 10)
 
 | Part (one evaluation) | Operations | Cycles (estimate) |
 |---|---|---|
@@ -810,6 +812,12 @@ Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-..
 - Deleted: ExVectrDSP `body_sim_model.*`, `body_simulator.*`; ExVectrControl `physics_bodysim.*`; the two source lines of them in `[env:native]`. The frozen copies `test/frozen/legacy_body_sim_model.hpp` and `legacy_physics_bodysim.hpp` stay and `test_sim_equivalence`, `test_sim_task`, `test_dyn_*` use only them (D4).
 - The DSP/Control include cycle is gone (checked by grep over `lib/`: nothing in ExVectrDSP, ExVectrDynamics or ExVectrMath includes `ExVectrControl/...`; Control includes only `ExVectrDSP/value_covariance.hpp`). The Starship-specific `ExVectrControl/starship/` code still lives in the generic library.
 - Docs updated: codebase-structure.md, libs/ExVectrDSP.md, libs/ExVectrControl.md, libs/ExVectrDynamics.md, project/overview.md, README.md, hardware-and-drivers.md, missions.md. The simulator model description in ExVectrDSP.md ("Body simulator model") and its Known issues rows are kept (they still describe `StarshipPlant`), with a note that file references point to removed code.
+
+**S6 (aero API).**
+- `src/sim/starship_aero.hpp`: public `AeroScales` (documented), `valid` documented (callers check it). `src/sim/starship_plant.*`: `makeScaledAeroConfig`, `makeReducedAeroConfig` (new functions; `makeAeroConfig`, `StarshipPlantParams`, the variants and `Config` are untouched). Deviation from the design text: no `AeroScales` member in the plant params and `global` is 1.0, to keep the flight image byte-identical (checked: `cmp` of `firmware.hex` against the pre-S6 hex, identical; RAM1 free 160512 B, same as the baseline).
+- Tests: `test/test_aero_api` (standalone `starshipAero` equals `StarshipPlant::evalSums` and the step probe bit for bit over 300 random states with wind and gusts; default scales bit-identical; scales act as documented; `valid` flag; reduced config). `test/test_aero_reduced` (`-v | grep AEROREDUCED`).
+- **Reduced model validation (D7), 8 strips against 24, uniform strip placement (the library places strips uniformly; no tuning tried):** envelope airspeed 0.5-15 m/s (7), alpha 0-180 deg in 15 deg steps, 4 azimuths, 6 flap patterns (0, 0.5, 1.0, 90 deg, two mixed), 3 body-rate sets. Error relative to the peak 24-strip magnitude at the same airspeed: force 1.59 %, moment 2.78 % (limits 5 % and 10 %): **passes, D7 keeps 8 strips for rollouts**. Pointwise relative error over points above 10 % of the peak: force 10.2 %, moment 20.5 % (worst cases are small moments near zero crossings). Other counts: 4 strips 6.9 % / 11.3 % (fails), 6: 3.1 % / 5.2 %, 12: 0.6 % / 1.1 % (pointwise 3.9 % / 7.8 %), 16: 0.25 % / 0.44 %.
+- **Timing build (bench only, not flashed, not measured):** `[env:teensy40_aerotiming]`, `tools/aerotiming/aerotiming.cpp`. It times `starshipAero` (24 and 8 strips) and `StarshipPlant::step` (24, 8, 24 + gusts) with `ARM_DWT_CYCCNT`, 800 calls per case over 16 input points, interrupts off per call, code in flash as in flight (`SIM_COLD`), and prints min/mean/max/first-call cycles and microseconds over USB serial every 3 s. Build: `pio run -e teensy40_aerotiming` (RAM1 free 447840 B). Flash (owner approval needed): `pio run -e teensy40_aerotiming -t upload`, then read the serial port at 115200. Afterwards `pio run -e teensy40 -t upload` restores flight firmware. The measured table replaces section 6.3 and 5.5 once run.
 
 ### Hashes
 
