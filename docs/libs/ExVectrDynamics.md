@@ -1,6 +1,6 @@
 # ExVectrDynamics
 
-> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1 and S2 done (building blocks, host tests); S3 adds the Starship plant in flight-software `src/sim/`.
+> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1 and S2 done (building blocks, host tests); S3 (flight-software `src/sim/`: `StarshipPlantT`, `starshipAero`, parameter sets, host golden test). Nothing is linked into the firmware yet (S4).
 
 ## Purpose & scope
 
@@ -34,6 +34,13 @@
 
 Model concept: see the comment block in `model.hpp` (types `Params, Config, State, Input, Output`, functions `configure, init, stepSize_s, maxAdvance_s, step`; Rk4 additionally `bodyParams, time_s, beginStep, forces, endStep`).
 
+## Ship code that uses it (flight-software `src/sim/`, S3)
+
+- `starship_aero.hpp/.cpp`: `AeroConfig`, `AeroInput/Output`, `starshipAero(cfg, in, out)` (pure, stateless, `valid=false` and zeros for non-finite input), `airVelocityBody`, `flapFrame`.
+- `starship_plant.hpp/.cpp`: `StarshipPlantParams` (defaults identical to `BodySimParams`), `StarshipPlantT<kDelayCap>` with `StarshipPlant` (cap 1, vehicle) and `StarshipPlantHarness` (cap 128), `makeAeroConfig`. Explicitly instantiated in the .cpp (one instantiation per variant).
+- `starship_param_sets.hpp`: `kVariants` (nominal, aero x0.7, x1.3, geometry) and `makeParams`.
+- The plant takes its inputs inside `step` (clamped into the held state). A caller that wants the legacy "last valid value is kept between calls" behaviour for several `set...` calls between two steps must hold the last valid value itself (the vehicle adapter in S4 does, as `BodySimulator::update` does).
+
 ## Behaviour notes
 
 - `Sim::step(u, probe)` is a template over the probe type; `Sim::step(u)` uses a local `NoProbe` (no global instance, deviation from the sketch's `noProbe()`).
@@ -44,6 +51,7 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 
 Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
 - `pio test -e native -f test_dyn_rigid_body` (S1): `semiImplicitEulerStep` against the frozen `PhysicsBodySim` (1e5 random steps), `is_model`, `Sim`, RK4.
+- `pio test -e native -f test_sim_equivalence` (S3, flight-software `src/sim`): the plant against the frozen `BodySimModel`, scenarios E1-E8 plus the vehicle variant, random parameter sets, the standalone aero function, parameter variants side by side, RK4 convergence.
 - `pio test -e native -f test_dyn_blocks` (S2): every block against the frozen `BodySimModel` (`test/frozen/legacy_body_sim_model.hpp`, verbatim except namespace, `inline` and `private:` opened to `public:`): wind/gust tables and series, hull aero (legacy total with the flap effectiveness set to 0), `flatPlateFlap` with random geometry and candidate effects, `tvcClamp`, servo + TVC slew sequences (dead time, lag, rate limits, NaN inputs, capacity 128 and 1), ground contact. Hull and flat plate comparisons treat +0 and -0 as equal where the legacy value is a sum that starts from zero.
 
 ## Repository state (TODO for the main session)
@@ -55,4 +63,4 @@ Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
 
 | ID | Severity | Description |
 |---|---|---|
-| (none yet) | | |
+| (none) | | No bug was found in the legacy code that these ports reproduce; observations are listed in simulation-architecture.md section 10. |
