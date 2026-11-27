@@ -466,7 +466,7 @@ void test_pack_calib_state() {
 void test_vehicle_status_home_and_calib() {
   TelemetrySnapshot s = sample();
   auto p = roundTrip(makeVehicleStatus(s));
-  TEST_ASSERT_EQUAL_UINT(38, Packets::VehicleStatus::kMaxSize); // +2: cmd_session (GS control)
+  TEST_ASSERT_EQUAL_UINT(39, Packets::VehicleStatus::kMaxSize); // +1: profile_selected (after +2 cmd_session)
   TEST_ASSERT_EQUAL_UINT8(0, p.home_epoch); // no position reference yet
   TEST_ASSERT_EQUAL_HEX8(0, p.calib_state);
   s.homeEpoch = 7;
@@ -511,6 +511,8 @@ void test_cmd_telemetry_fields_and_cmd_applied() {
   auto p = roundTrip(makeVehicleStatus(s));
   TEST_ASSERT_EQUAL_UINT8(1, static_cast<uint8_t>(p.ctrl_source)); // GS
   TEST_ASSERT_EQUAL_UINT16(0xBEEF, p.cmd_session);
+  TEST_ASSERT_EQUAL_UINT8(2, p.profile_selected);  // follows the accepted CMD_STATE profile (= CMD_APPLIED.profile)
+  TEST_ASSERT_EQUAL_UINT8(255, p.mission_profile); // the latched profile is untouched by the fill
   TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.25f, p.rc_age);
   const uint16_t want = Packets::VehicleStatus::kCtrlFlagsUsbFresh | Packets::VehicleStatus::kCtrlFlagsUartFresh |
                         Packets::VehicleStatus::kCtrlFlagsSourceLatched | Packets::VehicleStatus::kCtrlFlagsGsFailsafeReq;
@@ -545,6 +547,7 @@ void test_cmd_telemetry_fields_and_cmd_applied() {
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(p.ctrl_source));
   TEST_ASSERT_TRUE(isnan(p.rc_age));
   TEST_ASSERT_EQUAL_UINT16(0, p.cmd_session);
+  TEST_ASSERT_EQUAL_UINT8(255, p.profile_selected); // no CMD_STATE accepted yet
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.go));
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.motors));
   TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(a.vehicle_mode)); // REAL
@@ -560,6 +563,7 @@ void test_vehicle_status_t9b_none_values() {
   TEST_ASSERT_EQUAL_UINT8(0, p.go_refusal);
   TEST_ASSERT_EQUAL_HEX8(0, p.degraded_bits);
   TEST_ASSERT_EQUAL_UINT8(255, p.mission_profile);
+  TEST_ASSERT_EQUAL_UINT8(255, p.profile_selected);
   TEST_ASSERT_EQUAL_UINT8(0, p.rc_rejected);
   TEST_ASSERT_EQUAL_UINT8(12, static_cast<uint8_t>(Packets::RequestAction::kZeroEstimators));
 }
@@ -1005,7 +1009,7 @@ void test_mission_setpoint_q_encoding() {
 
 void test_packet_sizes_fit_budget() {
   // The air set must stay small (design 3.5.6 / telemetry-sets.md)
-  TEST_ASSERT_EQUAL_UINT(38, Packets::VehicleStatus::kMaxSize); // +2: cmd_session (GS control)
+  TEST_ASSERT_EQUAL_UINT(39, Packets::VehicleStatus::kMaxSize); // +1: profile_selected (after +2 cmd_session)
   TEST_ASSERT_EQUAL_UINT(32, Packets::AirPose::kMaxSize); // +2: ground_distance
   TEST_ASSERT_EQUAL_UINT(34, Packets::HandsetTelem::kMaxSize);
   TEST_ASSERT_EQUAL_UINT(38, Packets::AirActuators::kMaxSize);
@@ -1019,7 +1023,7 @@ void test_packet_sizes_fit_budget() {
   TEST_ASSERT_EQUAL_UINT16(10, Packets::Gnss::kUsbRateHz);
   TEST_ASSERT_TRUE(Packets::AirActuators::kAirEligible);
   TEST_ASSERT_TRUE(Packets::AirMission::kAirEligible);
-  TEST_ASSERT_EQUAL_HEX32(0xF49ACD01u, Packets::kSchemaHash);
+  TEST_ASSERT_EQUAL_HEX32(0x0A200F8Au, Packets::kSchemaHash);
   TEST_ASSERT_EQUAL_UINT(164, Packets::Calibration::kMaxSize);
   TEST_ASSERT_FALSE(Packets::Calibration::kAirEligible); // USB only
 }
