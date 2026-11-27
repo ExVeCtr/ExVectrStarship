@@ -1,4 +1,4 @@
-#include "sim/starship_aero.hpp"
+#include "starship_aero.hpp"
 
 #include <math.h>
 

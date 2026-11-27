@@ -25,7 +25,8 @@
 #include "ExVectrDynamics/servo.hpp"
 #include "ExVectrDynamics/tvc.hpp"
 #include "ExVectrDynamics/wind.hpp"
-#include "sim/starship_aero.hpp"
+#include "sim_placement.hpp"
+#include "starship_aero.hpp"
 
 namespace VCTR {
 namespace ShipSim {
@@ -60,7 +61,7 @@ struct StarshipPlantParams {
 
 /// Builds the read-only aero config (hull, flap geometry, derived areas) from the plant parameters. Use it for a
 /// controller's own "belief" config (decision D7).
-AeroConfig makeAeroConfig(const StarshipPlantParams &p);
+SIM_COLD AeroConfig makeAeroConfig(const StarshipPlantParams &p);
 
 template <int kDelayCap> // 1 on the vehicle (no dead time), 128 in the host harness
 struct StarshipPlantT {
@@ -98,36 +99,36 @@ struct StarshipPlantT {
   };
   using DefaultIntegrator = Dyn::SemiImplicitEuler;
 
-  static Config configure(const Params &p);
+  SIM_COLD_T static Config configure(const Params &p);
   /// Start pose (upright at the origin, at rest), flaps folded (pi/2), thrust off, t = 0.
-  static void init(const Config &c, State &x);
+  SIM_COLD_T static void init(const Config &c, State &x);
   /// Upright at the origin, at rest; actuators and time keep their state (== BodySimModel::resetToStartPose).
-  static void resetPose(State &x);
+  SIM_COLD_T static void resetPose(State &x);
   static float stepSize_s(const Config &c) { return c.p.step_s; }
   static float maxAdvance_s(const Config &c) { return c.p.maxAdvance_s; }
 
   // Environment changes between steps (same semantics as BodySimModel::setWind/setGust/clearWind).
-  static void setWind(Config &c, float speed_mps, float direction_rad);
-  static void setGust(Config &c, float strength_mps, float period_s, uint32_t seed);
-  static void clearWind(Config &c);
+  SIM_COLD_T static void setWind(Config &c, float speed_mps, float direction_rad);
+  SIM_COLD_T static void setGust(Config &c, float strength_mps, float period_s, uint32_t seed);
+  SIM_COLD_T static void clearWind(Config &c);
 
   // ---- Hooks used by the step and by the Rk4 integrator ----
   static const Dyn::RigidBodyParams &bodyParams(const Config &c) { return c.d.body; }
   static double time_s(const State &x) { return x.t_s; }
   /// Steps 1-2: hold the inputs (clamped), flap servos and TVC slew.
-  static void beginStep(const Config &c, State &x, const Input &u, float dt);
+  SIM_COLD_T static void beginStep(const Config &c, State &x, const Input &u, float dt);
   /// Steps 3-5: aero and force sums at the state `x` and time `t_s`; fills the aero outputs of `y`.
-  static void evalSums(const Config &c, const State &x, double t_s, Dyn::ForceSums &sums, Output &y,
+  SIM_COLD_T static void evalSums(const Config &c, const State &x, double t_s, Dyn::ForceSums &sums, Output &y,
                        AeroOutput &aero);
   /// Same loads as (body, world) for the general integrators.
-  static void forces(const Config &c, const State &x, const Input &u, double t_s, Dyn::Wrench &body, Vec3 &world,
+  SIM_COLD_T static void forces(const Config &c, const State &x, const Input &u, double t_s, Dyn::Wrench &body, Vec3 &world,
                      Output &y);
   /// Step 6 (second half) and 7: ground contact with the state from before the step, time increment.
-  static void endStep(const Config &c, State &x, const Dyn::RigidBodyState &before, float dt);
+  SIM_COLD_T static void endStep(const Config &c, State &x, const Dyn::RigidBodyState &before, float dt);
 
   /// One fixed step (semi-implicit Euler, bit-identical to BodySimModel::step). A probe may define
   /// `void onAero(const AeroOutput&)` to see the aero components; NoProbe ignores it.
-  template <class Probe> static void step(const Config &c, State &x, const Input &u, float dt, Output &y, Probe &pr) {
+  template <class Probe> SIM_COLD_T static void step(const Config &c, State &x, const Input &u, float dt, Output &y, Probe &pr) {
     beginStep(c, x, u, dt);
     Dyn::ForceSums sums;
     AeroOutput aero;

@@ -23,7 +23,7 @@ An autonomous model of SpaceX's Starship (1.1 kg). It serves as the flagship app
 | Aero surfaces | 4 flaps (upper L/R, lower L/R), one servo each | `starship_flaps.*` |
 | Flight computer | Teensy 4.0; MPU9250 IMU (SPI, interrupt-driven), BME280 baro (I2C), QMC5883 mag (I2C), VL53L0X ToF range (I2C), u-blox NEO-M8Q GNSS (Serial5), ExVectrNetwork links: USB serial (bench ground station) and a 460800 UART (Serial4) to the ExVectrLink RX module (no on-board radio since T9a), SSD1306 OLED, EEPROM | `board_v_1_0.h` |
 | TVC lever arm (sim) | 0.35 m below CoM | `main.cpp` `setTVCInputTopic(..., {0,0,-0.35})` |
-| Inertia (sim) | diag(0.044, 0.044, 0.004) kg·m² | `BodySimulator` constructor in `main.cpp` |
+| Inertia (sim) | diag(0.044, 0.044, 0.004) kg·m² | `StarshipSimTask` constructor in `main.cpp` (was `BodySimulator`) |
 
 ## Flight profile (current configuration)
 
