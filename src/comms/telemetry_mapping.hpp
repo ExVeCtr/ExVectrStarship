@@ -121,6 +121,7 @@ struct TelemetrySnapshot {
   uint16_t cmdFlags = 0;
   uint8_t goRefusal = 0;                 ///< VehicleStatus.go_refusal (0 none)
   uint8_t missionProfile = 255;          ///< VehicleStatus.mission_profile: SB latched at the last go, 255 = none
+  uint8_t profileSelected = 255;         ///< VehicleStatus.profile_selected: profile of the last accepted CMD_STATE (= CmdApplied.profile), 255 = none yet; telemetry only
   uint8_t rcRejected = 0;                ///< wrapping count of rejected CMD_STATE frames (all reasons, both links)
   uint8_t degradedBits = 0;              ///< VehicleStatus.degraded_bits (T9b-3: UART_HEARTBEAT_LOST only; information, never latched)
   /// CMD_APPLIED content (USB only): the last accepted CMD_STATE fields (safe values if none)
