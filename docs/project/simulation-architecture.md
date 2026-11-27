@@ -758,3 +758,17 @@ Wall-clock jitter makes the runs non-identical. That is why the host golden test
 | D8 | Unify the actuator models (`StarshipTVC` slew, `TrueFlapModel`) with the Dynamics blocks | (a) in stage 2 (S7c); (b) never, keep both | **(a)**, after the controller cores, as its own flight-safety step |
 | D9 | Stage 2 order relative to the paused flight executive (E3-E7) | (a) extract the controller cores first (S7), and the executive consumes them; (b) wait for the executive | **(a)**: the cores are needed by both, and they shrink the executive's adapter |
 | D10 | On-vehicle rollouts (later) | (a) time-sliced, ≤ 0.5 ms per call, after a CPU-load measurement; (b) a dedicated long task | **(a)**: a long task delays the 1 ms estimators |
+
+## 10. Implementation status
+
+Branches: integration `feature/sim-dynamics`; step branches `feature/sim-s<n>-...` cut from it and merged back with `--no-ff`. The library branches carry the same step names. Legacy code is untouched; bugs found in it are recorded, not fixed, on these branches (the new code reproduces them bit for bit).
+
+| Step | State | Branch | Commits |
+|---|---|---|---|
+| S1 | done (host only) | `feature/sim-s1-dynamics-skeleton` (flight-software and lib/ExVectrDynamics) | see "Hashes" below |
+
+**S1 (library skeleton).**
+- `lib/ExVectrDynamics` created as a local git repository (no remote, no `.gitmodules` entry yet, see [libs/ExVectrDynamics.md](../libs/ExVectrDynamics.md)).
+- Contents: `types`, `rigid_body` (`semiImplicitEulerStep`, `rigidBodyDeriv`, `addForce`/`addTorque`), `model` (`is_model`), `integrators` (`SemiImplicitEuler`, `Rk4`), `sim` (`Sim<M,I>`).
+- Test `test/test_dyn_rigid_body`: 1e5 random steps (random sums, inertia with products, dt including 0/negative/NaN/inf) bit-identical (memcmp after every step) against the frozen `PhysicsBodySim` in `test/frozen/legacy_physics_bodysim.hpp`; `is_model` positive and negative (static_assert); snapshot/restore; `advance` rule; RK4 against an analytic solution.
+- Deviations from the sketch: `ForceSums` also has `torqueWorld` (needed for a bit-exact port); no global `noProbe()` (a local `NoProbe` is used); the model concept needs `stepSize_s`/`maxAdvance_s`, and `forces(...)` takes the `Output&` (so diagnostics are filled without a second evaluation); the frozen copy omits `simulateForTime` (needs ExVectrCore).
