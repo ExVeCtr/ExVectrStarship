@@ -1,6 +1,6 @@
 # ExVectrDynamics
 
-> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1 (feature/sim-s1-dynamics-skeleton).
+> Pure dynamics code for simulation and (later) model-based control: a rigid-body integrator, aerodynamic and actuator building blocks, and the generic model machinery. Depends on ExVectrMath only (no ExVectrCore, builds on the host). **Local repository only: the GitHub repo does not exist yet** (owner creates it, see "Repository state"). Design: [../project/simulation-architecture.md](../project/simulation-architecture.md). Status: S1 and S2 done (building blocks, host tests); S3 adds the Starship plant in flight-software `src/sim/`.
 
 ## Purpose & scope
 
@@ -23,6 +23,15 @@
 | `integrators.hpp` | `SemiImplicitEuler` (the model's own step), `Rk4` (rigid body, model force function, zero-order-hold discrete parts) |
 | `sim.hpp` | `Sim<M, Integrator>`: shared read-only `Config*` plus own `State`; `step`, `advance` (same carry and bounded-catch-up rule as `BodySimModel::advance`), `snapshot`/`restore`, `clearTimeCarry` |
 
+| `atmosphere.hpp` | `AtmosphereParams`, `airDensity` (constant 1.2 kg/m^3; no ISA yet) |
+| `wind.hpp` (+`wind.cpp`) | `WindParams`, `GustTable`, `buildGustTable`, `gustAt`, `windAt`, `setWind`, `setGust`, `clearWind` (deterministic 8-sinusoid gust, xorshift32 phases, double phase arithmetic) |
+| `slender_body.hpp` (+cpp) | `SlenderBodyGeometry/Coeffs/Config`, `slenderBodyAero(cfg, rho, cal, u_body, omega)`: crossflow strips, potential normal force, axial drag; `slenderBodyDiameterAt` |
+| `flat_plate.hpp` (+cpp) | `FlatPlateCoeffs`, `FlatPlateGeom` (frame supplied by the caller), `flatPlateCn`, `flatPlateAeroAngle`, `flatPlateFlap` (force + centre of pressure; fold shield, candidate effects) |
+| `tvc.hpp` (+cpp) | `TvcParams`, `tvcClamp` (NaN, magnitude, cone), `TvcState`, `tvcSlewStep`, `tvcForceFromAngles` |
+| `servo.hpp` | `ServoParams`, `ServoState<N, Cap>` (dead-time line of capacity `Cap`), `servoInit`, `servoSetInput`, `servoStep` (header-only) |
+| `motor.hpp` | `MotorParams`, `motorThrust`, `motorStep`: instantaneous by default (identity), optional first-order spool-up and limit (new, off, not used by the plant) |
+| `ground_contact.hpp` (+cpp) | `groundContactStep(x, before)`: stop, no slide, resting body keeps its pose |
+
 Model concept: see the comment block in `model.hpp` (types `Params, Config, State, Input, Output`, functions `configure, init, stepSize_s, maxAdvance_s, step`; Rk4 additionally `bodyParams, time_s, beginStep, forces, endStep`).
 
 ## Behaviour notes
@@ -33,7 +42,9 @@ Model concept: see the comment block in `model.hpp` (types `Params, Config, Stat
 
 ## Tests
 
-Run from flight-software: `~/.platformio/penv/bin/pio test -e native -f test_dyn_rigid_body` (S1).
+Run from flight-software (`pio` = `~/.platformio/penv/bin/pio`):
+- `pio test -e native -f test_dyn_rigid_body` (S1): `semiImplicitEulerStep` against the frozen `PhysicsBodySim` (1e5 random steps), `is_model`, `Sim`, RK4.
+- `pio test -e native -f test_dyn_blocks` (S2): every block against the frozen `BodySimModel` (`test/frozen/legacy_body_sim_model.hpp`, verbatim except namespace, `inline` and `private:` opened to `public:`): wind/gust tables and series, hull aero (legacy total with the flap effectiveness set to 0), `flatPlateFlap` with random geometry and candidate effects, `tvcClamp`, servo + TVC slew sequences (dead time, lag, rate limits, NaN inputs, capacity 128 and 1), ground contact. Hull and flat plate comparisons treat +0 and -0 as equal where the legacy value is a sum that starts from zero.
 
 ## Repository state (TODO for the main session)
 
