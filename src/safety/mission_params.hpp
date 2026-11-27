@@ -37,7 +37,7 @@ struct MissionParamSet {
   float p1Hold1S = 10.0f;
   float p1Hold2S = 15.0f;
   float p1Hold3S = 15.0f;
-  float ascentAccel = 3.0f;
+  float ascentAccel = 1.0f;
   float ascentDecel = 2.0f;
   float apogeeX = 0.0f;
   float apogeeY = 0.0f;
