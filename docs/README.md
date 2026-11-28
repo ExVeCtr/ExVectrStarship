@@ -12,6 +12,7 @@ Versioned with the code, so every commit and flight tag carries matching docs. *
 | [project/missions.md](project/missions.md) | Mission framework and each mission's phases, triggers and parameters |
 | [project/calibration.md](project/calibration.md) | Sensor calibration: validity rules that gate Arm and MissionBegin, the automatic gyro run, the accel/mag procedure, commands, log cues, bench evidence |
 | [project/simulation-architecture.md](project/simulation-architecture.md) | **Design (not implemented):** modular simulation/dynamics architecture: building blocks, Model concept, instances and snapshots, standalone aero model, control as a model (stage 2), migration steps S1..S9, owner decisions |
+| [project/aero-control-design.md](project/aero-control-design.md) | **Design (not implemented):** stage 3 aerodynamics-aware position/velocity control: host study of the aero effects (ascent gain rise, descent sign flip), force/moment observers, speed-scheduled limits, gated aero feedforward, parameters, verification, steps aero-A1..A11, owner decisions |
 | [project/hardware-and-drivers.md](project/hardware-and-drivers.md) | Pinout, body frame and actuator layout, TVC/flap mixing, network links (USB, UART to the RX module), GNSS, rangefinder, telemetry/telecommand mapping |
 | [flight-log.md](flight-log.md) | Every flight: tag, goals, outcome, anomalies |
 
